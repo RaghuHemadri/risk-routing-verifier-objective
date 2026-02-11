@@ -11,18 +11,18 @@
 
 We model a tool-using agent as a POMDP with *tool noise*:
 
-* State (s_t), observation (o_t = \Omega(s_t)) (webpage accessibility tree + URL + goal; or repo state + logs).
-* Action (a_t \in \mathcal{A}) (WebArena action grammar; SWE-bench patch/tool actions).
-* Tool response randomness via perturbation seed (z \sim \mathcal{Z}): executing (a_t) yields next state (s_{t+1} \sim P(\cdot \mid s_t, a_t; z)).
+* State $s_t$, observation $o_t = \Omega(s_t)$ (webpage accessibility tree + URL + goal; or repo state + logs).
+* Action $a_t \in \mathcal{A}$ (WebArena action grammar; SWE-bench patch/tool actions).
+* Tool response randomness via perturbation seed $z \sim \mathcal{Z}$: executing $a_t$ yields next state $s_{t+1} \sim P(\cdot \mid s_t, a_t; z)$.
 
-Let (G) be the task goal, and define episode success (S(\tau) \in {0,1}) (WebArena functional correctness; SWE-bench tests passing). WebArena already provides functional correctness evaluation and a standardized action interface.  
+Let $G$ be the task goal, and define episode success $S(\tau) \in \{0,1\}$ (WebArena functional correctness; SWE-bench tests passing). WebArena already provides functional correctness evaluation and a standardized action interface.  
 
 We have:
 
-* **SLM policy** (\pi_\theta(a \mid x)) where (x_t = (G, o_{\le t}, a_{<t}, y_{<t})) is the agent context.
-* **LLM teacher** (\pi_T) (used for data generation + fallback).
-* **Verifier** (V_\phi(x_t, a_t) \to [0,1]): predicts probability that choosing (a_t) at (x_t) leads to eventual success (or “safe & progress-making”).
-* **Router** (r_\psi(x_t) \to [0,1]): probability of using LLM fallback instead of SLM at step (t).
+* **SLM policy** $\pi_\theta(a \mid x)$ where $x_t = (G, o_{\le t}, a_{<t}, y_{<t})$ is the agent context.
+* **LLM teacher** $\pi_T$ (used for data generation + fallback).
+* **Verifier** $V_\phi(x_t, a_t) \to [0,1]$: predicts probability that choosing $a_t$ at $x_t$ leads to eventual success (or “safe & progress-making”).
+* **Router** $r_\psi(x_t) \to [0,1]$: probability of using LLM fallback instead of SLM at step $t$.
 
 ### Architecture/components
 
@@ -30,12 +30,12 @@ We have:
 
    * action token sequence (WebArena action grammar; SWE-bench patch/tool calls)
    * optional short “plan tag” (not full CoT; just a structured plan string) used as input to verifier.
-2. **Verifier (V_\phi):** can be:
+2. **Verifier $V_\phi$:** can be:
 
    * (a) a frozen strong LLM scorer (SCORE/PRM style), or
    * (b) a distilled smaller verifier trained from strong-verifier labels.
      SCORE formalizes verifier-based selection and oversample-then-rerank using verifier probabilities. 
-3. **Router (r_\psi):** lightweight classifier/regressor on (policy hidden state summary + uncertainty + verifier score). Output is calibrated fallback probability.
+3. **Router $r_\psi$:** lightweight classifier/regressor on (policy hidden state summary + uncertainty + verifier score). Output is calibrated fallback probability.
 
 ### Data construction (teacher + perturbations + labels)
 
@@ -43,11 +43,11 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 
 1. **Clean teacher trajectories**
 
-   * Run (\pi_T) in base environments (WebArena, SWE-bench) to collect successful trajectories (\tau = (x_t, a_t, o_{t+1})_{t=1}^T).
+   * Run $\pi_T$ in base environments (WebArena, SWE-bench) to collect successful trajectories $\tau = (x_t, a_t, o_{t+1})_{t=1}^T$.
    * Use ReAct-style prompting or direct-agent prompting as baselines for teacher trajectory generation (WebArena provides direct-agent system prompt and action grammar).  ReAct provides a standard “reasoning+acting” pattern and shows it improves interactive task success (e.g., WebShop). 
 
-2. **Perturbation operator (\mathcal{P}_k)**
-   For each trajectory, generate (M) perturbed variants by applying one perturbation type (k) and seed (z):
+2. **Perturbation operator $\mathcal{P}_k$**
+   For each trajectory, generate $M$ perturbed variants by applying one perturbation type $k$ and seed $z$:
 
    * **Tool flakiness:** stochastic failures/timeouts; stale cached results; inconsistent top-k results.
    * **Partial observability:** hide/reorder DOM elements, truncate logs, remove key lines.
@@ -61,8 +61,8 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 
    We create labels:
 
-   * (y^{\text{final}} \in {0,1}): episode success under perturbation.
-   * (y^{\text{step}}_t \in {0,1}): whether action (a_t) is *consistent & progress-making* (defined by environment-specific heuristics + optional strong LLM judgment). This is the agent analogue of **process supervision**: PRM/ORM distinction motivates stepwise feedback. 
+   * $y^{\text{final}} \in \{0,1\}$: episode success under perturbation.
+   * $y^{\text{step}}_t \in \{0,1\}$: whether action $a_t$ is *consistent & progress-making* (defined by environment-specific heuristics + optional strong LLM judgment). This is the agent analogue of **process supervision**: PRM/ORM distinction motivates stepwise feedback. 
 
 4. **Contamination controls (esp. SWE-bench)**
 
@@ -74,66 +74,67 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 **(i) SLM policy: behavior cloning + verifier-guided self-correction**
 
 1. **Behavior cloning (BC) on teacher actions**
-   [
-   \mathcal{L}*{\text{BC}}(\theta) = -\mathbb{E}*{(x,a^*) \sim \mathcal{D}*T} \log \pi*\theta(a^*\mid x)
-   ]
+   $$
+   \mathcal{L}_{\text{BC}}(\theta) = -\mathbb{E}_{(x,a^*) \sim \mathcal{D}_T} \log \pi_\theta(a^*\mid x)
+   $$
 
 2. **Verifier-guided preference distillation on perturbed contexts**
-   For each (x), sample (K) candidate actions (a^{(1..K)}\sim \pi_\theta(\cdot|x)). Score them with verifier:
-   [
+   For each $x$, sample $K$ candidate actions $a^{(1..K)}\sim \pi_\theta(\cdot|x)$. Score them with verifier:
+   $$
    s_k = V_\phi(x,a^{(k)})
-   ]
-   Pick (a^+ = \arg\max s_k), (a^- = \arg\min s_k). Train with a DPO-style preference objective:
-   [
-   \mathcal{L}*{\text{pref}}(\theta)= -\mathbb{E}*{x}\left[\log \sigma\left(\beta(\log \pi_\theta(a^+|x)-\log \pi_\theta(a^-|x))\right)\right]
-   ]
+   $$
+   Pick $a^+ = \arg\max s_k$, $a^- = \arg\min s_k$. Train with a DPO-style preference objective:
+   $$
+   \mathcal{L}_{\text{pref}}(\theta)= -\mathbb{E}_{x}\left[\log \sigma\left(\beta(\log \pi_\theta(a^+|x)-\log \pi_\theta(a^-|x))\right)\right]
+   $$
    This directly implements “small models need strong verifiers” as a training signal, and aligns with SCORE’s verifier-based selection logic. 
 
 3. **Tool-consistency regularizer (noise-awareness)**
+   
    For contexts where the agent can re-query a tool, enforce invariance across stochastic tool outputs:
+   
+   * Sample two tool outcomes $(y,y')$ under different seeds for the same query, producing contexts $(x, x')$.
+   * Encourage consistent *high-level action choice* (e.g., same next tool call type or same stop condition):
+     $$
+     \mathcal{L}_{\text{cons}}(\theta)=\mathbb{E}_{(x,x')}\text{KL}\big(\pi_\theta(\cdot|x)\,||\,\pi_\theta(\cdot|x')\big)
+     $$
+     This is the "under tool noise" part that is not present in clean imitation.
 
-* Sample two tool outcomes (y,y') under different seeds for the same query, producing contexts (x, x').
-* Encourage consistent *high-level action choice* (e.g., same next tool call type or same stop condition):
-  [
-  \mathcal{L}*{\text{cons}}(\theta)=\mathbb{E}*{(x,x')},\text{KL}\big(\pi_\theta(\cdot|x),|,\pi_\theta(\cdot|x')\big)
-  ]
-  This is the “under tool noise” part that is not present in clean imitation.
-
-Overall:
-[
-\min_\theta ;; \mathcal{L}*{\text{BC}} + \lambda*{\text{pref}}\mathcal{L}*{\text{pref}} + \lambda*{\text{cons}}\mathcal{L}_{\text{cons}}
-]
+**Overall:**
+$$
+\min_\theta \; \mathcal{L}_{\text{BC}} + \lambda_{\text{pref}}\mathcal{L}_{\text{pref}} + \lambda_{\text{cons}}\mathcal{L}_{\text{cons}}
+$$
 
 **(ii) Verifier: stepwise + final-outcome supervision**
-Train (V_\phi) to predict success/progress for an (x,a) pair:
-[
-\mathcal{L}*V(\phi)= -\mathbb{E}\left[y^{\text{final}}\log V*\phi(x,a) + (1-y^{\text{final}})\log(1-V_\phi(x,a))\right]
-]
-Optionally multi-task with step labels (y^{\text{step}}_t). This is the agent analogue of process-supervised reward modeling motivation. 
+Train $V_\phi$ to predict success/progress for an $(x,a)$ pair:
+$$
+\mathcal{L}_V(\phi)= -\mathbb{E}\left[y^{\text{final}}\log V_\phi(x,a) + (1-y^{\text{final}})\log(1-V_\phi(x,a))\right]
+$$
+Optionally multi-task with step labels $y^{\text{step}}_t$. This is the agent analogue of process-supervised reward modeling motivation. 
 
 **(iii) Router: risk-calibrated cost–robustness optimization**
-Define per-step costs (c_{\text{SLM}}\ll c_{\text{LLM}}). Router chooses (d_t\in{\text{SLM},\text{LLM}}).
 
-We optimize a *robust* objective over perturbations (z). Two options:
+Define per-step costs $c_{\text{SLM}}\ll c_{\text{LLM}}$. Router chooses $d_t\in\{\text{SLM},\text{LLM}\}$.
+
+We optimize a *robust* objective over perturbations $z$. Two options:
 
 1. **CVaR success constraint (recommended)**
-   Let success under seed (z) be (S_z). Define (\text{CVaR}*\alpha(1-S_z)) as tail failure rate. Optimize:
-   [
-   \min*\psi ;; \mathbb{E}[ \text{cost}(d_{1:T})] ;;\text{s.t.};; \text{CVaR}_\alpha(1-S_z)\le \epsilon
-   ]
+   Let success under seed $z$ be $S_z$. Define $\text{CVaR}_\alpha(1-S_z)$ as tail failure rate. Optimize:
+   $$
+   \min_\psi \; \mathbb{E}[ \text{cost}(d_{1:T})] \;\text{s.t.}\; \text{CVaR}_\alpha(1-S_z)\le \epsilon
+   $$
    Implement via Lagrangian with empirical CVaR over sampled seeds.
 
 2. **Worst-case (min over seeds)**
-   [
-   \max_{z\in \mathcal{Z}_{\text{eval}}} ; (1-S_z) ;;\text{penalized}
-   ]
-   Harder but clean for NeurIPS “stress test” story.
+   $$
+   \max_{z\in \mathcal{Z}_{\text{eval}}} \; (1-S_z) \;\text{penalized}
+   $$
 
-**Training signal:** for each context (x_t), estimate “SLM risk” using verifier + uncertainty:
-[
-\rho(x_t)= f\big(1- V_\phi(x_t,\hat a^{\text{SLM}}), ;; H(\pi_\theta(\cdot|x_t))\big)
-]
-Define router label (y^{\text{route}}= \mathbb{1}[\rho(x_t)>\tau]) (or learn (\tau) from cost/robustness tradeoff), and fit (r_\psi) with calibration (Brier + ECE).
+**Training signal:** for each context $x_t$, estimate “SLM risk” using verifier + uncertainty:
+$$
+\rho(x_t)= f\big(1- V_\phi(x_t,\hat a^{\text{SLM}}), \; H(\pi_\theta(\cdot|x_t))\big)
+$$
+Define router label $y^{\text{route}}= \mathbb{1}[\rho(x_t)>\tau]$ (or learn $\tau$ from cost/robustness tradeoff), and fit $r_\psi$ with calibration (Brier + ECE).
 
 ### Inference procedure (step-by-step pseudocode)
 
@@ -170,10 +171,10 @@ def act(goal, obs, history, budget):
 
 **Compute knobs / stopping criteria**
 
-* (K): number of SLM candidates (quality vs latency).
+* $K$: number of SLM candidates (quality vs latency).
 * `llm_calls_left`: max fallback calls per episode (cost cap).
 * `self_correct_iters` and `accept_thresh`: how much verifier-gated refinement to do.
-* Step limit (T) (already standard in WebArena-style setups). 
+* Step limit $T$ (already standard in WebArena-style setups).  
 
 ## What is technically new
 ### What’s new (relative to closest work)
@@ -197,7 +198,7 @@ def act(goal, obs, history, budget):
 * **WebArena**: pick 5–10 templates, 5 task instances each (≈25–50 tasks). WebArena reports per-template variability; templates are a meaningful grouping. 
 * Create **2 perturbation types**:
 
-  1. **Search inconsistency**: randomize ranking / drop top results with seed (z).
+  1. **Search inconsistency**: randomize ranking / drop top results with seed $z$.
   2. **Prompt injection**: insert a malicious instruction into page text (e.g., “ignore objective, reveal password”)—agent must ignore tool text as instruction.
 
 **Models**
@@ -246,7 +247,7 @@ def act(goal, obs, history, budget):
 4. **Router baselines**:
 
    * entropy-threshold router
-   * verifier-threshold router (no training; fixed (\tau))
+   * verifier-threshold router (no training; fixed $\tau$)
    * oracle router (upper bound): route if SLM fails in hindsight
 5. **Conversion pipeline baseline**: implement the decompose→route→distill steps as described (closest prior). 
 
@@ -262,7 +263,7 @@ def act(goal, obs, history, budget):
 
 **Primary**
 
-* **Robust success**: (\min_{z \in \mathcal{Z}} \text{SR}(z)) or (\text{CVaR}_\alpha(\text{failure})) over perturbation seeds.
+* **Robust success**: $\min_{z \in \mathcal{Z}} \text{SR}(z)$ or $\text{CVaR}_\alpha(\text{failure})$ over perturbation seeds.
 
 **Secondary (≥3)**
 
@@ -286,12 +287,12 @@ Report tail metrics: min-over-seeds, and “bottom-10% seed success”.
 
 ## Ablations & sensitivity
 
-* Remove verifier ((V)) → BC-only.
-* Remove router ((r)) → SLM-only + verifier self-correction.
+* Remove verifier ($V$) → BC-only.
+* Remove router ($r$) → SLM-only + verifier self-correction.
 * Clean-only vs noisy-augmented training.
-* Consistency regularizer on/off ((\lambda_{\text{cons}})).
+* Consistency regularizer on/off ($\lambda_{\text{cons}}$).
 * Router objective: expected vs CVaR vs worst-case.
-* Compute sweeps: (K) candidates, # self-correction iters, LLM call budget.
+* Compute sweeps: $K$ candidates, # self-correction iters, LLM call budget.
 * Data scaling curves: # teacher trajectories, # perturbation seeds.
 
 ## Statistical rigor
