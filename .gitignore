@@ -1,0 +1,57 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# wandb
+wandb/
+
+# Experiment outputs
+experiments/results/
+experiments/checkpoints/
+experiments/logs/
+outputs/
+multirun/
+
+# Data artifacts (large files)
+data/raw/
+data/trajectories/
+data/processed/
+*.tar.gz
+*.zip
+
+# Model checkpoints
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.key

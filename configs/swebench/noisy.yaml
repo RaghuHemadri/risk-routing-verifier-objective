@@ -1,0 +1,59 @@
+# SWE-bench Noisy Configuration
+defaults:
+  - ../base
+
+benchmark: swebench
+
+swebench:
+  dataset:
+    name: princeton-nlp/SWE-bench
+    split: test
+    train_split: train
+    max_instances: null
+
+  docker:
+    timeout: 600
+    memory_limit: 8g
+    cpu_limit: 4
+
+  evaluation:
+    run_tests: true
+    compute_resolved: true
+    compute_applied: true
+
+data:
+  num_teacher_trajectories: 300
+  num_perturbation_seeds: 20
+  max_episode_steps: 20
+
+# SWE-bench-specific perturbations
+perturbations:
+  tool_flakiness:
+    enabled: true
+    failure_prob: 0.10
+    timeout_prob: 0.05
+    # SWE-bench specific: flaky test results
+    flaky_test_prob: 0.15
+    dependency_drift_prob: 0.10
+
+  partial_observability:
+    enabled: true
+    log_truncation_prob: 0.20
+    log_line_drop_prob: 0.15
+    # SWE-bench specific: truncated stack traces
+    stacktrace_truncation_prob: 0.15
+    file_content_truncation_prob: 0.10
+
+  prompt_injection:
+    enabled: true
+    # SWE-bench specific: misleading error messages
+    misleading_error_prob: 0.15
+    # Misleading code comments
+    misleading_comment_prob: 0.10
+
+  distractors:
+    enabled: true
+    # SWE-bench specific: similar file paths, wrong functions
+    similar_filepath_prob: 0.15
+    plausible_wrong_fix_prob: 0.15
+    decoy_error_prob: 0.10

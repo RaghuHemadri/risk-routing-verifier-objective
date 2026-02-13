@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "r2v-agent"
+version = "0.1.0"
+description = "Risk-Calibrated Routing with Robust Verifier-Distillation for Tool-Using Agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "R2V-Agent Authors"},
+]
+keywords = ["llm", "agent", "routing", "verifier", "robustness", "tool-use"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.38.0",
+    "accelerate>=0.27.0",
+    "peft>=0.9.0",
+    "datasets>=2.17.0",
+    "deepspeed>=0.13.0",
+    "bitsandbytes>=0.42.0",
+    "trl>=0.7.0",
+    "vllm>=0.3.0",
+    "omegaconf>=2.3.0",
+    "hydra-core>=1.3.0",
+    "wandb>=0.16.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "scikit-learn>=1.3.0",
+    "pandas>=2.1.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "rich>=13.0.0",
+    "jsonlines>=4.0.0",
+    "tenacity>=8.2.0",
+    "tiktoken>=0.5.0",
+    "openai>=1.10.0",
+    "anthropic>=0.18.0",
+]
+
+[project.optional-dependencies]
+webarena = [
+    "playwright>=1.40.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+]
+swebench = [
+    "swebench>=1.0.0",
+    "docker>=7.0.0",
+    "gitpython>=3.1.0",
+    "unidiff>=0.7.0",
+]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=24.0.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+    "pre-commit>=3.6.0",
+]
+
+[project.scripts]
+r2v-collect = "scripts.collect_trajectories:main"
+r2v-perturb = "scripts.generate_perturbations:main"
+r2v-train = "scripts.train_policy:main"
+r2v-eval = "scripts.evaluate:main"
+
+[tool.setuptools.packages.find]
+include = ["r2v*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=r2v --cov-report=term-missing"
