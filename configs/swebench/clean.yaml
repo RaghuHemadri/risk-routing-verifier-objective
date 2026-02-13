@@ -1,0 +1,36 @@
+# SWE-bench Clean Configuration
+defaults:
+  - ../base
+
+benchmark: swebench
+
+swebench:
+  dataset:
+    name: princeton-nlp/SWE-bench
+    split: test          # Evaluate on test split
+    train_split: train   # Train only on train split (repo-disjoint)
+    max_instances: null
+
+  docker:
+    timeout: 600         # seconds per instance
+    memory_limit: 8g
+    cpu_limit: 4
+
+  evaluation:
+    run_tests: true
+    compute_resolved: true
+    compute_applied: true
+
+data:
+  num_teacher_trajectories: 300
+  max_episode_steps: 20
+
+perturbations:
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false

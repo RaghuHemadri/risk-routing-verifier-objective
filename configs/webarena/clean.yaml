@@ -1,0 +1,54 @@
+# WebArena Clean Configuration
+defaults:
+  - ../base
+
+benchmark: webarena
+
+webarena:
+  env:
+    base_url: ${oc.env:WEBARENA_BASE_URL,http://localhost}
+    sites:
+      - shopping      # OneStopShop
+      - reddit        # Reddit
+      - gitlab        # GitLab
+      - wikipedia     # Wikipedia
+      - map           # OpenStreetMap
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+    slow_mo: 0
+    timeout: 30000
+
+  tasks:
+    # Use all 812 task templates for full eval; subset for MRP
+    template_ids: null  # null = all
+    max_tasks: null
+    action_grammar: webarena  # WebArena's standardized action space
+
+  observation:
+    type: accessibility_tree  # Options: accessibility_tree, html, screenshot
+    max_tokens: 4096
+    include_url: true
+
+  evaluation:
+    # WebArena functional correctness metrics
+    exact_match: true
+    must_include: true
+    fuzzy_match: true
+    url_match: true
+
+# Override training for WebArena-specific settings
+data:
+  num_teacher_trajectories: 500
+  max_episode_steps: 30
+
+perturbations:
+  # All disabled for clean evaluation
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false

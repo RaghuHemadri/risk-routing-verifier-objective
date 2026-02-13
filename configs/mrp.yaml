@@ -1,0 +1,128 @@
+# MRP (Minimal Reproducible Prototype) Configuration
+# 1-2 week validation of core claims on a small WebArena slice
+defaults:
+  - ../base
+
+benchmark: webarena
+
+experiment:
+  name: mrp_validation
+  description: "Minimal reproducible prototype: validate Claim 1 (robust routing improves worst-seed SR)"
+
+webarena:
+  env:
+    base_url: ${oc.env:WEBARENA_BASE_URL,http://localhost}
+    sites:
+      - shopping
+      - reddit
+    headless: true
+    viewport_width: 1280
+    viewport_height: 720
+    slow_mo: 0
+    timeout: 30000
+
+  tasks:
+    # Pick 5-10 templates, 5 instances each
+    template_ids: [0, 5, 10, 15, 20, 25, 30, 35, 40, 45]
+    instances_per_template: 5
+    action_grammar: webarena
+
+  observation:
+    type: accessibility_tree
+    max_tokens: 4096
+    include_url: true
+
+  evaluation:
+    exact_match: true
+    must_include: true
+    fuzzy_match: true
+    url_match: true
+
+# Smaller models for MRP
+policy:
+  model_name: meta-llama/Llama-3.1-8B-Instruct
+  lora:
+    enabled: true
+    r: 32
+    alpha: 64
+
+teacher:
+  model_name: meta-llama/Llama-3.1-70B-Instruct
+
+verifier:
+  mode: llm_judge
+  llm_judge:
+    model_name: meta-llama/Llama-3.1-70B-Instruct
+
+# Reduced data for MRP
+data:
+  num_teacher_trajectories: 100
+  num_perturbation_seeds: 5
+  max_episode_steps: 20
+
+# Only 2 perturbation types for MRP
+perturbations:
+  tool_flakiness:
+    enabled: true
+    # Search inconsistency: randomize ranking / drop top results
+    result_shuffle_prob: 0.30
+    result_drop_fraction: [0.2, 0.6]
+    failure_prob: 0.0
+    timeout_prob: 0.0
+    stale_cache_prob: 0.0
+    partial_response_prob: 0.0
+
+  partial_observability:
+    enabled: false
+
+  prompt_injection:
+    enabled: true
+    # Insert malicious instruction into page text
+    direct_injection_prob: 0.20
+    goal_hijack_prob: 0.10
+    indirect_injection_prob: 0.0
+    exfiltration_attempt_prob: 0.0
+    role_confusion_prob: 0.0
+    encoded_injection_prob: 0.0
+
+  distractors:
+    enabled: false
+
+# Faster training for MRP
+training:
+  bc:
+    epochs: 2
+    batch_size: 4
+    gradient_accumulation_steps: 4
+    learning_rate: 2.0e-5
+
+  preference:
+    enabled: true
+    beta: 0.1
+    num_candidates: 4
+    epochs: 1
+
+  consistency:
+    enabled: true
+    lambda_cons: 0.1
+
+  router:
+    epochs: 10
+    batch_size: 32
+    robust_objective: cvar
+    cvar_alpha: 0.2
+
+inference:
+  num_candidates: 4
+  max_self_correct_iters: 1
+  accept_threshold: 0.7
+  max_llm_calls: 5
+
+evaluation:
+  num_perturbation_seeds: 5
+  num_bootstrap_samples: 500
+
+compute:
+  num_gpus: 1
+  precision: bf16
+  deepspeed_stage: 2
