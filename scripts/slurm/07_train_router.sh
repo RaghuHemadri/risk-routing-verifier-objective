@@ -1,16 +1,18 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=4:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-train-router
 #SBATCH --output=logs/train_router_%j.out
 #SBATCH --error=logs/train_router_%j.err
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=04:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ── Train risk-calibrated router ──
-# Lightweight MLP — single GPU, fast training
 
 set -euo pipefail
 

@@ -1,17 +1,19 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=48:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-train-policy
 #SBATCH --output=logs/train_policy_%j.out
 #SBATCH --error=logs/train_policy_%j.err
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:2
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
-#SBATCH --time=48:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ── Train SLM policy (BC + DPO + Consistency) ──
-# Requires 2x A100 80GB (or 4x A6000 48GB) for 13B model with LoRA
-# Reduce to 1x A100 for 7B model
+# 2x A100 80GB for 13B model with LoRA
 
 set -euo pipefail
 

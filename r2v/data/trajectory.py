@@ -103,6 +103,13 @@ class EpisodeMetadata:
     difficulty: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
+    # ── Data versioning ──────────────────────────────────────────
+    # Set by collect_trajectories.py; used by DataRegistry to group and
+    # query episodes across multi-model collection runs.
+    run_id: str = ""                # e.g. "webarena_openai_gpt-4o_20260218T210012"
+    teacher_model: str = ""         # e.g. "gpt-4o", "claude-3-5-sonnet-20241022"
+    teacher_provider: str = ""      # e.g. "openai", "anthropic", "google"
+
 
 @dataclass
 class Episode:
@@ -167,6 +174,11 @@ class TrajectoryStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def save_episode(self, episode: Episode) -> None:
+        """Append a single episode to the JSONL file."""
+        with jsonlines.open(self.path, mode="a") as writer:
+            writer.write(episode.to_dict())
 
     def save_episodes(self, episodes: list[Episode]) -> None:
         """Append episodes to the JSONL file."""
