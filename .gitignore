@@ -55,3 +55,12 @@ Thumbs.db
 # Secrets
 .env
 *.key
+
+# Webarena
+webarena/
+config_files/
+
+
+data/
+.auth
+config_files

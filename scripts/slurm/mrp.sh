@@ -1,13 +1,16 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=8:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-mrp
 #SBATCH --output=logs/mrp_%j.out
 #SBATCH --error=logs/mrp_%j.err
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=08:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ══════════════════════════════════════════════════════════════
 # Minimal Reproducible Prototype (MRP)

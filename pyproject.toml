@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "r2v-agent"
@@ -47,6 +47,8 @@ dependencies = [
     "tiktoken>=0.5.0",
     "openai>=1.10.0",
     "anthropic>=0.18.0",
+    "google-generativeai>=0.4.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -56,7 +58,7 @@ webarena = [
     "lxml>=4.9.0",
 ]
 swebench = [
-    "swebench>=1.0.0",
+    "swebench>=2.0.0",
     "docker>=7.0.0",
     "gitpython>=3.1.0",
     "unidiff>=0.7.0",

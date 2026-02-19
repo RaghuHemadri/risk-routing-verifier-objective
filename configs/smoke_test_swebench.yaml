@@ -1,0 +1,42 @@
+# ============================================================
+# Smoke-test config: SWE-bench Lite, 1 instance, no Docker eval
+# Use this to verify the full pipeline is wired up correctly.
+#
+#   python -m scripts.collect_trajectories \
+#       --config configs/smoke_test.yaml \
+#       --output data/smoke_test \
+#       --num-episodes 1
+# ============================================================
+defaults:
+  - base
+
+benchmark: swebench
+
+teacher:
+  provider: openai
+  model_name: gpt-4o-mini   # cheapest capable model
+  max_tokens: 512
+  temperature: 0.0
+
+swebench:
+  dataset:
+    name: princeton-nlp/SWE-bench_Lite   # 300 instances (~10 MB), not full ~2 GB
+    split: test
+    max_instances: 1                     # load only 1 instance
+
+  docker:
+    timeout: 120
+    memory_limit: 4g
+    cpu_limit: 2
+
+  evaluation:
+    run_tests: false          # skip Docker-based test execution
+    compute_resolved: false
+    compute_applied: false
+
+data:
+  num_teacher_trajectories: 1
+  max_episode_steps: 3       # keep very short for smoke test
+
+inference:
+  step_limit: 3

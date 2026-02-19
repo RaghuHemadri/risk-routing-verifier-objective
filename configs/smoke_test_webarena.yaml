@@ -1,0 +1,56 @@
+# ============================================================
+# WebArena smoke-test config — real browser against Docker
+#
+# Requires:
+#   - shopping_admin container running on port 7780
+#   - .auth/shopping_admin_state.json cookie present
+#
+# To start the container:
+#   docker run --name shopping_admin --platform linux/amd64 -p 7780:80 -d shopping_admin_final_0719
+#   # wait ~90s, then:
+#   cd webarena && python browser_env/auto_login.py --site_list shopping_admin
+#   cd .. && ln -sfn webarena/.auth .auth
+#
+#   python -m scripts.collect_trajectories \
+#       --config configs/smoke_test_webarena.yaml \
+#       --output data/smoke_test_webarena \
+#       --num-episodes 1
+# ============================================================
+defaults:
+  - base
+
+benchmark: webarena
+
+teacher:
+  provider: openai
+  model_name: gpt-4o-mini
+  max_tokens: 256
+  temperature: 0.0
+
+webarena:
+  # mock: false — uses real Playwright browser against Docker container
+
+  env:
+    headless: true
+
+  tasks:
+    template_ids: [0]   # task 0: shopping_admin only — top‑N best‑selling product query
+    max_tasks: 1
+
+  observation:
+    type: accessibility_tree
+    max_tokens: 512
+    include_url: true
+
+  evaluation:
+    exact_match: true
+    must_include: true
+    fuzzy_match: true
+    url_match: false
+
+data:
+  num_teacher_trajectories: 1
+  max_episode_steps: 5
+
+inference:
+  step_limit: 5

@@ -129,7 +129,7 @@ def main():
                 metadata=episode.metadata,
                 steps=perturbed_steps,
                 success=episode.success,
-                total_reward=episode.total_reward,
+                partial_score=episode.partial_score,
             )
             output_store.save_episode(perturbed_episode)
             total_perturbed += 1

@@ -1,15 +1,18 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=4:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-perturb
 #SBATCH --output=logs/perturb_%j.out
 #SBATCH --error=logs/perturb_%j.err
-#SBATCH --partition=cpu
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=04:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ── Generate perturbed trajectories ──
-# CPU-only job (no GPU needed for perturbation generation)
 
 set -euo pipefail
 

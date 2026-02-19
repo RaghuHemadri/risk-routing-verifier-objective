@@ -1,26 +1,23 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=24:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-collect
 #SBATCH --output=logs/collect_%j.out
 #SBATCH --error=logs/collect_%j.err
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=24:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ── Collect teacher trajectories ──
-# Adjust partition, mem, GPU type as needed for your cluster
 
 set -euo pipefail
 
-# Load modules (adjust for your cluster)
-# module load cuda/12.1
-# module load python/3.10
-
-# Activate environment
 source $HOME/.bashrc
-conda activate r2v  # or: source venv/bin/activate
+conda activate r2v
 
 cd $SLURM_SUBMIT_DIR
 

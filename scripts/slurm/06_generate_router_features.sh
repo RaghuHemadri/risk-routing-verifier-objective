@@ -1,13 +1,16 @@
 #!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=12:00:00
+#SBATCH --mem=128GB
+#SBATCH --gres=gpu:a100:2
 #SBATCH --job-name=r2v-router-feat
 #SBATCH --output=logs/router_features_%j.out
 #SBATCH --error=logs/router_features_%j.err
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --time=12:00:00
-#SBATCH --nodes=1
+#SBATCH --account=pr_140_tandon_advanced
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=rh3884@nyu.edu
 
 # ── Generate router training features ──
 

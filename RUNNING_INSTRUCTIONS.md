@@ -12,9 +12,10 @@ pipeline on a SLURM-managed cluster. You do **not** need a local GPU.
 3. [Quick Validation (MRP)](#3-quick-validation-mrp)
 4. [Full Pipeline](#4-full-pipeline)
 5. [Individual Stages](#5-individual-stages)
-6. [Monitoring Jobs](#6-monitoring-jobs)
-7. [Collecting Results](#7-collecting-results)
-8. [Troubleshooting](#8-troubleshooting)
+6. [Data Versioning](#6-data-versioning)
+7. [Monitoring Jobs](#7-monitoring-jobs)
+8. [Collecting Results](#8-collecting-results)
+9. [Troubleshooting](#9-troubleshooting)
 
 ---
 
@@ -215,7 +216,146 @@ sbatch scripts/slurm/09_ablations.sh webarena "1 2 3"
 
 ---
 
-## 6. Monitoring Jobs
+## 6. Data Versioning
+
+Every `collect_trajectories.py` run creates a **versioned directory** and
+registers itself in `data/registry.json`.  This makes it easy to collect data
+with multiple models and combine them for training without losing track of
+which episodes came from where.
+
+### Run ID format
+
+```
+{benchmark}_{provider}_{model}_{YYYYMMDDTHHMMSS}
+e.g.  webarena_openai_gpt-4o_20260218T210012
+      swebench_anthropic_claude-3-5-sonnet_20260219T083045
+```
+
+### Directory structure
+
+```
+data/
+  registry.json                                     ← central index
+  runs/
+    webarena_openai_gpt-4o_20260218T210012/
+      run_manifest.json                             ← config snapshot + stats
+      trajectories.jsonl                            ← episodes (run_id embedded)
+      collection_log.jsonl
+    swebench_anthropic_claude-3-5-sonnet_20260219T083045/
+      run_manifest.json
+      trajectories.jsonl
+      collection_log.jsonl
+```
+
+### Collect data for a specific model
+
+`--output` is now the **base directory** (defaults to `data/runs`).  The
+script automatically appends the run ID as a subdirectory.
+
+```bash
+# GPT-4o on WebArena (output → data/runs/webarena_openai_gpt-4o_<ts>/)
+python scripts/collect_trajectories.py \
+    --config configs/webarena/clean.yaml \
+    --num-episodes 500 --seeds 1 2 3
+
+# Claude on SWE-bench with a custom tag
+python scripts/collect_trajectories.py \
+    --config configs/swebench/clean.yaml \
+    --num-episodes 500 --seeds 1 2 3 \
+    --run-tags ablation noisy \
+    --notes "using 0.3 prompt injection prob"
+
+# Specify a custom base directory
+python scripts/collect_trajectories.py \
+    --config configs/webarena/clean.yaml \
+    --output data/experiments/exp_01 \
+    --num-episodes 100
+```
+
+The run ID is printed on start and finish:
+
+```
+============================================================
+  Run ID : webarena_openai_gpt-4o_20260218T210012
+  Output : data/runs/webarena_openai_gpt-4o_20260218T210012
+============================================================
+```
+
+### Inspect the registry
+
+```python
+from r2v.data import DataRegistry
+
+registry = DataRegistry()
+print(registry.summary())       # tabular overview of all runs
+
+# Filter by benchmark, model, or status
+runs = registry.query(benchmark="webarena", model="gpt-4o", status="done")
+for m in runs:
+    print(m.run_id, m.n_episodes, f"{m.success_rate:.2%}")
+
+# Latest completed run for a given model
+latest = registry.latest_run("webarena", "gpt-4o")
+print(latest.output_dir)
+```
+
+### Combine datasets from multiple models
+
+Use `DataRegistry.merge_runs()` to create a single `TrajectoryStore` from
+any subset of runs.  Duplicate trajectories (by action hash) are
+automatically removed.
+
+```python
+from r2v.data import DataRegistry
+
+registry = DataRegistry()
+
+# All completed WebArena runs across all models
+all_webarena = registry.query(benchmark="webarena", status="done")
+run_ids = [m.run_id for m in all_webarena]
+
+merged = registry.merge_runs(run_ids, output_path=Path("data/merged/webarena_all.jsonl"))
+episodes = list(merged.iter_episodes())
+print(f"Merged {len(episodes)} unique episodes from {len(run_ids)} runs")
+```
+
+Or iterate without writing to disk:
+
+```python
+for episode in registry.iter_episodes(run_ids, deduplicate=True):
+    # episode.metadata.run_id       → which run it came from
+    # episode.metadata.teacher_model → which model generated it
+    # episode.metadata.teacher_provider
+    ...
+```
+
+### Resume a partial run
+
+If collection was interrupted, re-run with `--run-id` to continue under the
+same ID and append to the existing JSONL:
+
+```bash
+python scripts/collect_trajectories.py \
+    --config configs/webarena/clean.yaml \
+    --output data/runs \
+    --run-id webarena_openai_gpt-4o_20260218T210012 \
+    --num-episodes 500 --seeds 1 2 3
+```
+
+### EpisodeMetadata versioning fields
+
+Each serialised episode now contains three extra fields in `metadata`:
+
+| Field | Example | Description |
+|---|---|---|
+| `run_id` | `webarena_openai_gpt-4o_20260218T210012` | Run that produced this episode |
+| `teacher_model` | `gpt-4o` | Model name from config |
+| `teacher_provider` | `openai` | API provider |
+
+---
+
+## 7. Monitoring Jobs
+
 
 ```bash
 # View your queued/running jobs
@@ -255,7 +395,7 @@ ls -la results/
 
 ---
 
-## 7. Collecting Results
+## 8. Collecting Results
 
 ### Structured results for LLM paper writing
 
@@ -298,7 +438,7 @@ rm.generate_llm_summary()
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### Common issues
 
