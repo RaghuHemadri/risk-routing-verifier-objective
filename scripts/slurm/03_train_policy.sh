@@ -22,19 +22,20 @@ conda activate r2v
 
 cd $SLURM_SUBMIT_DIR
 
-BENCHMARK=${1:-webarena}
+BENCHMARK=${1:-swebench}
 CONDITION=${2:-noisy}     # clean or noisy
 STAGE=${3:-all}           # bc, preference, or all
 
 echo "=== Training policy: ${BENCHMARK} (${CONDITION}) stage=${STAGE} ==="
-echo "GPUs: ${SLURM_GPUS_ON_NODE:-$(nvidia-smi -L | wc -l)}"
-nvidia-smi
+NUM_GPUS=${SLURM_GPUS_ON_NODE:-$(python3 -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 1)}
+echo "GPUs: ${NUM_GPUS}"
+nvidia-smi 2>/dev/null || echo "(nvidia-smi not available in container)"
 
 mkdir -p outputs/policy/${BENCHMARK}_${CONDITION}
 
 # Use accelerate for multi-GPU
 accelerate launch \
-    --num_processes $(nvidia-smi -L | wc -l) \
+    --num_processes ${NUM_GPUS} \
     --mixed_precision bf16 \
     scripts/train_policy.py \
     --config configs/${BENCHMARK}/${CONDITION}.yaml \
