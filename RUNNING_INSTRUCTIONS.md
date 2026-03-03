@@ -139,8 +139,8 @@ This submits ~10 SLURM jobs per benchmark with proper dependencies:
 
 | Stage | Job | GPU | Time Est. | Depends On |
 |-------|-----|-----|-----------|------------|
-| 1 | Collect trajectories | 1× A100 | 12-24h | — |
-| 2 | Generate perturbations | CPU | 1-4h | Stage 1 |
+| 1 | Collect trajectories | 1× A100 | 2-4h | — |
+| 2 | Generate perturbations | CPU | ~2 min | Stage 1 |
 | 3a | Train policy (BC) | 2× A100 | 24-48h | Stage 2 |
 | 3b | Train verifier | 1× A100 | 6-12h | Stage 1 |
 | 4 | Generate candidates | 1× A100 | 12-24h | 3a, 3b |
@@ -161,13 +161,28 @@ You can run stages individually for debugging or re-running:
 
 ### Collect teacher trajectories
 ```bash
-sbatch scripts/slurm/01_collect.sh webarena 500 "1 2 3"
+sbatch scripts/slurm/01_collect.sh swebench 300 "1 2 3"
 #                                  ^benchmark ^episodes ^seeds
+
+# Actual completed run:
+# Run ID: swebench_google_gemini-3-flash-preview_20260303T004504
+# 900 episodes, 120 successful (13.3%), $0.60, ~2.4h wall time
 ```
 
 ### Generate perturbations
+
+Perturbations are applied **locally** (CPU-only, ~2 min) to clean trajectories.
+No GPU or LLM API calls needed.
+
 ```bash
-sbatch scripts/slurm/02_perturb.sh webarena "1 2 3"
+python -m scripts.generate_perturbations \
+    --config configs/swebench/noisy.yaml \
+    --input data/runs/<run_id>/trajectories.jsonl \
+    --output data/trajectories/swebench_noisy/trajectories.jsonl \
+    --seeds 1 2 3 \
+    --include-clean
+
+# Actual completed run: 2700 perturbed + 900 clean = 3600 episodes in 79s
 ```
 
 ### Train policy
@@ -227,7 +242,8 @@ which episodes came from where.
 
 ```
 {benchmark}_{provider}_{model}_{YYYYMMDDTHHMMSS}
-e.g.  webarena_openai_gpt-4o_20260218T210012
+e.g.  swebench_google_gemini-3-flash-preview_20260303T004504   ← actual run
+      webarena_openai_gpt-4o_20260218T210012
       swebench_anthropic_claude-3-5-sonnet_20260219T083045
 ```
 
@@ -237,14 +253,15 @@ e.g.  webarena_openai_gpt-4o_20260218T210012
 data/
   registry.json                                     ← central index
   runs/
-    webarena_openai_gpt-4o_20260218T210012/
+    swebench_google_gemini-3-flash-preview_20260303T004504/  ← actual run
       run_manifest.json                             ← config snapshot + stats
-      trajectories.jsonl                            ← episodes (run_id embedded)
+      trajectories.jsonl                            ← 900 clean episodes
       collection_log.jsonl
-    swebench_anthropic_claude-3-5-sonnet_20260219T083045/
-      run_manifest.json
-      trajectories.jsonl
-      collection_log.jsonl
+      worker_*_trajectories.jsonl                   ← per-worker shards
+  trajectories/
+    swebench_noisy/
+      trajectories.jsonl                            ← 3600 episodes (clean + perturbed)
+      perturbation_log.jsonl
 ```
 
 ### Collect data for a specific model

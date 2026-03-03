@@ -19,8 +19,9 @@ def load_config(
 ) -> DictConfig:
     """Load a YAML config with optional CLI overrides.
 
-    Supports config inheritance: if the YAML has a `_base_` key,
-    it will load and merge the base config first.
+    Supports config inheritance via:
+    - ``_base_: ../base.yaml``  (simple string key)
+    - ``defaults: [../base]``   (Hydra-style list)
 
     Args:
         config_path: Path to YAML config
@@ -32,12 +33,30 @@ def load_config(
     config_path = Path(config_path)
     cfg = OmegaConf.load(str(config_path))
 
-    # Handle inheritance
+    # Handle inheritance — try both _base_ and Hydra-style defaults
+    base_path = None
     if "_base_" in cfg:
         base_path = config_path.parent / cfg._base_
-        base_cfg = OmegaConf.load(str(base_path))
-        # Remove _base_ key before merge
-        cfg = OmegaConf.merge(base_cfg, {k: v for k, v in cfg.items() if k != "_base_"})
+        cfg = OmegaConf.merge(
+            OmegaConf.load(str(base_path)),
+            {k: v for k, v in cfg.items() if k != "_base_"},
+        )
+    elif "defaults" in cfg:
+        # Hydra-style: defaults: [../base]
+        defaults_list = OmegaConf.to_container(cfg.defaults, resolve=True)
+        if isinstance(defaults_list, list):
+            for entry in defaults_list:
+                # entry can be a string like "../base" or a dict like {pkg: ...}
+                if isinstance(entry, str):
+                    candidate = config_path.parent / (entry + ".yaml")
+                    if not candidate.exists():
+                        candidate = config_path.parent / entry
+                    if candidate.exists():
+                        base_cfg = OmegaConf.load(str(candidate))
+                        cfg = OmegaConf.merge(
+                            base_cfg,
+                            {k: v for k, v in cfg.items() if k != "defaults"},
+                        )
 
     # Apply CLI overrides
     if overrides:

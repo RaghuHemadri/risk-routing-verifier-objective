@@ -45,6 +45,45 @@ Every experiment produces structured outputs in multiple formats:
 
 ## Experiment Log
 
+### Completed: Data Collection & Perturbation Generation (Steps 1-2)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-03-03 |
+| **Run ID** | `swebench_google_gemini-3-flash-preview_20260303T004504` |
+| **Teacher Model** | Google Gemini 3 Flash (`gemini-3-flash-preview`) |
+| **Benchmark** | SWE-bench (test split, 300 tasks) |
+| **Config** | `configs/swebench/clean.yaml` (collection), `configs/swebench/noisy.yaml` (perturbations) |
+| **Host** | cyberdragon |
+| **Git Commit** | `654f54c` |
+| **Python** | 3.12.3 |
+
+**Step 1 — Clean Trajectory Collection:**
+
+| Metric | Value |
+|--------|-------|
+| Episodes | 900 (300 tasks × 3 seeds) |
+| Successes | 120 (13.3%) |
+| Cost | $0.60 |
+| Wall Time | ~2.4 h (4 workers) |
+| Avg Steps/Episode | 1.1 |
+| Output | `data/runs/swebench_google_gemini-3-flash-preview_20260303T004504/trajectories.jsonl` (9.5 MB) |
+
+**Step 2 — Perturbation Generation:**
+
+| Metric | Value |
+|--------|-------|
+| Perturbed Episodes | 2700 (900 × 3 seeds) |
+| Clean Copies | 900 |
+| Total Output | 3600 episodes |
+| Perturbation Types | Tool flakiness, partial observability, prompt injection, distractors (composite) |
+| Wall Time | 79 seconds (CPU-only) |
+| Output | `data/trajectories/swebench_noisy/trajectories.jsonl` (36 MB) |
+
+**Smoke Test (prior):** Run ID `swebench_google_gemini-3-flash-preview_20260303T003125` — 1 task, verified pipeline works.
+
+---
+
 ### Experiment 1: Minimal Reproducible Prototype (MRP)
 
 | Field | Value |
@@ -123,12 +162,20 @@ Every experiment produces structured outputs in multiple formats:
 
 | Field | Value |
 |-------|-------|
-| **Date** | YYYY-MM-DD |
+| **Date** | 2026-03-03 (data collected) |
 | **Config** | `configs/swebench/clean.yaml` |
-| **Seeds** | 1, 2, 3, 4, 5 |
-| **Status** | ☐ Not started |
+| **Seeds** | 1, 2, 3 |
+| **Status** | ☐ Data collected, training not started |
 
-**Actual results:**
+**Data collection results:**
+| Metric | Value |
+|--------|-------|
+| Episodes | 900 |
+| Success Rate | 13.3% (120/900) |
+| Teacher Model | Gemini 3 Flash |
+| Cost | $0.60 |
+
+**Evaluation results (pending training):**
 | Method | SR | 95% CI | Cost |
 |--------|----:|--------|-----:|
 | R2V | — | — | — |
@@ -140,12 +187,19 @@ Every experiment produces structured outputs in multiple formats:
 
 | Field | Value |
 |-------|-------|
-| **Date** | YYYY-MM-DD |
+| **Date** | 2026-03-03 (perturbations generated) |
 | **Config** | `configs/swebench/noisy.yaml` |
-| **Seeds** | 1, 2, 3, 4, 5 |
-| **Status** | ☐ Not started |
+| **Seeds** | 1, 2, 3 |
+| **Status** | ☐ Perturbations generated, training not started |
 
-**Actual results:**
+**Perturbation data:**
+| Metric | Value |
+|--------|-------|
+| Total Episodes | 3600 (900 clean + 2700 perturbed) |
+| Perturbation Types | 4 (composite: tool flakiness, partial obs, prompt injection, distractors) |
+| Generation Time | 79 seconds |
+
+**Evaluation results (pending training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
 |--------|----:|----------:|----------:|-----:|
 | R2V | — | — | — | — |
@@ -209,6 +263,8 @@ Every experiment produces structured outputs in multiple formats:
 
 | Experiment | GPUs | GPU-Hours | Wall Time | Status |
 |-----------|------|-----------|-----------|--------|
+| Data collection (SWE-bench) | CPU / API | 0 | 2.4h | ☑ Done |
+| Perturbation generation | CPU | 0 | 79s | ☑ Done |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |

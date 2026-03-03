@@ -24,9 +24,10 @@ cd $SLURM_SUBMIT_DIR
 BENCHMARK=${1:-webarena}   # webarena or swebench
 NUM_EPISODES=${2:-500}
 SEEDS=${3:-"1 2 3"}
+NUM_WORKERS=${4:-4}        # parallel workers (4-8 for swebench, 2-4 for webarena)
 
 echo "=== Collecting ${BENCHMARK} trajectories ==="
-echo "Episodes: ${NUM_EPISODES}, Seeds: ${SEEDS}"
+echo "Episodes: ${NUM_EPISODES}, Seeds: ${SEEDS}, Workers: ${NUM_WORKERS}"
 echo "Job ID: ${SLURM_JOB_ID}"
 
 mkdir -p logs data/trajectories/${BENCHMARK}_teacher
@@ -35,6 +36,7 @@ python scripts/collect_trajectories.py \
     --config configs/${BENCHMARK}/clean.yaml \
     --output data/trajectories/${BENCHMARK}_teacher \
     --num-episodes ${NUM_EPISODES} \
-    --seeds ${SEEDS}
+    --seeds ${SEEDS} \
+    --num-workers ${NUM_WORKERS}
 
 echo "=== Collection complete ==="

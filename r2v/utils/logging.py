@@ -16,7 +16,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import wandb
+# wandb is imported lazily inside init_wandb / log_metrics
+# so that the rest of the project does not crash if wandb is not installed.
+wandb = None  # sentinel; replaced by the real module on first use
+
+
+def _ensure_wandb():
+    """Lazily import wandb on first use."""
+    global wandb
+    if wandb is None:
+        try:
+            import wandb as _wandb
+            wandb = _wandb
+        except ImportError:
+            raise ImportError(
+                "wandb is required for experiment tracking. "
+                "Install it with: pip install wandb"
+            )
 
 
 def setup_logging(
@@ -36,6 +52,10 @@ def setup_logging(
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper()))
+
+    # Prevent duplicate handlers when setup_logging is called multiple times
+    if logger.handlers:
+        logger.handlers.clear()
 
     formatter = logging.Formatter(
         "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s",
@@ -63,7 +83,7 @@ def init_wandb(
     tags: list[str] | None = None,
     group: str | None = None,
     mode: str = "online",
-) -> wandb.run:
+):
     """Initialize wandb run with standard settings.
 
     Args:
@@ -77,6 +97,7 @@ def init_wandb(
     Returns:
         wandb run object
     """
+    _ensure_wandb()
     run = wandb.init(
         project=project,
         name=name,
@@ -112,7 +133,7 @@ def log_metrics(
         key = f"{prefix}/{k}" if prefix else k
         prefixed[key] = v
 
-    if to_wandb and wandb.run is not None:
+    if to_wandb and wandb is not None and wandb.run is not None:
         wandb.log(prefixed, step=step)
 
     if to_console and logger is not None:
