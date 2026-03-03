@@ -61,6 +61,6 @@ webarena/
 config_files/
 
 
-data/
+/data/
 .auth
 config_files
