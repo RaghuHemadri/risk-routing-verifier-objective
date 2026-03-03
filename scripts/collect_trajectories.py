@@ -19,10 +19,15 @@ This script:
 from __future__ import annotations
 
 import argparse
+import json
+import multiprocessing as mp
+import os
 import random
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -155,9 +160,10 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
         if match:
             return f"stop [{match.group(1)}]"
 
-        # Check for patch content - return the full response for patch extraction
+        # Check for patch content — if we find a patch, wrap it in a stop
+        # action so the episode terminates (SWE-bench is single-turn).
         if "<patch>" in response_text or "```diff" in response_text or "---" in response_text:
-            return response_text
+            return f"stop [{response_text}]"
 
         return response_text
 
@@ -244,12 +250,19 @@ def collect_with_teacher(
 
         # Call the teacher LLM
         try:
+            step_start = time.time()
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
             response: LLMResponse = teacher_client.chat(messages)
             total_cost += response.cost
+            step_dur = time.time() - step_start
+            logger.info(
+                f"    step {t}: tokens_in={response.input_tokens} "
+                f"tokens_out={response.output_tokens} "
+                f"cost=${response.cost:.5f} time={step_dur:.1f}s"
+            )
         except Exception as e:
             logger.error(f"Teacher LLM call failed at step {t}: {e}")
             break
@@ -384,22 +397,205 @@ def parse_args():
             "Useful for resuming a partially-completed run."
         ),
     )
+    parser.add_argument(
+        "--num-workers", type=int, default=1,
+        help=(
+            "Number of parallel worker processes for trajectory collection. "
+            "Each worker gets its own environment instance and LLM client. "
+            "Recommended: 4-8 for SWE-bench (API-bound), 2-4 for WebArena "
+            "(browser memory). Default: 1 (sequential)."
+        ),
+    )
     return parser.parse_args()
+
+
+# ── Progress helpers ──────────────────────────────────────────────
+
+
+def _write_worker_progress(
+    progress_dir: Path,
+    worker_id: int,
+    completed: int,
+    total: int,
+    successes: int,
+    cost: float,
+    last_task: str,
+) -> None:
+    """Atomically write a worker's progress to a JSON file."""
+    progress_file = progress_dir / f"worker_{worker_id}.json"
+    data = {
+        "worker_id": worker_id,
+        "completed": completed,
+        "total": total,
+        "successes": successes,
+        "cost": round(cost, 6),
+        "last_task": last_task,
+        "updated": time.strftime("%H:%M:%S"),
+    }
+    tmp = progress_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.rename(progress_file)
+
+
+def _read_all_progress(progress_dir: Path) -> list[dict]:
+    """Read progress from all worker JSON files."""
+    results = []
+    for p in sorted(progress_dir.glob("worker_*.json")):
+        try:
+            results.append(json.loads(p.read_text()))
+        except (json.JSONDecodeError, FileNotFoundError):
+            pass
+    return results
+
+
+def _progress_monitor(
+    progress_dir: Path,
+    total_episodes: int,
+    logger,
+    interval: float = 30.0,
+    stop_event: threading.Event | None = None,
+) -> None:
+    """Background thread that logs aggregate progress every *interval* seconds."""
+    while not (stop_event and stop_event.is_set()):
+        time.sleep(interval)
+        workers = _read_all_progress(progress_dir)
+        if not workers:
+            continue
+        done = sum(w["completed"] for w in workers)
+        successes = sum(w["successes"] for w in workers)
+        cost = sum(w["cost"] for w in workers)
+        pct = done / total_episodes * 100 if total_episodes else 0
+        sr = successes / done if done else 0
+        logger.info(
+            f"[PROGRESS] {done}/{total_episodes} episodes ({pct:.1f}%) | "
+            f"success_rate={sr:.3f} | cost=${cost:.4f}"
+        )
+        for w in workers:
+            logger.info(
+                f"  worker {w['worker_id']}: "
+                f"{w['completed']}/{w['total']} done, "
+                f"last_task={w['last_task']}, updated={w['updated']}"
+            )
+
+
+# ── Worker function for multiprocessing ──────────────────────────
+
+
+def _worker_collect(
+    worker_id: int,
+    task_seed_pairs: list[tuple],
+    config_path: str,
+    overrides: list[str],
+    run_id: str,
+    output_dir: str,
+) -> list[dict]:
+    """Worker process: creates its own env + LLM client and collects episodes.
+
+    Each worker is fully independent — its own environment instance, LLM
+    client, and logger.  Episodes are saved incrementally to a per-worker
+    JSONL file and progress is written to a JSON file for monitoring.
+    Results are also returned for final aggregation by the main process.
+    """
+    # Re-import inside worker (new process)
+    from r2v.data.benchmarks.base import BenchmarkTask
+    from r2v.data.trajectory import TrajectoryStore
+    from r2v.models.llm_client import create_llm_client_from_cfg
+    from r2v.utils.config import load_config
+    from r2v.utils.logging import setup_logging
+
+    output_path = Path(output_dir)
+    log_dir = output_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    progress_dir = output_path / "progress"
+    progress_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = load_config(config_path, overrides)
+    logger = setup_logging(
+        level="INFO",
+        name=f"r2v.w{worker_id}",
+        log_file=str(log_dir / f"worker_{worker_id}.log"),
+    )
+    benchmark = cfg.get("benchmark", "webarena")
+
+    # Each worker gets its own LLM client and environment
+    teacher_client = create_llm_client_from_cfg(cfg)
+    teacher_model = teacher_client.config.model_name
+    teacher_provider = teacher_client.config.provider
+    env = create_benchmark_env(cfg)
+
+    # Per-worker trajectory store for incremental saving
+    worker_store = TrajectoryStore(
+        output_path / f"worker_{worker_id}_trajectories.jsonl"
+    )
+
+    # Pre-load tasks so we can look them up by id
+    all_tasks = env.load_tasks(cfg)
+    task_map = {t.task_id: t for t in all_tasks}
+
+    total = len(task_seed_pairs)
+    completed = 0
+    successes = 0
+    total_cost = 0.0
+
+    logger.info(f"Worker {worker_id} starting: {total} episodes to collect")
+    _write_worker_progress(progress_dir, worker_id, 0, total, 0, 0.0, "(starting)")
+
+    results: list[dict] = []
+    for task_id, seed in task_seed_pairs:
+        task = task_map.get(task_id)
+        if task is None:
+            logger.warning(f"Task {task_id} not found — skipping")
+            completed += 1
+            continue
+        logger.info(f"[{completed + 1}/{total}] Collecting task={task_id}, seed={seed}")
+        episode = collect_with_teacher(
+            cfg, env, teacher_client, task, seed, logger,
+            run_id=run_id,
+            teacher_model=teacher_model,
+            teacher_provider=teacher_provider,
+        )
+        if episode is not None:
+            # Save incrementally to per-worker file
+            worker_store.save_episode(episode)
+            results.append({
+                "episode": episode,
+                "task_id": task_id,
+                "seed": seed,
+            })
+            total_cost += episode.total_cost
+            if episode.success:
+                successes += 1
+
+        completed += 1
+        _write_worker_progress(
+            progress_dir, worker_id, completed, total,
+            successes, total_cost, str(task_id),
+        )
+
+    env.close()
+    logger.info(
+        f"Worker {worker_id} finished: {len(results)} episodes, "
+        f"{successes} successes, cost=${total_cost:.4f}"
+    )
+    return results
 
 
 def main():
     args = parse_args()
     cfg = load_config(args.config, args.overrides)
-    logger = setup_logging(level="INFO")
 
     benchmark = cfg.get("benchmark", "webarena")
+    num_workers = max(1, args.num_workers)
 
-    # ── Initialize teacher LLM client ────────────────────────────
-    logger.info("Initializing teacher LLM client...")
+    # ── Initialize teacher LLM client (main process, for metadata) ───
+    # (logger needs output_dir, but we need model info for run_id, so
+    #  create a temporary logger first)
+    tmp_logger = setup_logging(level="INFO")
+    tmp_logger.info("Initializing teacher LLM client...")
     teacher_client = create_llm_client_from_cfg(cfg)
     teacher_model: str = teacher_client.config.model_name
     teacher_provider: str = teacher_client.config.provider
-    logger.info(f"Teacher: provider={teacher_provider}, model={teacher_model}")
+    tmp_logger.info(f"Teacher: provider={teacher_provider}, model={teacher_model}")
 
     # ── Determine run ID and output directory ────────────────────
     if args.run_id:
@@ -410,9 +606,19 @@ def main():
     output_dir = Path(args.output) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Set up file + console logging for main process ───────────
+    log_dir = output_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = setup_logging(
+        level="INFO",
+        log_file=str(log_dir / "main.log"),
+    )
+
     logger.info(f"{'='*60}")
-    logger.info(f"  Run ID : {run_id}")
-    logger.info(f"  Output : {output_dir}")
+    logger.info(f"  Run ID  : {run_id}")
+    logger.info(f"  Output  : {output_dir}")
+    logger.info(f"  Log dir : {log_dir}")
+    logger.info(f"  Workers : {num_workers}")
     logger.info(f"{'='*60}")
 
     # ── Register the run ─────────────────────────────────────────
@@ -434,7 +640,7 @@ def main():
     jsonl_log = JSONLLogger(output_dir / "collection_log.jsonl")
     jsonl_log.log_config(cfg_dict)
 
-    # ── Initialize benchmark environment ─────────────────────────
+    # ── Initialize benchmark environment (main process) ──────────
     logger.info(f"Setting up {benchmark} environment...")
     env = create_benchmark_env(cfg)
 
@@ -452,55 +658,159 @@ def main():
 
     logger.info(f"Loaded {len(tasks)} tasks, collecting with seeds={args.seeds}")
 
+    # Build full list of (task_id, seed) pairs
+    task_seed_pairs = [
+        (task.task_id, seed)
+        for seed in args.seeds
+        for task in tasks
+    ]
+    logger.info(f"Total episodes to collect: {len(task_seed_pairs)}")
+
     total_success = 0
     total_episodes = 0
     total_cost = 0.0
     wall_start = time.time()
     collection_status = "running"
 
-    try:
-        for seed in args.seeds:
-            logger.info(f"=== Collecting with seed {seed} ===")
+    # ── Sequential collection (num_workers == 1) ─────────────────
+    if num_workers == 1:
+        try:
+            for seed in args.seeds:
+                logger.info(f"=== Collecting with seed {seed} ===")
 
-            for i, task in enumerate(tasks):
-                logger.info(f"  [{i + 1}/{len(tasks)}] Task: {task.task_id}")
+                for i, task in enumerate(tasks):
+                    logger.info(f"  [{i + 1}/{len(tasks)}] Task: {task.task_id}")
 
-                episode = collect_with_teacher(
-                    cfg, env, teacher_client, task, seed, logger,
-                    run_id=run_id,
-                    teacher_model=teacher_model,
-                    teacher_provider=teacher_provider,
-                )
-
-                if episode is not None:
-                    store.save_episode(episode)
-                    total_episodes += 1
-                    total_cost += episode.total_cost
-                    if episode.success:
-                        total_success += 1
-
-                    jsonl_log.log_metric(
-                        "episode_result",
-                        float(episode.success),
-                        step=total_episodes,
-                        task_id=task.task_id,
-                        seed=seed,
-                        num_steps=episode.num_steps,
-                        score=episode.partial_score,
-                        cost=episode.total_cost,
-                        wall_time=episode.wall_time_seconds,
+                    episode = collect_with_teacher(
+                        cfg, env, teacher_client, task, seed, logger,
+                        run_id=run_id,
+                        teacher_model=teacher_model,
+                        teacher_provider=teacher_provider,
                     )
-        collection_status = "done"
-    except KeyboardInterrupt:
-        logger.info("Collection interrupted by user.")
-        collection_status = "partial"
-    except Exception as exc:
-        logger.error(f"Collection failed with error: {exc}")
-        collection_status = "failed"
-        registry.fail_run(run_id, reason=str(exc))
-        raise
-    finally:
-        env.close()
+
+                    if episode is not None:
+                        store.save_episode(episode)
+                        total_episodes += 1
+                        total_cost += episode.total_cost
+                        if episode.success:
+                            total_success += 1
+
+                        jsonl_log.log_metric(
+                            "episode_result",
+                            float(episode.success),
+                            step=total_episodes,
+                            task_id=task.task_id,
+                            seed=seed,
+                            num_steps=episode.num_steps,
+                            score=episode.partial_score,
+                            cost=episode.total_cost,
+                            wall_time=episode.wall_time_seconds,
+                        )
+            collection_status = "done"
+        except KeyboardInterrupt:
+            logger.info("Collection interrupted by user.")
+            collection_status = "partial"
+        except Exception as exc:
+            logger.error(f"Collection failed with error: {exc}")
+            collection_status = "failed"
+            registry.fail_run(run_id, reason=str(exc))
+            raise
+        finally:
+            env.close()
+
+    # ── Parallel collection (num_workers > 1) ────────────────────
+    else:
+        env.close()  # main-process env not needed; workers create their own
+
+        # Create progress directory
+        progress_dir = output_dir / "progress"
+        progress_dir.mkdir(parents=True, exist_ok=True)
+
+        # Partition task_seed_pairs across workers (round-robin)
+        worker_chunks: list[list[tuple]] = [[] for _ in range(num_workers)]
+        for idx, pair in enumerate(task_seed_pairs):
+            worker_chunks[idx % num_workers].append(pair)
+
+        logger.info(
+            f"Distributing {len(task_seed_pairs)} episodes across "
+            f"{num_workers} workers "
+            f"(~{len(task_seed_pairs) // num_workers} each)"
+        )
+        logger.info(f"Worker logs: {log_dir}/worker_*.log")
+        logger.info(f"Worker progress: {progress_dir}/worker_*.json")
+
+        # Start background progress monitor thread
+        stop_monitor = threading.Event()
+        monitor = threading.Thread(
+            target=_progress_monitor,
+            args=(progress_dir, len(task_seed_pairs), logger),
+            kwargs={"interval": 30.0, "stop_event": stop_monitor},
+            daemon=True,
+        )
+        monitor.start()
+
+        try:
+            # Use 'spawn' context to avoid fork-safety issues with CUDA / Playwright
+            ctx = mp.get_context("spawn")
+            with ProcessPoolExecutor(
+                max_workers=num_workers, mp_context=ctx
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        _worker_collect,
+                        wid,
+                        chunk,
+                        args.config,
+                        args.overrides,
+                        run_id,
+                        str(output_dir),
+                    ): wid
+                    for wid, chunk in enumerate(worker_chunks)
+                    if chunk  # skip empty chunks
+                }
+
+                for future in as_completed(futures):
+                    wid = futures[future]
+                    try:
+                        results = future.result()
+                    except Exception as exc:
+                        logger.error(f"Worker {wid} failed: {exc}")
+                        continue
+
+                    for res in results:
+                        episode = res["episode"]
+                        store.save_episode(episode)
+                        total_episodes += 1
+                        total_cost += episode.total_cost
+                        if episode.success:
+                            total_success += 1
+
+                        jsonl_log.log_metric(
+                            "episode_result",
+                            float(episode.success),
+                            step=total_episodes,
+                            task_id=res["task_id"],
+                            seed=res["seed"],
+                            num_steps=episode.num_steps,
+                            score=episode.partial_score,
+                            cost=episode.total_cost,
+                            wall_time=episode.wall_time_seconds,
+                        )
+                    logger.info(
+                        f"Worker {wid} finished: {len(results)} episodes collected"
+                    )
+            collection_status = "done"
+        except KeyboardInterrupt:
+            logger.info("Collection interrupted by user.")
+            collection_status = "partial"
+        except Exception as exc:
+            logger.error(f"Parallel collection failed: {exc}")
+            collection_status = "failed"
+            registry.fail_run(run_id, reason=str(exc))
+            raise
+        finally:
+            stop_monitor.set()
+            monitor.join(timeout=5)
 
     wall_time = time.time() - wall_start
     sr = total_success / total_episodes if total_episodes > 0 else 0.0
@@ -509,6 +819,7 @@ def main():
     logger.info(f"  Episodes: {total_episodes}")
     logger.info(f"  Success : {sr:.3f} ({total_success}/{total_episodes})")
     logger.info(f"  Cost    : ${total_cost:.4f}")
+    logger.info(f"  Workers : {num_workers}")
     logger.info(f"  Output  : {output_dir}")
 
     jsonl_log.log("summary", {
@@ -521,6 +832,7 @@ def main():
         "benchmark": benchmark,
         "teacher_provider": teacher_provider,
         "teacher_model": teacher_model,
+        "num_workers": num_workers,
     })
 
     # ── Finalise run in registry ──────────────────────────────────

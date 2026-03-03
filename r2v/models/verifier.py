@@ -290,15 +290,21 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             nn.Sigmoid(),
         )
 
-        # Step-level head (optional multi-task)
-        self.step_head = nn.Sequential(
-            *[l.__class__(**{k: v for k, v in l.__dict__.items() if not k.startswith('_')})
-              if hasattr(l, 'in_features') else l.__class__(l.p) if isinstance(l, nn.Dropout)
-              else l.__class__()
-              for l in layers],
-            nn.Linear(in_dim, 1),
-            nn.Sigmoid(),
-        ) if config.get("multitask", {}).get("step_weight", 0) > 0 else None
+        # Step-level head (optional multi-task) — independent copy of same architecture
+        if config.get("multitask", {}).get("step_weight", 0) > 0:
+            step_layers = []
+            s_in = backbone_dim
+            for _ in range(num_layers - 1):
+                step_layers.extend([
+                    nn.Linear(s_in, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                ])
+                s_in = hidden_dim
+            step_layers.extend([nn.Linear(s_in, 1), nn.Sigmoid()])
+            self.step_head = nn.Sequential(*step_layers)
+        else:
+            self.step_head = None
 
     def _encode(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Get pooled hidden state from backbone."""

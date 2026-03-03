@@ -3,72 +3,66 @@
 Apply perturbations to collected trajectories.
 
 Usage:
-    python scripts/generate_perturbations.py \
-        --config configs/webarena/noisy.yaml \
-        --input data/trajectories/webarena_teacher/trajectories.jsonl \
-        --output data/trajectories/webarena_noisy/trajectories.jsonl \
+    python -m scripts.generate_perturbations \
+        --config configs/swebench/noisy.yaml \
+        --input data/runs/swebench_google_gemini-3-flash-preview_20260303T004504/trajectories.jsonl \
+        --output data/trajectories/swebench_noisy/trajectories.jsonl \
         --seeds 1 2 3
 
 This script:
-1. Loads clean trajectories
-2. Applies configured perturbation pipeline
-3. Saves perturbed trajectories (preserving originals)
+1. Loads clean trajectories from a JSONL file
+2. Builds a perturbation pipeline from the noisy config
+3. Applies each perturbation seed → N_clean × N_seeds perturbed episodes
+4. Appends the *original* clean episodes + perturbed episodes to the output
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from r2v.data.perturbations import (
-    DistractorInjection,
-    PartialObservability,
+    DistractorPerturbation,
+    PartialObservabilityPerturbation,
     PerturbationPipeline,
-    PromptInjection,
-    ToolFlakiness,
+    PerturbationRegistry,
+    PromptInjectionPerturbation,
+    ToolFlakinessPerturbation,
 )
 from r2v.data.trajectory import PerturbationType, TrajectoryStore
+from omegaconf import OmegaConf
+
 from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
 
 def build_pipeline(cfg) -> PerturbationPipeline:
-    """Build perturbation pipeline from config."""
-    perturbations = []
+    """Build perturbation pipeline from config using PerturbationRegistry."""
     pcfg = cfg.get("perturbations", {})
-
-    if pcfg.get("tool_flakiness", {}).get("enabled", False):
-        perturbations.append(ToolFlakiness(
-            prob=pcfg.tool_flakiness.get("prob", 0.15),
-        ))
-
-    if pcfg.get("partial_observability", {}).get("enabled", False):
-        perturbations.append(PartialObservability(
-            prob=pcfg.partial_observability.get("prob", 0.20),
-        ))
-
-    if pcfg.get("prompt_injection", {}).get("enabled", False):
-        perturbations.append(PromptInjection(
-            prob=pcfg.prompt_injection.get("prob", 0.10),
-        ))
-
-    if pcfg.get("distractors", {}).get("enabled", False):
-        perturbations.append(DistractorInjection(
-            prob=pcfg.distractors.get("prob", 0.25),
-        ))
-
-    return PerturbationPipeline(perturbations)
+    # OmegaConf DictConfig is not isinstance(dict), so convert to plain dict
+    # before passing to PerturbationRegistry.create_pipeline which checks
+    # isinstance(sub_config, dict).
+    if hasattr(pcfg, "items") and not isinstance(pcfg, dict):
+        pcfg = OmegaConf.to_container(pcfg, resolve=True)
+    return PerturbationRegistry.create_pipeline(pcfg)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate perturbed trajectories")
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--input", type=str, required=True, help="Input JSONL file")
-    parser.add_argument("--output", type=str, required=True, help="Output JSONL file")
-    parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
+    parser.add_argument("--config", type=str, required=True,
+                        help="Noisy config YAML (e.g. configs/swebench/noisy.yaml)")
+    parser.add_argument("--input", type=str, required=True,
+                        help="Input JSONL file with clean trajectories")
+    parser.add_argument("--output", type=str, required=True,
+                        help="Output JSONL file for perturbed trajectories")
+    parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3],
+                        help="Perturbation seeds (default: 1 2 3)")
+    parser.add_argument("--include-clean", action="store_true", default=False,
+                        help="Also copy clean episodes to the output file")
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -78,67 +72,76 @@ def main():
     cfg = load_config(args.config, args.overrides)
     logger = setup_logging(level="INFO")
 
-    # Load clean trajectories
+    # ── Load clean episodes ──────────────────────────────────────
     input_store = TrajectoryStore(args.input)
-    episodes = input_store.load_all()
-    logger.info(f"Loaded {len(episodes)} clean episodes")
+    episodes = input_store.load_episodes()
+    logger.info(f"Loaded {len(episodes)} clean episodes from {args.input}")
 
-    # Build pipeline
+    if not episodes:
+        logger.error("No episodes found — check --input path")
+        sys.exit(1)
+
+    # ── Build perturbation pipeline ──────────────────────────────
     pipeline = build_pipeline(cfg)
-    logger.info(f"Perturbation pipeline: {[type(p).__name__ for p in pipeline.perturbations]}")
+    pert_names = [type(p).__name__ for p in pipeline.perturbations]
+    logger.info(f"Perturbation pipeline ({len(pert_names)} operators): {pert_names}")
 
-    # Output store
+    if not pipeline.perturbations:
+        logger.warning("No perturbations enabled in config — nothing to do")
+        sys.exit(0)
+
+    # ── Prepare output store ─────────────────────────────────────
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_store = TrajectoryStore(output_path)
-    jsonl_log = JSONLLogger(output_path.parent / "perturbation_log.jsonl")
+    log_path = output_path.parent / "perturbation_log.jsonl"
+    jsonl_log = JSONLLogger(log_path)
 
+    # ── Optionally copy clean episodes ───────────────────────────
+    clean_copied = 0
+    if args.include_clean:
+        logger.info("Copying clean episodes to output...")
+        output_store.save_episodes(episodes)
+        clean_copied = len(episodes)
+        logger.info(f"  ✓ {clean_copied} clean episodes written")
+
+    # ── Apply perturbations ──────────────────────────────────────
     total_perturbed = 0
+    t0 = time.time()
+
     for seed in args.seeds:
-        logger.info(f"=== Applying perturbations with seed {seed} ===")
+        logger.info(f"=== Perturbation seed {seed} ===")
+        seed_count = 0
 
-        for episode in episodes:
-            # Apply perturbations to each step's observation
-            perturbed_steps = []
-            for step in episode.steps:
-                obs_text = step.observation.text
-                perturbed_text, applied = pipeline.apply(obs_text, seed=seed)
-
-                new_obs = step.observation
-                if applied:
-                    from r2v.data.trajectory import Observation
-                    import time
-                    new_obs = Observation(
-                        text=perturbed_text,
-                        timestamp=time.time(),
-                        perturbation_type=applied[0] if applied else None,
-                    )
-
-                from r2v.data.trajectory import Step
-                new_step = Step(
-                    observation=new_obs,
-                    action=step.action,
-                    reward=step.reward,
-                    label=step.label,
-                )
-                perturbed_steps.append(new_step)
-
-            from r2v.data.trajectory import Episode
-            perturbed_episode = Episode(
-                episode_id=f"{episode.episode_id}_perturbed_seed{seed}",
-                metadata=episode.metadata,
-                steps=perturbed_steps,
-                success=episode.success,
-                partial_score=episode.partial_score,
-            )
-            output_store.save_episode(perturbed_episode)
+        for i, episode in enumerate(episodes):
+            perturbed = pipeline.perturb_episode(episode, seed=seed)
+            # Give the perturbed episode a unique ID
+            perturbed.episode_id = f"{episode.episode_id}_perturbed_seed{seed}"
+            output_store.save_episode(perturbed)
+            seed_count += 1
             total_perturbed += 1
 
-    logger.info(f"Generated {total_perturbed} perturbed episodes")
+            if (i + 1) % 100 == 0:
+                logger.info(f"  [{i+1}/{len(episodes)}] episodes perturbed")
+
+        logger.info(f"  Seed {seed}: {seed_count} perturbed episodes")
+
+    elapsed = time.time() - t0
+    logger.info(
+        f"Done — {total_perturbed} perturbed episodes "
+        f"({clean_copied} clean copied) in {elapsed:.1f}s"
+    )
+    logger.info(f"Output: {output_path}")
+
     jsonl_log.log("summary", {
+        "input_file": str(args.input),
+        "output_file": str(args.output),
         "input_episodes": len(episodes),
         "seeds": args.seeds,
+        "perturbations": pert_names,
         "total_perturbed": total_perturbed,
+        "clean_copied": clean_copied,
+        "elapsed_seconds": round(elapsed, 2),
     })
 
 

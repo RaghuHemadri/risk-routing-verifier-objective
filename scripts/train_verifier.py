@@ -4,18 +4,20 @@ Train the verifier model (LLM-judge distillation or direct training).
 
 Usage:
     python scripts/train_verifier.py \
-        --config configs/webarena/noisy.yaml \
-        --output outputs/verifier/webarena \
-        --trajectories data/trajectories/webarena_teacher/trajectories.jsonl
+        --config configs/swebench/clean.yaml \
+        --output outputs/verifier/swebench \
+        --trajectories data/trajectories/swebench_clean/trajectories.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 import torch
+from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -48,55 +50,64 @@ def main():
     jsonl_log = JSONLLogger(output_dir / "training_log.jsonl")
     jsonl_log.log_config(config_to_dict(cfg))
 
+    log_cfg = cfg.get("logging", {})
     init_wandb(
-        project=cfg.get("logging", {}).get("project", "r2v-agent"),
+        project=log_cfg.get("wandb_project", "r2v-agent"),
         name=f"verifier_{cfg.get('data', {}).get('benchmark', 'unknown')}",
         config=config_to_dict(cfg),
         tags=["verifier"],
-        mode=cfg.get("logging", {}).get("wandb_mode", "online"),
+        mode=log_cfg.get("wandb_mode", "disabled"),
     )
 
-    # Load trajectories and label them
+    # ── Load and label trajectories ──
     store = TrajectoryStore(args.trajectories)
-    episodes = store.load_all()
-    logger.info(f"Loaded {len(episodes)} episodes")
+    episodes = store.load_episodes()
+    logger.info(f"Loaded {len(episodes)} episodes from {args.trajectories}")
 
-    # Apply labeling
-    benchmark = cfg.get("data", {}).get("benchmark", "webarena")
-    labeler = create_labeler(benchmark, discount=cfg.get("data", {}).get("temporal_discount", 0.95))
+    # Apply step-level labeling
+    benchmark = cfg.get("data", {}).get("benchmark", "swebench")
+    data_cfg = OmegaConf.to_container(cfg.get("data", {}), resolve=True)
+    labeler = create_labeler(benchmark, config=data_cfg)
     for ep in episodes:
         labeler.label_episode(ep)
+    logger.info("Step-level labeling complete")
 
-    # Create verifier
-    vcfg = cfg.get("verifier", {})
-    if vcfg.get("type", "llm_judge") == "trained":
-        from r2v.models.verifier import TrainedVerifier
-        from transformers import AutoTokenizer, AutoModel
+    # Save labeled episodes to a temp file so VerifierDataset can reload them
+    labeled_path = output_dir / "labeled_trajectories.jsonl"
+    labeled_store = TrajectoryStore(labeled_path)
+    labeled_store.save_episodes(episodes)
+    logger.info(f"Saved {len(episodes)} labeled episodes to {labeled_path}")
 
-        backbone_name = vcfg.get("backbone", cfg.policy.model_name)
-        tokenizer = AutoTokenizer.from_pretrained(backbone_name)
+    # ── Create verifier model ──
+    vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
+    mode = vcfg.get("mode", "llm_judge")
 
-        verifier = TrainedVerifier(
-            backbone_name=backbone_name,
-            hidden_dim=vcfg.get("hidden_dim", 256),
+    if mode == "trained":
+        logger.info("=== Training verifier model ===")
+        verifier = create_verifier(vcfg)
+
+        # Build dataset from labeled trajectories
+        max_seq_len = cfg.policy.get("max_seq_len", 4096)
+        dataset = VerifierDataset(
+            str(labeled_path), verifier.tokenizer, max_seq_len=max_seq_len,
         )
+        logger.info(f"VerifierDataset: {len(dataset)} examples")
 
-        # Create dataset
-        dataset = VerifierDataset(episodes, tokenizer, max_length=cfg.training.get("max_seq_len", 2048))
-
-        val_frac = cfg.training.get("val_fraction", 0.1)
+        # Train/val split
+        val_frac = 1.0 - cfg.get("data", {}).get("train_ratio", 0.8)
         val_size = max(1, int(len(dataset) * val_frac))
         train_size = len(dataset) - val_size
         train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
+        logger.info(f"Split: {train_size} train, {val_size} val")
 
+        # Train
+        v_train_cfg = OmegaConf.to_container(cfg.training.verifier, resolve=True)
         trainer = VerifierTrainer(
-            model=verifier,
+            verifier=verifier,
             train_dataset=train_ds,
-            val_dataset=val_ds,
+            eval_dataset=val_ds,
+            config=v_train_cfg,
             output_dir=str(output_dir),
-            num_epochs=cfg.training.get("verifier_epochs", 5),
-            batch_size=cfg.training.get("verifier_batch_size", 8),
-            learning_rate=cfg.training.get("verifier_lr", 1e-4),
         )
 
         trainer.train()
