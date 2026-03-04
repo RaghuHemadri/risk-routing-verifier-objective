@@ -84,7 +84,15 @@ class PolicyModel(nn.Module):
 
         # Enable gradient checkpointing for memory efficiency
         if config.get("gradient_checkpointing", True):
-            self.model.gradient_checkpointing_enable()
+            # use_reentrant=False is required for LoRA/PEFT — the default
+            # (reentrant) silently drops gradients when base-model params are frozen.
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
+            # PEFT helper: make embedding outputs require grad so checkpointing
+            # can propagate through frozen → trainable boundaries.
+            if hasattr(self.model, "enable_input_require_grads"):
+                self.model.enable_input_require_grads()
 
         logger.info(
             f"PolicyModel initialized: {self.model_name}, "
