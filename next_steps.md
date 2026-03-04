@@ -11,17 +11,18 @@
   - Llama-3.1-8B-Instruct + LoRA, bf16, 480 BC examples (385 train / 95 val)
   - Loss: 3.55 → 0.11 in 3 epochs, ~17 min wall time
   - Output: `outputs/policy/swebench_noisy/final`
-
-## In Progress
-
-- **Step 3b:** Train verifier model
-  - Same HPC setup, uses labeled trajectories from Step 2
-  - Config `verifier.mode` must be set to `trained` (default is `llm_judge` which skips training)
+- ✅ **Step 3b:** Trained verifier on NYU Greene HPC (1× H200)
+  - Llama-3.1-8B-Instruct (frozen backbone) + MLP heads (4.2M trainable, 0.05%)
+  - 36,144 step-level examples, loss: 0.58 → 0.21, accuracy: 86.8% → 91.3%
+  - 3 epochs, ~2h wall time with dynamic padding
+  - Output: `outputs/verifier/swebench_noisy/final/verifier.pt`
 
 ## Next
 
-- **Step 4:** Generate K=5 candidates per task using BC-trained policy
+- **Step 4:** Generate K=5 candidates per task using BC-trained policy + verifier scoring
   - Uses `outputs/policy/swebench_noisy/final` as the policy checkpoint
+  - Uses `outputs/verifier/swebench_noisy/final/verifier.pt` for scoring
+  - Output: preference pairs for DPO training
 - **Step 5:** Train DPO preference stage (uses candidates + verifier scores)
   - Re-run `train_policy.py --stage preference --preference-data <pairs>`
 - **Step 6:** Generate router features

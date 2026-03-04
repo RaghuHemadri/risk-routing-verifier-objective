@@ -23,6 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from omegaconf import OmegaConf
+
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
@@ -34,6 +36,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate candidate actions")
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--policy-path", type=str, required=True)
+    parser.add_argument("--verifier-path", type=str, default=None,
+                        help="Path to trained verifier weights (verifier.pt)")
     parser.add_argument("--trajectories", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--K", type=int, default=5, help="Number of candidates per step")
@@ -52,51 +56,65 @@ def main():
 
     # Load policy
     logger.info(f"Loading policy from {args.policy_path}")
-    policy = PolicyModel(
-        model_name=cfg.policy.model_name,
-        lora_r=cfg.policy.get("lora_r", 64),
-        lora_alpha=cfg.policy.get("lora_alpha", 128),
-        load_in_4bit=cfg.policy.get("load_in_4bit", True),
-    )
+    policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
+    policy = PolicyModel(policy_cfg)
     policy.load(args.policy_path)
+    policy.model.eval()
 
     # Load verifier
     logger.info("Loading verifier...")
-    verifier = create_verifier(cfg.get("verifier", {}))
+    vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
+    verifier = create_verifier(vcfg)
+
+    # Load trained weights if provided
+    if args.verifier_path:
+        import torch as _torch
+        state_dict = _torch.load(args.verifier_path, map_location="cpu")
+        verifier.load_state_dict(state_dict, strict=False)
+        logger.info(f"Loaded trained verifier weights from {args.verifier_path}")
+
+    # Move verifier to GPU if available
+    import torch as _torch
+    if hasattr(verifier, 'to') and _torch.cuda.is_available():
+        verifier = verifier.to("cuda")
+    if hasattr(verifier, 'eval'):
+        verifier.eval()
 
     # Load trajectories
     store = TrajectoryStore(args.trajectories)
-    episodes = store.load_all()
+    episodes = store.load_episodes()
     logger.info(f"Loaded {len(episodes)} episodes, generating K={args.K} candidates per step")
 
     total_pairs = 0
     with open(output_path, "w") as f:
         for ep_idx, episode in enumerate(episodes):
-            if ep_idx % 10 == 0:
+            if ep_idx % 100 == 0:
                 logger.info(f"Processing episode {ep_idx}/{len(episodes)}")
 
+            goal = episode.metadata.goal if episode.metadata else ""
             context = ""
             for step_idx, step in enumerate(episode.steps):
                 context += step.observation.text + "\n"
 
-                # Generate K candidates
+                # Generate K candidates from the BC policy
                 candidates = policy.generate_candidates(
                     context=context,
-                    K=args.K,
+                    num_candidates=args.K,
                     temperature=cfg.get("inference", {}).get("temperature", 0.7),
                     max_new_tokens=cfg.get("inference", {}).get("max_tokens", 512),
                 )
 
                 # Score each candidate with verifier
                 scored = []
-                for cand_text, log_prob in candidates:
-                    score = verifier.score_action(
+                for cand in candidates:
+                    score = verifier.score(
                         context=context,
-                        action=cand_text,
+                        action=cand["text"],
+                        goal=goal,
                     )
                     scored.append({
-                        "action": cand_text,
-                        "log_prob": log_prob,
+                        "action": cand["text"],
+                        "log_prob": cand["log_prob"],
                         "verifier_score": score,
                     })
 
@@ -118,7 +136,7 @@ def main():
                     f.write(json.dumps(pair) + "\n")
                     total_pairs += 1
 
-                context += step.action.text + "\n"
+                context += step.action.raw_text + "\n"
 
     logger.info(f"Generated {total_pairs} preference pairs → {output_path}")
     jsonl_log.log("summary", {
