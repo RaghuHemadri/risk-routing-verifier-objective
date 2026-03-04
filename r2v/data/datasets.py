@@ -313,24 +313,46 @@ class VerifierDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         ex = self.examples[idx]
+        # Do NOT pad here — use the collate_fn for dynamic padding per batch.
+        # This avoids wasting compute on padding tokens in the backbone forward pass.
         enc = self.tokenizer(
             ex["text"], max_length=self.max_seq_len,
-            truncation=True, padding="max_length", return_tensors="pt"
+            truncation=True, padding=False,
         )
 
         item = {
-            "input_ids": enc["input_ids"].squeeze(0),
-            "attention_mask": enc["attention_mask"].squeeze(0),
-            "final_label": torch.tensor(ex["final_label"], dtype=torch.float32),
+            "input_ids": enc["input_ids"],
+            "attention_mask": enc["attention_mask"],
+            "final_label": ex["final_label"],
         }
         if ex["step_label"] is not None:
-            item["step_label"] = torch.tensor(ex["step_label"], dtype=torch.float32)
-            item["has_step_label"] = torch.tensor(1.0)
+            item["step_label"] = ex["step_label"]
+            item["has_step_label"] = 1.0
         else:
-            item["step_label"] = torch.tensor(0.0)
-            item["has_step_label"] = torch.tensor(0.0)
+            item["step_label"] = 0.0
+            item["has_step_label"] = 0.0
 
         return item
+
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
+        """Dynamic padding: pad to the longest sequence in the batch."""
+        max_len = max(len(b["input_ids"]) for b in batch)
+
+        input_ids = []
+        attention_mask = []
+        for b in batch:
+            pad_len = max_len - len(b["input_ids"])
+            input_ids.append(b["input_ids"] + [0] * pad_len)
+            attention_mask.append(b["attention_mask"] + [0] * pad_len)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "final_label": torch.tensor([b["final_label"] for b in batch], dtype=torch.float32),
+            "step_label": torch.tensor([b["step_label"] for b in batch], dtype=torch.float32),
+            "has_step_label": torch.tensor([b["has_step_label"] for b in batch], dtype=torch.float32),
+        }
 
 
 # ============================================================

@@ -105,6 +105,12 @@ class VerifierTrainer:
                 mixed_precision="bf16",
             )
 
+        # Use dynamic-padding collate_fn if available (VerifierDataset provides one)
+        collate_fn = getattr(self.train_dataset, 'collate_fn', None)
+        # For random_split subsets, look on the underlying dataset
+        if collate_fn is None and hasattr(self.train_dataset, 'dataset'):
+            collate_fn = getattr(self.train_dataset.dataset, 'collate_fn', None)
+
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
@@ -112,6 +118,7 @@ class VerifierTrainer:
             num_workers=0,
             pin_memory=False,
             drop_last=True,
+            collate_fn=collate_fn,
         )
 
         # Only train the classification heads (backbone is frozen)
