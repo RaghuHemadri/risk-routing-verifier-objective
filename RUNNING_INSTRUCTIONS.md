@@ -471,6 +471,35 @@ rm.generate_llm_summary()
 --overrides policy.load_in_4bit=true
 ```
 
+**No GPU visible inside Singularity (CUDA available: False):**
+
+This usually means you're outside the SLURM job's cgroup. SSH-ing directly
+to a compute node does **not** give GPU access.
+
+```bash
+# WRONG: ssh directly to compute node then run singularity
+ssh gh113    # GPUs not visible!
+
+# CORRECT: attach to the running SLURM job first
+srun --jobid=<JOBID> --overlap --cpu-bind=none --pty bash
+# THEN launch Singularity with --nv
+singularity exec --nv --fakeroot --overlay ... <image> bash
+```
+
+**bitsandbytes / 4-bit quantization not working:**
+
+If the Singularity image doesn't have a compatible bitsandbytes build,
+disable 4-bit quantization and use bf16 instead:
+```bash
+--overrides policy.quantization.load_in_4bit=false
+```
+This uses more VRAM (~16 GB for 8B model) but works reliably.
+
+**Gradient checkpointing error ("does not require grad"):**
+
+This is fixed in the codebase. If you see it, ensure you have the latest
+commit — the fix uses `use_reentrant=False` and `enable_input_require_grads()`.
+
 **Job killed (time limit):**
 ```bash
 # Increase time in SLURM script
@@ -523,6 +552,36 @@ python scripts/train_policy.py \
 srun --partition=gpu --gres=gpu:1 --mem=32G --time=02:00:00 --pty bash
 conda activate r2v
 python -c "import torch; print(torch.cuda.get_device_name(0))"
+```
+
+### NYU Greene HPC with Singularity
+
+```bash
+# 1. Submit a GPU hold job
+sbatch gpu_submit.sh   # writes job ID to .last_vscode_gpu_jobid
+
+# 2. Attach to the job (from login node)
+srun --jobid=$(cat /scratch/rh3884/.last_vscode_gpu_jobid) \
+     --overlap --cpu-bind=none --pty bash
+
+# 3. Enter Singularity container with GPU access
+singularity exec --nv --fakeroot \
+  --overlay /scratch/rh3884/my_pytorch.ext3:ro \
+  /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
+  /bin/bash -lc "source /ext3/env.sh; conda activate pt311; exec bash -l"
+
+# 4. Verify GPU access
+nvidia-smi
+python -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+# 5. Run training
+source exports.sh   # sets HF_HOME and HF_TOKEN
+python scripts/train_policy.py \
+    --config configs/swebench/noisy.yaml \
+    --output outputs/policy/swebench_noisy \
+    --stage bc \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --overrides policy.quantization.load_in_4bit=false
 ```
 
 ---
