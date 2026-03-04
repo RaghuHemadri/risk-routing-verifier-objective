@@ -70,8 +70,7 @@ class PolicyModel(nn.Module):
         }
         if quant_config:
             model_kwargs["quantization_config"] = quant_config
-        # Always place on GPU when available
-        if torch.cuda.is_available():
+            # bitsandbytes needs device_map for quantized loading
             model_kwargs["device_map"] = "auto"
 
         self.model = AutoModelForCausalLM.from_pretrained(

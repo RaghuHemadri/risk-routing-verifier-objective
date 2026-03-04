@@ -78,8 +78,8 @@ class BCTrainer:
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=4,
-            pin_memory=True,
+            num_workers=0,
+            pin_memory=False,
             drop_last=True,
         )
 
@@ -89,8 +89,8 @@ class BCTrainer:
                 self.eval_dataset,
                 batch_size=self.batch_size * 2,
                 shuffle=False,
-                num_workers=4,
-                pin_memory=True,
+                num_workers=0,
+                pin_memory=False,
             )
 
         # Optimizer (only train LoRA params if applicable)
@@ -110,19 +110,10 @@ class BCTrainer:
             num_training_steps=total_steps,
         )
 
-        # Prepare with accelerator
-        # If model was loaded with device_map (already on GPU), only prepare
-        # optimizer/dataloader — Accelerate can't re-wrap a device-mapped model.
-        _has_device_map = getattr(self.policy.model, "hf_device_map", None) is not None
-        if _has_device_map:
-            optimizer, train_loader, scheduler = accelerator.prepare(
-                optimizer, train_loader, scheduler
-            )
-            model = self.policy.model
-        else:
-            model, optimizer, train_loader, scheduler = accelerator.prepare(
-                self.policy.model, optimizer, train_loader, scheduler
-            )
+        # Prepare with accelerator (handles model → GPU, DataLoader → device)
+        model, optimizer, train_loader, scheduler = accelerator.prepare(
+            self.policy.model, optimizer, train_loader, scheduler
+        )
         if eval_loader:
             eval_loader = accelerator.prepare(eval_loader)
 

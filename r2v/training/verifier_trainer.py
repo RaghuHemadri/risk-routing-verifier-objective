@@ -109,8 +109,8 @@ class VerifierTrainer:
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=4,
-            pin_memory=True,
+            num_workers=0,
+            pin_memory=False,
             drop_last=True,
         )
 
@@ -129,16 +129,9 @@ class VerifierTrainer:
             num_training_steps=total_steps,
         )
 
-        _has_device_map = getattr(self.verifier, "hf_device_map", None) is not None
-        if _has_device_map:
-            optimizer, train_loader, scheduler = accelerator.prepare(
-                optimizer, train_loader, scheduler
-            )
-            model = self.verifier
-        else:
-            model, optimizer, train_loader, scheduler = accelerator.prepare(
-                self.verifier, optimizer, train_loader, scheduler
-            )
+        model, optimizer, train_loader, scheduler = accelerator.prepare(
+            self.verifier, optimizer, train_loader, scheduler
+        )
 
         global_step = 0
         metrics_history = []
