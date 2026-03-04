@@ -187,10 +187,10 @@ Every experiment produces structured outputs in multiple formats:
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-03-03 (perturbations generated), 2026-03-04 (BC trained) |
+| **Date** | 2026-03-03 (perturbations generated), 2026-03-04 (BC + verifier trained) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ BC trained, verifier training next |
+| **Status** | ☑ BC + verifier trained, candidate generation next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -213,6 +213,21 @@ Every experiment produces structured outputs in multiple formats:
 | Wall Time | ~17 minutes |
 | Output | `outputs/policy/swebench_noisy/final` |
 | Git Commit | `f43f796` |
+
+**Step 3b — Verifier Training (completed 2026-03-04):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 1× H200 GPU, Singularity container |
+| Backbone | Llama-3.1-8B-Instruct (frozen) + MLP heads (4.2M trainable / 8B total, 0.05%) |
+| Precision | bf16, dynamic padding (median seq len 1723 tokens) |
+| Verifier Examples | 36,144 step-level examples (28,916 train / 7,228 val) |
+| Epochs | 3 |
+| Final Loss | 0.211 |
+| Final Accuracy | 91.3% |
+| Wall Time | ~1h 56min |
+| Output | `outputs/verifier/swebench_noisy/final/verifier.pt` |
+| Git Commit | `4ca21fb` |
 
 **Evaluation results (pending training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
@@ -281,7 +296,8 @@ Every experiment produces structured outputs in multiple formats:
 | Data collection (SWE-bench) | CPU / API | 0 | 2.4h | ☑ Done |
 | Perturbation generation | CPU | 0 | 79s | ☑ Done |
 | BC policy training (SWE-bench noisy) | 2× H200 | ~0.6h | ~17min | ☑ Done |
-| Verifier training (SWE-bench) | 2× H200 | ~TBD | ~TBD | ☐ Next |
+| Verifier training (SWE-bench noisy) | 1× H200 | ~2h | ~2h | ☑ Done |
+| Candidate generation | 1× H200 | ~TBD | ~TBD | ☐ Next |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
