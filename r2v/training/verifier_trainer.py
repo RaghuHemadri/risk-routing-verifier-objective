@@ -118,6 +118,16 @@ class VerifierTrainer:
         trainable_params = [
             p for p in self.verifier.parameters() if p.requires_grad
         ]
+
+        total_params = sum(p.numel() for p in self.verifier.parameters())
+        trainable_count = sum(p.numel() for p in trainable_params)
+        frozen_count = total_params - trainable_count
+        logger.info(
+            f"Verifier params: total={total_params:,}, "
+            f"trainable={trainable_count:,} ({100*trainable_count/total_params:.2f}%), "
+            f"frozen={frozen_count:,}"
+        )
+
         optimizer = torch.optim.AdamW(
             trainable_params, lr=self.lr, weight_decay=self.weight_decay
         )
