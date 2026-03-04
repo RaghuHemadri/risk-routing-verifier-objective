@@ -122,8 +122,8 @@ class PreferenceTrainer:
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=4,
-            pin_memory=True,
+            num_workers=0,
+            pin_memory=False,
             drop_last=True,
         )
 
@@ -139,19 +139,11 @@ class PreferenceTrainer:
             num_training_steps=total_steps,
         )
 
-        _has_device_map = getattr(self.policy.model, "hf_device_map", None) is not None
-        if _has_device_map:
-            optimizer, train_loader, scheduler = accelerator.prepare(
-                optimizer, train_loader, scheduler
-            )
-            model = self.policy.model
-        else:
-            model, optimizer, train_loader, scheduler = accelerator.prepare(
-                self.policy.model, optimizer, train_loader, scheduler
-            )
+        model, optimizer, train_loader, scheduler = accelerator.prepare(
+            self.policy.model, optimizer, train_loader, scheduler
+        )
         if ref_model:
-            if not _has_device_map:
-                ref_model = accelerator.prepare(ref_model)
+            ref_model = accelerator.prepare(ref_model)
 
         global_step = 0
         metrics_history = []
