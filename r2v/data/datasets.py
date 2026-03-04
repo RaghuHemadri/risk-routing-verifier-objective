@@ -293,7 +293,7 @@ class VerifierDataset(Dataset):
                     "final_label": float(ep.success),
                     "episode_id": ep.episode_id,
                     "step_idx": i,
-                    "perturbation_type": ep.perturbation_type.value,
+                    "perturbation_type": ep.perturbation_type.value if hasattr(ep.perturbation_type, 'value') else str(ep.perturbation_type),
                 }
 
                 # Step-level label (if available)
