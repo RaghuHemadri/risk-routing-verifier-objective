@@ -20,10 +20,14 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
+
+_HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
 logger = logging.getLogger(__name__)
 
@@ -116,13 +120,14 @@ class LLMJudgeVerifier(BaseVerifier):
     def _init_local(self):
         """Initialize a local HuggingFace model for verification."""
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, trust_remote_code=True
+            self.model_name, trust_remote_code=True, token=_HF_TOKEN
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
+            token=_HF_TOKEN,
         )
         self.model.eval()
 
@@ -255,7 +260,7 @@ class TrainedVerifier(BaseVerifier, nn.Module):
 
         # Backbone encoder
         self.tokenizer = AutoTokenizer.from_pretrained(
-            backbone_name, trust_remote_code=True
+            backbone_name, trust_remote_code=True, token=_HF_TOKEN
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -265,6 +270,7 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             torch_dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
+            token=_HF_TOKEN,
         )
         # Freeze backbone (only train head)
         for param in self.backbone.parameters():

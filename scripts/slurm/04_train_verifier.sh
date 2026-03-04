@@ -21,6 +21,8 @@ conda activate r2v
 
 cd $SLURM_SUBMIT_DIR
 
+export HF_TOKEN=""
+
 BENCHMARK=${1:-webarena}
 
 echo "=== Training verifier for ${BENCHMARK} ==="
