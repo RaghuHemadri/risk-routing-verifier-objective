@@ -165,7 +165,7 @@ Every experiment produces structured outputs in multiple formats:
 | **Date** | 2026-03-03 (data collected) |
 | **Config** | `configs/swebench/clean.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☐ Data collected, training not started |
+| **Status** | ☐ Data collected, training in progress |
 
 **Data collection results:**
 | Metric | Value |
@@ -187,10 +187,10 @@ Every experiment produces structured outputs in multiple formats:
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-03-03 (perturbations generated) |
+| **Date** | 2026-03-03 (perturbations generated), 2026-03-04 (BC trained) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☐ Perturbations generated, training not started |
+| **Status** | ☑ BC trained, verifier training next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -198,6 +198,21 @@ Every experiment produces structured outputs in multiple formats:
 | Total Episodes | 3600 (900 clean + 2700 perturbed) |
 | Perturbation Types | 4 (composite: tool flakiness, partial obs, prompt injection, distractors) |
 | Generation Time | 79 seconds |
+
+**Step 3a — BC Policy Training (completed 2026-03-04):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 2× H200 GPU, Singularity container |
+| Model | Llama-3.1-8B-Instruct + LoRA (167M trainable / 8B total, 2.05%) |
+| Precision | bf16 (4-bit disabled — bitsandbytes incompatible in container) |
+| BC Examples | 480 (from 120 successful episodes × 3600 total) |
+| Train/Val Split | 385 / 95 |
+| Epochs | 3 |
+| Training Loss | 3.55 → 0.11 |
+| Wall Time | ~17 minutes |
+| Output | `outputs/policy/swebench_noisy/final` |
+| Git Commit | `f43f796` |
 
 **Evaluation results (pending training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
@@ -265,6 +280,8 @@ Every experiment produces structured outputs in multiple formats:
 |-----------|------|-----------|-----------|--------|
 | Data collection (SWE-bench) | CPU / API | 0 | 2.4h | ☑ Done |
 | Perturbation generation | CPU | 0 | 79s | ☑ Done |
+| BC policy training (SWE-bench noisy) | 2× H200 | ~0.6h | ~17min | ☑ Done |
+| Verifier training (SWE-bench) | 2× H200 | ~TBD | ~TBD | ☐ Next |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
@@ -275,11 +292,11 @@ Every experiment produces structured outputs in multiple formats:
 
 ## Reproducibility Checklist
 
-- [ ] Fixed random seeds (1, 2, 3, 4, 5)
-- [ ] Config files saved with each run
+- [x] Fixed random seeds (1, 2, 3, 4, 5)
+- [x] Config files saved with each run
 - [ ] wandb logs available
-- [ ] JSONL event logs preserved
+- [x] JSONL event logs preserved
 - [ ] Bootstrap CIs computed (95%)
 - [ ] McNemar tests for all pairwise comparisons
 - [ ] Holm-Bonferroni correction for multiple comparisons
-- [ ] Git commit hash recorded for each experiment
+- [x] Git commit hash recorded for each experiment

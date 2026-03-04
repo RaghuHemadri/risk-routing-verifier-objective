@@ -268,9 +268,11 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         self.backbone = AutoModelForCausalLM.from_pretrained(
             backbone_name,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             trust_remote_code=True,
             token=_HF_TOKEN,
+            # Note: do NOT set device_map="auto" here — Accelerate handles
+            # device placement during training.  For standalone inference
+            # the caller can .to(device) explicitly.
         )
         # Freeze backbone (only train head)
         for param in self.backbone.parameters():
