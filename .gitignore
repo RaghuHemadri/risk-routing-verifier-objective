@@ -64,3 +64,4 @@ config_files/
 /data/
 .auth
 config_files
+exports.sh

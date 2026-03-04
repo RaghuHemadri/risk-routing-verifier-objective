@@ -129,9 +129,16 @@ class VerifierTrainer:
             num_training_steps=total_steps,
         )
 
-        model, optimizer, train_loader, scheduler = accelerator.prepare(
-            self.verifier, optimizer, train_loader, scheduler
-        )
+        _has_device_map = getattr(self.verifier, "hf_device_map", None) is not None
+        if _has_device_map:
+            optimizer, train_loader, scheduler = accelerator.prepare(
+                optimizer, train_loader, scheduler
+            )
+            model = self.verifier
+        else:
+            model, optimizer, train_loader, scheduler = accelerator.prepare(
+                self.verifier, optimizer, train_loader, scheduler
+            )
 
         global_step = 0
         metrics_history = []

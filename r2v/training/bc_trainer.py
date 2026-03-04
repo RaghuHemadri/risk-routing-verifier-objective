@@ -111,9 +111,18 @@ class BCTrainer:
         )
 
         # Prepare with accelerator
-        model, optimizer, train_loader, scheduler = accelerator.prepare(
-            self.policy.model, optimizer, train_loader, scheduler
-        )
+        # If model was loaded with device_map (already on GPU), only prepare
+        # optimizer/dataloader — Accelerate can't re-wrap a device-mapped model.
+        _has_device_map = getattr(self.policy.model, "hf_device_map", None) is not None
+        if _has_device_map:
+            optimizer, train_loader, scheduler = accelerator.prepare(
+                optimizer, train_loader, scheduler
+            )
+            model = self.policy.model
+        else:
+            model, optimizer, train_loader, scheduler = accelerator.prepare(
+                self.policy.model, optimizer, train_loader, scheduler
+            )
         if eval_loader:
             eval_loader = accelerator.prepare(eval_loader)
 
