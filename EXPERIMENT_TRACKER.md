@@ -306,6 +306,155 @@ Every experiment produces structured outputs in multiple formats:
 
 ---
 
+## Dataset Statistics & Observations
+
+### Data Pipeline Summary
+
+| Stage | Granularity | Count | Notes |
+|-------|-------------|------:|-------|
+| Raw tasks | task-level | 300 | SWE-bench test split |
+| Clean episodes | episode-level | 900 | 300 tasks × 3 seeds |
+| Perturbed episodes | episode-level | 2700 | 900 × 3 perturbation seeds (composite) |
+| Total episodes | episode-level | 3600 | 900 clean + 2700 perturbed |
+| Successful episodes | episode-level | 120 | 13.3% success rate |
+| BC examples | step-level | 480 | From 120 successful episodes (~4 steps avg) |
+| Verifier examples | step-level | 36,144 | From all 3600 episodes (correct/incorrect step labels) |
+
+### Token Length Distribution (Verifier Training Data)
+
+Analysis of 4,016 sampled verifier examples (tokenized with Llama-3.1 tokenizer):
+
+| Statistic | Token Count |
+|-----------|------------:|
+| Min | 52 |
+| Max | 31,027 |
+| Mean | 2,355 |
+| Median | 1,723 |
+| Std Dev | ~2,500 |
+| P90 | 4,436 |
+| P95 | 5,222 |
+| P99 | 8,460 |
+
+**Token length bucket distribution:**
+
+| Bucket | % of examples |
+|--------|-------------:|
+| < 512 | 7.1% |
+| < 1,024 | 28.6% |
+| < 2,048 | 56.0% |
+| < 4,096 | 85.5% |
+| < 8,192 | 97.5% |
+| ≥ 8,192 | ~2.5% |
+
+**Implication:** With `max_seq_len=2048`, ~56% of examples fit without truncation. The remaining ~44% are truncated but still retain substantial context. Using `max_seq_len=4096` would cover 85.5% but at 2× memory cost.
+
+### Perturbation Type Distribution
+
+All perturbations are **composite** — each perturbed episode applies all four types simultaneously:
+
+| Perturbation | Description | Effect |
+|-------------|-------------|--------|
+| Tool Flakiness | Random tool call failures / timeouts | Tests retry & fallback behavior |
+| Partial Observability | Missing or incomplete observation fields | Tests robustness to missing info |
+| Prompt Injection | Adversarial text injected into observations | Tests instruction-following fidelity |
+| Distractors | Irrelevant information added to context | Tests focus & noise filtering |
+
+### Training Data Splits
+
+**BC Policy (Step 3a):**
+
+| Split | Count | % |
+|-------|------:|----:|
+| Train | 385 | 80.2% |
+| Val | 95 | 19.8% |
+| **Total** | **480** | 100% |
+
+**Verifier (Step 3b):**
+
+| Split | Count | % |
+|-------|------:|----:|
+| Train | 28,916 | 80.0% |
+| Val | 7,228 | 20.0% |
+| **Total** | **36,144** | 100% |
+
+### Model Architecture Details
+
+**BC Policy (LoRA on Llama-3.1-8B-Instruct):**
+
+| Parameter | Value |
+|-----------|-------|
+| Base model | `meta-llama/Llama-3.1-8B-Instruct` |
+| LoRA rank (r) | 64 |
+| LoRA alpha | 128 |
+| LoRA dropout | 0.05 |
+| Target modules | q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj |
+| Trainable params | ~167M (2.05% of 8B) |
+| Precision | bf16 (full, no quantization) |
+| Gradient checkpointing | Yes (`use_reentrant=False`) |
+| Optimizer | AdamW (lr=2e-5, weight_decay=0.01) |
+
+**Trained Verifier (MLP heads on frozen backbone):**
+
+| Parameter | Value |
+|-----------|-------|
+| Backbone | `meta-llama/Llama-3.1-8B-Instruct` (frozen) |
+| Head architecture | MLP: hidden_dim → 256 → 128 → 1 (correctness), hidden_dim → 256 → 128 → 1 (risk) |
+| Trainable params | ~4.2M (0.05% of 8B) |
+| Precision | bf16, dynamic padding |
+| Optimizer | AdamW (lr=1e-4) |
+| Batch size | 32 (effective, with dynamic padding) |
+| max_seq_len | 2048 |
+
+---
+
+## Key Observations & Lessons Learned
+
+### HPC Deployment (NYU Greene)
+
+1. **GPU visibility in Singularity containers:** SSH-ing to a compute node does NOT expose GPUs. You must attach to the SLURM job's cgroup:
+   ```bash
+   srun --jobid=<JID> --overlap --cpu-bind=none --pty bash
+   # THEN inside that shell:
+   singularity exec --nv --overlay ... <sif> bash
+   ```
+   Without `--overlap`, srun tries to allocate new resources and hangs. Without `--cpu-bind=none`, it may fail with CPU binding errors.
+
+2. **bitsandbytes incompatibility:** 4-bit quantization via bitsandbytes does not work inside the Singularity container (CUDA runtime mismatch). Workaround: use full bf16 precision. H200 GPUs have sufficient VRAM (80GB) for 8B models in bf16.
+
+3. **`num_workers > 0` in DataLoader:** Causes "cannot pickle" errors inside Singularity overlays due to filesystem constraints. Fix: always set `num_workers=0, pin_memory=False`.
+
+4. **HuggingFace cache:** Must set `HF_HOME=/scratch/rh3884/hf_cache` to avoid quota issues on `$HOME`. Model downloads are ~16GB for Llama-3.1-8B.
+
+### Training Observations
+
+5. **Gradient checkpointing + LoRA:** Using `gradient_checkpointing_enable()` with default `use_reentrant=True` causes "element 0 of tensors does not require grad" error when combined with LoRA. Fix: `use_reentrant=False` + `model.enable_input_require_grads()`. (Commit `f43f796`.)
+
+6. **Dynamic padding is critical for verifier training:** Initial verifier training padded every example to `max_seq_len=4096`, wasting >60% of compute on padding tokens. With dynamic padding (pad to max-in-batch), training time dropped from **8+ hours → ~2 hours** (4× speedup). Median sequence is only 1,723 tokens.
+
+7. **BC training converges quickly:** 3 epochs sufficient. Loss 3.55 → 0.11, no signs of overfitting on 480 examples. Likely because LoRA has limited capacity and base model already has strong language priors.
+
+8. **Verifier accuracy is high (91.3%):** Suggests step-level correctness/incorrectness signals are learnable from trajectory data. The frozen backbone provides strong representations; only the MLP heads need training.
+
+9. **pad_token_id warning:** When generating with Llama models, must explicitly pass `pad_token_id=tokenizer.pad_token_id` to `model.generate()` to suppress the "Setting pad_token_id to eos_token_id" warning that floods logs.
+
+### Data Quality Observations
+
+10. **Low success rate (13.3%):** Only 120 of 900 episodes succeed. This means BC has limited positive examples (480 steps). DPO (Step 5) is critical to leverage the negative examples via preference pairs.
+
+11. **Step count is low (~1.1 avg):** SWE-bench episodes tend to be short (1-2 steps). This limits the diversity of step-level data compared to WebArena (which has longer episodes).
+
+12. **Verifier data is much larger than BC data (75×):** 36,144 vs 480 examples — verifier training can use ALL episodes (success + failure), while BC can only use successful ones. This asymmetry makes the verifier the more robust component.
+
+### Code/API Observations
+
+13. **Stale script APIs:** `generate_candidates.py` had completely stale constructor calls and method names that didn't match the current codebase. Expect similar issues in `generate_router_features.py`, `train_router.py`, `evaluate.py`, and `run_ablations.py` — these should be audited before running.
+
+14. **Observation attribute:** The correct attribute for raw observation text is `Observation.raw_text`, not `Observation.text` (which doesn't exist).
+
+15. **PolicyModel constructor:** Takes a `config: dict`, not `(model_name, lora_config)` as originally coded. Loading from checkpoint: `PolicyModel(config)` then `model.load_checkpoint(path)`.
+
+---
+
 ## Reproducibility Checklist
 
 - [x] Fixed random seeds (1, 2, 3, 4, 5)
