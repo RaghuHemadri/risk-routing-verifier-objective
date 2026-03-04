@@ -22,6 +22,8 @@ conda activate r2v
 
 cd $SLURM_SUBMIT_DIR
 
+export HF_TOKEN=""
+
 BENCHMARK=${1:-swebench}
 CONDITION=${2:-noisy}     # clean or noisy
 STAGE=${3:-all}           # bc, preference, or all

@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,6 +27,8 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
 )
+
+_HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,7 @@ class PolicyModel(nn.Module):
 
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, trust_remote_code=True
+            self.model_name, trust_remote_code=True, token=_HF_TOKEN
         )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -62,6 +66,7 @@ class PolicyModel(nn.Module):
         model_kwargs = {
             "trust_remote_code": True,
             "torch_dtype": torch.bfloat16,
+            "token": _HF_TOKEN,
         }
         if quant_config:
             model_kwargs["quantization_config"] = quant_config
