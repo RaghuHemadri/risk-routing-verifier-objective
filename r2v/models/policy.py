@@ -213,6 +213,7 @@ class PolicyModel(nn.Module):
                 temperature=temperature,
                 top_p=top_p,
                 do_sample=True,
+                pad_token_id=self.tokenizer.pad_token_id,
                 return_dict_in_generate=True,
                 output_scores=True,
             )
