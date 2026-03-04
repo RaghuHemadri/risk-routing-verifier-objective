@@ -197,7 +197,10 @@ class PolicyModel(nn.Module):
     ) -> list[dict[str, Any]]:
         """Generate K candidate actions with log-probabilities.
 
-        Returns list of dicts with 'text', 'log_prob', 'tokens'.
+        Uses num_return_sequences to generate all K candidates in a
+        single forward pass instead of looping K times.
+
+        Returns list of dicts with 'text', 'log_prob', 'num_tokens'.
         """
         prompt = f"{context}\nAction:"
         inputs = self.tokenizer(
@@ -205,20 +208,22 @@ class PolicyModel(nn.Module):
             max_length=self.max_seq_len - max_new_tokens,
         ).to(self.model.device)
 
-        candidates = []
-        for _ in range(num_candidates):
-            outputs = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                return_dict_in_generate=True,
-                output_scores=True,
-            )
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=num_candidates,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
 
-            generated_ids = outputs.sequences[0, inputs["input_ids"].shape[1]:]
+        prompt_len = inputs["input_ids"].shape[1]
+        candidates = []
+        for i in range(num_candidates):
+            generated_ids = outputs.sequences[i, prompt_len:]
             generated_text = self.tokenizer.decode(
                 generated_ids, skip_special_tokens=True
             ).strip()
@@ -226,11 +231,11 @@ class PolicyModel(nn.Module):
             # Compute log probability of the generated sequence
             log_prob = 0.0
             if outputs.scores:
-                for t, score in enumerate(outputs.scores):
+                for t, score_t in enumerate(outputs.scores):
                     if t >= len(generated_ids):
                         break
                     token_id = generated_ids[t]
-                    log_probs = F.log_softmax(score[0], dim=-1)
+                    log_probs = F.log_softmax(score_t[i], dim=-1)
                     log_prob += log_probs[token_id].item()
 
             candidates.append({
