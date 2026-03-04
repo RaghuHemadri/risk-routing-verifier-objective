@@ -141,14 +141,14 @@ This submits ~10 SLURM jobs per benchmark with proper dependencies:
 |-------|-----|-----|-----------|------------|
 | 1 | Collect trajectories | 1× A100 | 2-4h | — |
 | 2 | Generate perturbations | CPU | ~2 min | Stage 1 |
-| 3a | Train policy (BC) | 2× A100 | 24-48h | Stage 2 |
-| 3b | Train verifier | 1× A100 | 6-12h | Stage 1 |
-| 4 | Generate candidates | 1× A100 | 12-24h | 3a, 3b |
-| 5 | Train policy (DPO) | 2× A100 | 12-24h | Stage 4 |
-| 6 | Router features | 1× A100 | 6-12h | Stage 5 |
-| 7 | Train router | 1× GPU | 1-4h | Stage 6 |
-| 8 | Evaluate | 1× A100 | 12-24h | Stage 7 |
-| 9 | Ablations | 1× A100 | 24-48h | Stage 7 |
+| 3a | Train policy (BC) | 1× H200 | ~17min | Stage 2 |
+| 3b | Train verifier | 1× H200 | ~2h | Stage 2 |
+| 4 | Generate candidates | 1× H200 | 1-3h | 3a, 3b |
+| 5 | Train policy (DPO) | 1× H200 | ~1h | Stage 4 |
+| 6 | Router features | 1× H200 | 1-2h | Stage 5 |
+| 7 | Train router | 1× GPU | <1h | Stage 6 |
+| 8 | Evaluate | 1× H200 | 1-4h | Stage 7 |
+| 9 | Ablations | 1× H200 | 4-12h | Stage 7 |
 
 **Total wall time:** ~4-7 days (with job queuing)
 **Total GPU hours:** ~150-250h per benchmark
@@ -157,9 +157,29 @@ This submits ~10 SLURM jobs per benchmark with proper dependencies:
 
 ## 5. Individual Stages
 
-You can run stages individually for debugging or re-running:
+You can run stages individually for debugging or re-running.
 
-### Collect teacher trajectories
+**Prerequisites for all GPU stages on NYU Greene:**
+```bash
+# 1. Submit GPU hold job
+bash gpu_submit.sh
+
+# 2. Attach to SLURM job (from login node)
+srun --jobid=$(cat /scratch/rh3884/.last_vscode_gpu_jobid) \
+     --overlap --cpu-bind=none --pty bash
+
+# 3. Enter Singularity container with GPU access
+singularity exec --nv --fakeroot \
+  --overlay /scratch/rh3884/my_pytorch.ext3:ro \
+  /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif \
+  /bin/bash -lc "source /ext3/env.sh; conda activate pt311; exec bash -l"
+
+# 4. Set environment and navigate
+source exports.sh
+cd /scratch/rh3884/risk-routing-verifier-objective
+```
+
+### Step 1: Collect teacher trajectories
 ```bash
 sbatch scripts/slurm/01_collect.sh swebench 300 "1 2 3"
 #                                  ^benchmark ^episodes ^seeds
@@ -169,7 +189,7 @@ sbatch scripts/slurm/01_collect.sh swebench 300 "1 2 3"
 # 900 episodes, 120 successful (13.3%), $0.60, ~2.4h wall time
 ```
 
-### Generate perturbations
+### Step 2: Generate perturbations
 
 Perturbations are applied **locally** (CPU-only, ~2 min) to clean trajectories.
 No GPU or LLM API calls needed.
@@ -185,48 +205,100 @@ python -m scripts.generate_perturbations \
 # Actual completed run: 2700 perturbed + 900 clean = 3600 episodes in 79s
 ```
 
-### Train policy
+### Step 3a: Train policy (BC)
 ```bash
-# BC stage only
-sbatch scripts/slurm/03_train_policy.sh webarena noisy bc
+# Actual command used (completed 2026-03-04, ~17 min):
+python scripts/train_policy.py \
+    --config configs/swebench/noisy.yaml \
+    --output outputs/policy/swebench_noisy \
+    --stage bc \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --overrides policy.quantization.load_in_4bit=false
 
-# DPO preference stage only (requires candidates)
-sbatch scripts/slurm/03_train_policy.sh webarena noisy preference
-
-# Both stages
-sbatch scripts/slurm/03_train_policy.sh webarena noisy all
+# Result: loss 3.55 → 0.11, 480 BC examples, 3 epochs
+# Output: outputs/policy/swebench_noisy/final (LoRA adapters)
 ```
 
-### Train verifier
+### Step 3b: Train verifier
 ```bash
-sbatch scripts/slurm/04_train_verifier.sh webarena
+# Actual command used (completed 2026-03-04, ~2h):
+python scripts/train_verifier.py \
+    --config configs/swebench/noisy.yaml \
+    --output outputs/verifier/swebench_noisy \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained \
+        training.verifier.epochs=3 training.verifier.batch_size=32 policy.max_seq_len=2048
+
+# Result: loss 0.58 → 0.21, accuracy 86.8% → 91.3%, 36K examples, 3 epochs
+# Output: outputs/verifier/swebench_noisy/final/verifier.pt
 ```
 
-### Generate candidates for DPO
+### Step 4: Generate candidates for DPO
 ```bash
-sbatch scripts/slurm/05_generate_candidates.sh webarena 5
-#                                              ^benchmark ^K
+python scripts/generate_candidates.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/candidates/swebench_noisy.jsonl \
+    --K 5 \
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
 ```
 
-### Generate router features
+### Step 5: Train policy (DPO preference)
 ```bash
-sbatch scripts/slurm/06_generate_router_features.sh webarena
+python scripts/train_policy.py \
+    --config configs/swebench/noisy.yaml \
+    --output outputs/policy/swebench_noisy \
+    --stage preference \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --preference-data data/candidates/swebench_noisy.jsonl \
+    --overrides policy.quantization.load_in_4bit=false
 ```
 
-### Train router
+### Step 6: Generate router features
 ```bash
-sbatch scripts/slurm/07_train_router.sh webarena
+python scripts/generate_router_features.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/router_features/swebench_noisy.jsonl \
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
 ```
 
-### Evaluate
+### Step 7: Train router
 ```bash
-sbatch scripts/slurm/08_evaluate.sh webarena noisy "1 2 3 4 5" "r2v slm_only llm_only entropy_router"
-#                                   ^bench   ^cond ^seeds      ^methods
+python scripts/train_router.py \
+    --config configs/swebench/noisy.yaml \
+    --features data/router_features/swebench_noisy.jsonl \
+    --output outputs/router/swebench_noisy \
+    --overrides policy.quantization.load_in_4bit=false
 ```
 
-### Run ablations
+### Step 8: Evaluate
 ```bash
-sbatch scripts/slurm/09_ablations.sh webarena "1 2 3"
+python scripts/evaluate.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --router-path outputs/router/swebench_noisy/final \
+    --output results/swebench_noisy \
+    --seeds 1 2 3 4 5 \
+    --methods r2v slm_only llm_only entropy_router \
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+```
+
+### Step 9: Run ablations
+```bash
+python scripts/run_ablations.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --router-path outputs/router/swebench_noisy/final \
+    --output results/ablations/swebench_noisy \
+    --seeds 1 2 3 \
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
 ```
 
 ---
