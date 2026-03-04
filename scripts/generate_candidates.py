@@ -94,7 +94,7 @@ def main():
             goal = episode.metadata.goal if episode.metadata else ""
             context = ""
             for step_idx, step in enumerate(episode.steps):
-                context += step.observation.text + "\n"
+                context += step.observation.raw_text + "\n"
 
                 # Generate K candidates from the BC policy
                 candidates = policy.generate_candidates(
