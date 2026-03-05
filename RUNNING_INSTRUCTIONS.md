@@ -145,7 +145,7 @@ This submits ~10 SLURM jobs per benchmark with proper dependencies:
 | 3b | Train verifier | 1× H200 | ~2h | Stage 2 |
 | 4 | Generate candidates | 1× H200 | 1-3h | 3a, 3b |
 | 5 | Train policy (DPO) | 1× H200 | ~1h | Stage 4 |
-| 6 | Router features | 1× H200 | 1-2h | Stage 5 |
+| 6 | Router features | 4× H200 | <30min | 3a, 3b |
 | 7 | Train router | 1× GPU | <1h | Stage 6 |
 | 8 | Evaluate | 1× H200 | 1-4h | Stage 7 |
 | 9 | Ablations | 1× H200 | 4-12h | Stage 7 |
@@ -257,14 +257,35 @@ python scripts/train_policy.py \
 ```
 
 ### Step 6: Generate router features
+
+Multi-GPU (recommended — 4× H200):
+```bash
+# Actual command used (completed 2026-03-05, 4× H200, 4 shards):
+bash scripts/launch_router_features.sh 4 \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/router_features/swebench.jsonl \
+    --batch-size 16 --K 5
+
+# Result: 4,016 feature vectors (13-dim) merged into data/router_features/swebench.jsonl
+# Monitor: tail -f generate_router_features_shard*.log
+```
+
+Single-GPU:
 ```bash
 python scripts/generate_router_features.py \
     --config configs/swebench/noisy.yaml \
     --policy-path outputs/policy/swebench_noisy/final \
-    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
     --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-    --output data/router_features/swebench_noisy.jsonl \
-    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+    --output data/router_features/swebench.jsonl \
+    --batch-size 16 --K 5
+```
+
+Merge shards manually (if needed):
+```bash
+python scripts/generate_router_features.py --merge \
+    --output data/router_features/swebench.jsonl
 ```
 
 ### Step 7: Train router

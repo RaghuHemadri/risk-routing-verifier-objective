@@ -16,18 +16,46 @@
   - 36,144 step-level examples, loss: 0.58 → 0.21, accuracy: 86.8% → 91.3%
   - 3 epochs, ~2h wall time with dynamic padding
   - Output: `outputs/verifier/swebench_noisy/final/verifier.pt`
+- ✅ **Step 4:** Generated K=5 candidates per step (2× H200, 2 shards)
+  - 4,015 preference pairs from 3600 trajectories
+  - Output: `data/candidates/swebench_noisy.jsonl`
+- ✅ **Step 6:** Generated router features (4× H200, 4 shards)
+  - 4,016 feature vectors (13-dim), batched GPU inference, `--batch-size 16`
+  - Output: `data/router_features/swebench.jsonl`
+  - Git commit: `0353417`
 
 ## Next
 
-- **Step 4:** Generate K=5 candidates per task using BC-trained policy + verifier scoring
-  - Uses `outputs/policy/swebench_noisy/final` as the policy checkpoint
-  - Uses `outputs/verifier/swebench_noisy/final/verifier.pt` for scoring
-  - Output: preference pairs for DPO training
 - **Step 5:** Train DPO preference stage (uses candidates + verifier scores)
-  - Re-run `train_policy.py --stage preference --preference-data <pairs>`
-- **Step 6:** Generate router features
-- **Step 7:** Train router
+  ```bash
+  python scripts/train_policy.py \
+      --config configs/swebench/noisy.yaml \
+      --output outputs/policy/swebench_noisy \
+      --stage preference \
+      --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+      --preference-data data/candidates/swebench_noisy.jsonl \
+      --overrides policy.quantization.load_in_4bit=false
+  ```
+- **Step 7:** Train router on generated features
+  ```bash
+  python scripts/train_router.py \
+      --config configs/swebench/noisy.yaml \
+      --features data/router_features/swebench.jsonl \
+      --output outputs/router/swebench_noisy \
+      --overrides policy.quantization.load_in_4bit=false
+  ```
 - **Step 8:** Evaluate all methods (R2V, SLM-only, LLM-only, entropy router)
+  ```bash
+  python scripts/evaluate.py \
+      --config configs/swebench/noisy.yaml \
+      --policy-path outputs/policy/swebench_noisy/final \
+      --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+      --router-path outputs/router/swebench_noisy/final \
+      --output results/swebench_noisy \
+      --seeds 1 2 3 4 5 \
+      --methods r2v slm_only llm_only entropy_router \
+      --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+  ```
 - **Step 9:** Ablation studies
 
 ## HPC Notes
