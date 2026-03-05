@@ -158,19 +158,22 @@ def main():
         f"generating K={args.K} candidates per step"
     )
 
+    # Resolve generation hyperparams once
+    inf_cfg = cfg.get("inference", {})
+    gen_temperature = float(inf_cfg.get("temperature", 0.7)) if inf_cfg else 0.7
+    gen_max_tokens = int(inf_cfg.get("max_tokens", 128)) if inf_cfg else 128
+    logger.info(
+        f"Generation config: K={args.K}, max_new_tokens={gen_max_tokens}, "
+        f"temperature={gen_temperature}"
+    )
+
     total_pairs = 0
+    total_steps = 0
     t0 = time.time()
     with open(shard_output, "w") as f:
         for ep_idx, episode in enumerate(episodes):
-            if ep_idx % 50 == 0:
-                elapsed = time.time() - t0
-                rate = ep_idx / elapsed if elapsed > 0 else 0
-                eta = (len(episodes) - ep_idx) / rate if rate > 0 else float('inf')
-                logger.info(
-                    f"[shard {args.shard_id}] Episode {ep_idx}/{len(episodes)} "
-                    f"({total_pairs} pairs, {rate:.1f} ep/s, "
-                    f"ETA {eta / 60:.0f}min)"
-                )
+            ep_t0 = time.time()
+            num_steps = len(episode.steps)
 
             goal = episode.metadata.goal if episode.metadata else ""
             context = ""
@@ -181,8 +184,8 @@ def main():
                 candidates = policy.generate_candidates(
                     context=context,
                     num_candidates=args.K,
-                    temperature=cfg.get("inference", {}).get("temperature", 0.7),
-                    max_new_tokens=cfg.get("inference", {}).get("max_tokens", 512),
+                    temperature=gen_temperature,
+                    max_new_tokens=gen_max_tokens,
                 )
 
                 # Score all candidates in one batched verifier call
@@ -221,6 +224,20 @@ def main():
                     total_pairs += 1
 
                 context += step.action.raw_text + "\n"
+                total_steps += 1
+
+            # Log every episode
+            ep_elapsed = time.time() - ep_t0
+            elapsed = time.time() - t0
+            rate = (ep_idx + 1) / elapsed
+            remaining = len(episodes) - (ep_idx + 1)
+            eta = remaining / rate if rate > 0 else float('inf')
+            logger.info(
+                f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
+                f"({num_steps} steps, {ep_elapsed:.1f}s) | "
+                f"{total_pairs} pairs, {total_steps} steps total | "
+                f"{rate:.2f} ep/s, ETA {eta/60:.0f}min"
+            )
 
     elapsed = time.time() - t0
     logger.info(
