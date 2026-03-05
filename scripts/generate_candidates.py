@@ -105,22 +105,36 @@ def load_completed_episodes(output_file: Path) -> set[str]:
     return done
 
 
-def completed_episode_ids(output_file: Path) -> set[str]:
-    """Return set of episode_ids that have ALL their steps already done."""
-    if not output_file.exists():
+def completed_episode_ids_from_file(path: Path) -> set[str]:
+    """Read a single JSONL file and return all episode_ids found."""
+    if not path.exists():
         return set()
-    ep_steps: dict[str, set[int]] = {}
-    with open(output_file) as f:
+    eids: set[str] = set()
+    with open(path) as f:
         for line in f:
             try:
-                rec = json.loads(line)
-                eid = rec["episode_id"]
-                ep_steps.setdefault(eid, set()).add(rec["step_idx"])
+                eids.add(json.loads(line)["episode_id"])
             except (json.JSONDecodeError, KeyError):
                 continue
-    # We can't know total steps per episode from the output alone,
-    # so we return all episode_ids that appear at all (conservative: skip them).
-    return set(ep_steps.keys())
+    return eids
+
+
+def completed_episode_ids_global(output_path: Path) -> set[str]:
+    """Scan ALL shard files + main output for completed episode IDs.
+
+    This allows changing --num-shards between runs (e.g. 2 → 4) without
+    redoing work that was already completed under a different shard count.
+    """
+    done: set[str] = set()
+    # Check the main output file
+    done |= completed_episode_ids_from_file(output_path)
+    # Check all shard files (any shard count)
+    shard_pattern = str(
+        output_path.parent / f"{output_path.stem}.shard_*{output_path.suffix}"
+    )
+    for sf in glob.glob(shard_pattern):
+        done |= completed_episode_ids_from_file(Path(sf))
+    return done
 
 
 # ---------------------------------------------------------------------------
@@ -205,14 +219,19 @@ def main():
     )
 
     # --------------- Resume: check what's already done ---------------
+    # Scan ALL shard files (not just this shard's), so changing --num-shards
+    # between runs (e.g. 2 → 4 GPUs) still skips previously completed episodes.
     if args.no_resume:
         done_eids: set[str] = set()
         file_mode = "w"
     else:
-        done_eids = completed_episode_ids(shard_output)
-        file_mode = "a"  # append to existing output
+        done_eids = completed_episode_ids_global(output_path)
+        file_mode = "a"  # append to this shard's output
         if done_eids:
-            logger.info(f"Resuming: {len(done_eids)} episodes already completed in {shard_output}")
+            logger.info(
+                f"Resuming: found {len(done_eids)} completed episodes "
+                f"across all shard files"
+            )
 
     # --------------- Load models ---------------
     logger.info(f"Loading policy from {args.policy_path}")
