@@ -221,6 +221,14 @@ def main():
     policy.load(args.policy_path)
     policy.model.eval()
 
+    # Disable gradient checkpointing for inference — it forces use_cache=False,
+    # meaning generate() recomputes the full prefix at every decoding step.
+    # Re-enabling KV cache gives a major speedup.
+    if hasattr(policy.model, "gradient_checkpointing_disable"):
+        policy.model.gradient_checkpointing_disable()
+    policy.model.config.use_cache = True
+    logger.info("KV cache enabled (gradient checkpointing disabled for inference)")
+
     # Load verifier — force mode=trained when --verifier-path is given
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
