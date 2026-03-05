@@ -2,12 +2,26 @@
 """
 Generate router training features from collected trajectories.
 
-Usage:
+Single-GPU usage:
     python scripts/generate_router_features.py \
-        --config configs/webarena/noisy.yaml \
-        --policy-path outputs/policy/webarena_noisy/final \
-        --trajectories data/trajectories/webarena_noisy/trajectories.jsonl \
-        --output data/router_features/webarena.jsonl
+        --config configs/swebench/noisy.yaml \
+        --policy-path outputs/policy/swebench_noisy/final \
+        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+        --output data/router_features/swebench.jsonl
+
+Multi-GPU usage (via launch script — shards episodes across GPUs):
+    bash scripts/launch_router_features.sh 4 \
+        --config configs/swebench/noisy.yaml \
+        --policy-path outputs/policy/swebench_noisy/final \
+        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+        --output data/router_features/swebench.jsonl
+
+Merge shards after all GPUs finish:
+    python scripts/generate_router_features.py --merge \
+        --output data/router_features/swebench.jsonl
+
+Resume after a crash (re-run the same command — skips completed steps):
+    # Same command; already-written episode_ids are detected automatically.
 
 Features extracted per decision point:
 - SLM entropy (H(π_θ))
@@ -21,13 +35,17 @@ Features extracted per decision point:
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -42,98 +60,274 @@ from r2v.utils.logging import setup_logging
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate router features")
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--policy-path", type=str, required=True)
-    parser.add_argument("--trajectories", type=str, required=True)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--policy-path", type=str, default=None)
+    parser.add_argument("--trajectories", type=str, default=None)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--K", type=int, default=5)
+    parser.add_argument(
+        "--batch-size", type=int, default=4,
+        help="Micro-batch size for GPU batching. Increase for more GPU "
+             "utilisation; decrease if you hit OOM (default: 4).",
+    )
+    # Multi-GPU sharding
+    parser.add_argument("--shard-id", type=int, default=0,
+                        help="This worker's shard index (0-based)")
+    parser.add_argument("--num-shards", type=int, default=1,
+                        help="Total number of parallel workers / GPUs")
+    parser.add_argument("--merge", action="store_true",
+                        help="Merge shard outputs instead of generating")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="Do not resume; overwrite existing output")
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
 
-def extract_features(
-    policy: PolicyModel,
-    verifier,
-    context: str,
+# ================================================================
+# GPU keepalive: periodic tiny forward passes to prevent HPC from
+# killing the job due to low GPU utilization during CPU-bound phases.
+# ================================================================
+
+_keepalive_stop = threading.Event()
+
+
+def _gpu_keepalive(model, tokenizer, device, interval: float = 8.0):
+    """Background thread: run a tiny forward pass every *interval* seconds."""
+    dummy_ids = tokenizer("keepalive", return_tensors="pt")["input_ids"].to(device)
+    while not _keepalive_stop.is_set():
+        try:
+            with torch.no_grad():
+                model(dummy_ids)
+        except Exception:
+            pass
+        _keepalive_stop.wait(interval)
+
+
+def _start_keepalive(model, tokenizer, device, interval: float = 8.0):
+    _keepalive_stop.clear()
+    t = threading.Thread(
+        target=_gpu_keepalive, args=(model, tokenizer, device, interval),
+        daemon=True,
+    )
+    t.start()
+    return t
+
+
+def _stop_keepalive():
+    _keepalive_stop.set()
+
+
+# ================================================================
+# Resume helpers
+# ================================================================
+
+def _completed_episode_ids(output_file: Path) -> set[str]:
+    """Return set of episode_ids already present in *output_file*."""
+    if not output_file.exists():
+        return set()
+    eids: set[str] = set()
+    with open(output_file) as f:
+        for line in f:
+            try:
+                eids.add(json.loads(line)["episode_id"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return eids
+
+
+# ================================================================
+# Merge shards
+# ================================================================
+
+def _merge_shards(output_path: str, logger):
+    """Combine all shard JSONL files into a single output."""
+    out = Path(output_path)
+    pattern = str(out.parent / f"{out.stem}.shard_*{out.suffix}")
+    shard_files = sorted(glob.glob(pattern))
+    if not shard_files:
+        logger.error(f"No shard files matching {pattern}")
+        sys.exit(1)
+
+    total = 0
+    with open(out, "w") as fout:
+        for sf in shard_files:
+            with open(sf) as fin:
+                for line in fin:
+                    fout.write(line)
+                    total += 1
+            logger.info(f"  Merged {sf}")
+    logger.info(f"Merged {len(shard_files)} shards -> {out} ({total} records)")
+
+
+# ---- Perturbation one-hot encoding ------------------------------------
+_PERT_TYPES = [
+    None, "tool_flakiness", "partial_observability",
+    "prompt_injection", "distractors",
+]
+
+
+def _perturbation_onehot(pert_type: str | None) -> list[float]:
+    """Encode perturbation type as a 5-dim one-hot vector."""
+    one_hot = [0.0] * len(_PERT_TYPES)
+    if pert_type in _PERT_TYPES:
+        one_hot[_PERT_TYPES.index(pert_type)] = 1.0
+    else:
+        one_hot[0] = 1.0
+    return one_hot
+
+
+def _assemble_features(
+    entropy: float,
+    scores: list[float],
     step_idx: int,
     max_steps: int,
-    perturbation_type: str | None,
-    goal: str = "",
-    K: int = 5,
-    cfg=None,
+    context_len: int,
+    pert_type: str | None,
 ) -> list[float]:
-    """Extract feature vector for router decision.
-
-    Returns fixed-size feature vector.
-    """
-    features = []
-
+    """Build the 13-dim feature vector from pre-computed components."""
+    features: list[float] = []
     # 1. SLM entropy
-    try:
-        entropy = policy.compute_entropy(context)
-        features.append(float(entropy))
-    except Exception:
-        features.append(0.0)
+    features.append(entropy)
+    # 2. Verifier candidate scores
+    features.append(max(scores) - min(scores))   # spread
+    features.append(float(np.mean(scores)))        # mean
+    features.append(float(np.std(scores)))          # std
+    features.append(max(scores))                    # best
+    # 3. Step features
+    features.append(step_idx / max(max_steps, 1))  # horizon fraction
+    features.append(float(step_idx))                # absolute step
+    # 4. Context length (normalised)
+    features.append(context_len / 10000.0)
+    # 5. Perturbation one-hot
+    features.extend(_perturbation_onehot(pert_type))
+    return features  # length 13
 
-    # 2. Generate candidates and compute score spread
-    try:
-        inf_cfg = cfg.get("inference", {}) if cfg else {}
-        candidates = policy.generate_candidates(
-            context=context,
-            num_candidates=K,
-            temperature=float(inf_cfg.get("temperature", 0.7)) if inf_cfg else 0.7,
-            max_new_tokens=int(inf_cfg.get("max_tokens", 512)) if inf_cfg else 512,
-        )
-        cand_texts = [c["text"] for c in candidates]
-        scores = verifier.score_candidates(
-            context=context, candidates=cand_texts, goal=goal,
-        )
 
-        features.append(max(scores) - min(scores))  # Score spread
-        features.append(float(np.mean(scores)))       # Mean score
-        features.append(float(np.std(scores)))         # Score std
-        features.append(max(scores))                   # Best score
-    except Exception:
-        features.extend([0.0, 0.0, 0.0, 0.0])
+# ================================================================
+# Prefetch iterator: tokenises the next batch on a CPU thread
+# while the GPU processes the current batch.
+# ================================================================
 
-    # 3. Step count features
-    features.append(step_idx / max(max_steps, 1))  # Horizon fraction
-    features.append(float(step_idx))                 # Absolute step
+class _PrefetchIter:
+    """Yields ``(batch_items, entropy_tokens, gen_tokens)`` with one
+    batch pre-tokenised on a daemon thread ahead of consumption.
 
-    # 4. Context length (normalized)
-    features.append(len(context) / 10000.0)
+    * entropy_tokens — right-padded (default), used for the single
+      forward pass that computes next-token entropy.
+    * gen_tokens — **left-padded**, so that ``model.generate()`` appends
+      new tokens on the right for every sequence in the batch.
 
-    # 5. Perturbation type (one-hot, 5 categories: none + 4 types)
-    pert_types = [None, "tool_flakiness", "partial_observability", "prompt_injection", "distractors"]
-    one_hot = [0.0] * len(pert_types)
-    if perturbation_type in pert_types:
-        one_hot[pert_types.index(perturbation_type)] = 1.0
-    else:
-        one_hot[0] = 1.0  # Default to "none"
-    features.extend(one_hot)
+    The background thread only touches the *tokenizer* (CPU-only);
+    all GPU work stays on the main thread, so there is no device
+    contention.
+    """
 
-    return features  # Total: 1 + 4 + 2 + 1 + 5 = 13
+    def __init__(self, items, batch_size, tokenizer, max_seq_len, max_new_tokens):
+        self._items = items
+        self._bs = batch_size
+        self._tok = tokenizer
+        self._max_seq = max_seq_len
+        self._max_new = max_new_tokens
+        self._q: queue.Queue = queue.Queue(maxsize=2)
+        self._thread = threading.Thread(target=self._produce, daemon=True)
+        self._thread.start()
+
+    # ---- background producer ------------------------------------------
+    def _produce(self):
+        for start in range(0, len(self._items), self._bs):
+            batch = self._items[start : start + self._bs]
+            prompts = [f"{it['context']}\nAction:" for it in batch]
+
+            # Entropy forward pass — right-padding (default)
+            entropy_tok = self._tok(
+                prompts,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self._max_seq,
+                padding=True,
+            )
+
+            # Generation — left-padding so new tokens are right-aligned
+            orig_side = self._tok.padding_side
+            self._tok.padding_side = "left"
+            gen_tok = self._tok(
+                prompts,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self._max_seq - self._max_new,
+                padding=True,
+            )
+            self._tok.padding_side = orig_side
+
+            self._q.put((batch, entropy_tok, gen_tok))
+        self._q.put(None)  # sentinel
+
+    def __iter__(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                break
+            yield item
 
 
 def main():
     args = parse_args()
-    cfg = load_config(args.config, args.overrides)
     logger = setup_logging(level="INFO")
+
+    # ---- Merge mode --------------------------------------------------
+    if args.merge:
+        _merge_shards(args.output, logger)
+        return
+
+    # ---- Generation mode: require config, policy-path, trajectories --
+    if not args.config or not args.policy_path or not args.trajectories:
+        logger.error(
+            "--config, --policy-path, and --trajectories are required "
+            "for generation mode (omit --merge)"
+        )
+        sys.exit(1)
+
+    cfg = load_config(args.config, args.overrides)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load models
+    # Determine shard output path
+    if args.num_shards > 1:
+        shard_output = (
+            output_path.parent
+            / f"{output_path.stem}.shard_{args.shard_id:03d}{output_path.suffix}"
+        )
+        logger.info(
+            f"[shard {args.shard_id}/{args.num_shards}] "
+            f"Writing to {shard_output}"
+        )
+    else:
+        shard_output = output_path
+
+    # ---- Resume: detect already-completed episodes -------------------
+    if args.no_resume:
+        done_eids: set[str] = set()
+        file_mode = "w"
+    else:
+        done_eids = _completed_episode_ids(shard_output)
+        file_mode = "a"
+        if done_eids:
+            logger.info(
+                f"Resuming: {len(done_eids)} episodes already in {shard_output}"
+            )
+
+    # ---- Load models -------------------------------------------------
     logger.info("Loading policy...")
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
     policy.load(args.policy_path)
     policy.model.eval()
 
-    # Disable gradient checkpointing for inference speed
     if hasattr(policy.model, "gradient_checkpointing_disable"):
         policy.model.gradient_checkpointing_disable()
     policy.model.config.use_cache = True
+    logger.info("KV cache enabled (gradient checkpointing disabled for inference)")
 
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
@@ -143,71 +337,235 @@ def main():
     if torch.cuda.is_available() and hasattr(verifier, "to"):
         verifier = verifier.to("cuda")
 
-    # Load trajectories
+    # ---- Start GPU keepalive -----------------------------------------
+    if torch.cuda.is_available():
+        _start_keepalive(
+            policy.model, policy.tokenizer, policy.model.device, interval=8.0,
+        )
+        logger.info("GPU keepalive thread started (8 s interval)")
+
+    # ---- Load & shard trajectories -----------------------------------
     store = TrajectoryStore(args.trajectories)
-    episodes = store.load_episodes()
-    logger.info(f"Loaded {len(episodes)} episodes")
+    all_episodes = store.load_episodes()
+    episodes = all_episodes[args.shard_id :: args.num_shards]
 
-    max_steps = cfg.get("inference", {}).get("step_limit", 15) if cfg.get("inference") else 15
-    total_features = 0
+    # Filter out already-completed episodes on resume
+    if done_eids:
+        episodes = [ep for ep in episodes if ep.episode_id not in done_eids]
+
+    logger.info(
+        f"[shard {args.shard_id}] {len(episodes)} episodes to process "
+        f"(total {len(all_episodes)}, skipped {len(done_eids)} done)"
+    )
+
+    max_steps = (
+        cfg.get("inference", {}).get("step_limit", 15)
+        if cfg.get("inference") else 15
+    )
+    inf_cfg = (
+        OmegaConf.to_container(cfg.get("inference", {}), resolve=True)
+        if cfg.get("inference") else {}
+    )
+    gen_temperature = float(inf_cfg.get("temperature", 0.7)) if inf_cfg else 0.7
+    gen_max_tokens  = int(inf_cfg.get("max_tokens", 512))   if inf_cfg else 512
+    K = args.K
+
+    # ---- Pre-collect every (context, metadata) pair ------------------
+    logger.info("Pre-collecting step items...")
+    all_items: list[dict] = []
+    for episode in episodes:
+        goal = episode.metadata.goal if episode.metadata else ""
+        slm_success = 1.0 if episode.success else 0.0
+        llm_steps = sum(
+            1 for s in episode.steps
+            if s.action_source == ActionSource.TEACHER
+        )
+        cost = llm_steps / max(len(episode.steps), 1)
+
+        context = ""
+        for step_idx, step in enumerate(episode.steps):
+            context += step.observation.raw_text + "\n"
+
+            pert_type = None
+            if (step.perturbation_type
+                    and step.perturbation_type != PerturbationType.NONE):
+                pert_type = step.perturbation_type.value
+
+            all_items.append({
+                "context": context,
+                "step_idx": step_idx,
+                "goal": goal,
+                "pert_type": pert_type,
+                "slm_success": slm_success,
+                "cost": cost,
+                "episode_id": episode.episode_id,
+            })
+
+            context += step.action.raw_text + "\n"
+
+    total_batches = (len(all_items) + args.batch_size - 1) // args.batch_size
+    logger.info(
+        f"[shard {args.shard_id}] Collected {len(all_items)} step items "
+        f"from {len(episodes)} episodes -> {total_batches} batches "
+        f"(batch_size={args.batch_size})"
+    )
+
+    # ---- Batched processing ------------------------------------------
     t0 = time.time()
+    total_features = 0
+    device = policy.model.device
+    pad_id = policy.tokenizer.pad_token_id
 
-    with open(output_path, "w") as f:
-        for ep_idx, episode in enumerate(episodes):
-            if ep_idx % 10 == 0:
-                elapsed = time.time() - t0
-                rate = ep_idx / elapsed if elapsed > 0 else 0
-                logger.info(
-                    f"Processing episode {ep_idx}/{len(episodes)} "
-                    f"({rate:.2f} ep/s)"
+    prefetcher = _PrefetchIter(
+        all_items, args.batch_size,
+        policy.tokenizer, policy.max_seq_len, gen_max_tokens,
+    )
+
+    with open(shard_output, file_mode) as f:
+        for batch_idx, (batch, entropy_tok, gen_tok) in enumerate(prefetcher):
+            batch_t0 = time.time()
+            B = len(batch)
+
+            # ---------- 1. Batched entropy ----------------------------
+            try:
+                ent_ids  = entropy_tok["input_ids"].to(device)
+                ent_mask = entropy_tok["attention_mask"].to(device)
+                with torch.no_grad():
+                    ent_out = policy.model(
+                        input_ids=ent_ids, attention_mask=ent_mask,
+                    )
+                seq_lens = ent_mask.sum(dim=1) - 1
+                last_logits = ent_out.logits[
+                    torch.arange(B, device=device), seq_lens
+                ]
+                entropies = (
+                    torch.distributions.Categorical(logits=last_logits)
+                    .entropy()
+                    .tolist()
                 )
+            except Exception:
+                entropies = [0.0] * B
 
-            goal = episode.metadata.goal if episode.metadata else ""
-            context = ""
-            for step_idx, step in enumerate(episode.steps):
-                context += step.observation.raw_text + "\n"
+            # ---------- 2. Batched candidate generation ---------------
+            try:
+                gen_ids  = gen_tok["input_ids"].to(device)
+                gen_mask = gen_tok["attention_mask"].to(device)
+                with torch.no_grad():
+                    gen_out = policy.model.generate(
+                        input_ids=gen_ids,
+                        attention_mask=gen_mask,
+                        max_new_tokens=gen_max_tokens,
+                        num_return_sequences=K,
+                        temperature=gen_temperature,
+                        top_p=0.95,
+                        do_sample=True,
+                        pad_token_id=pad_id,
+                        return_dict_in_generate=True,
+                        output_scores=True,
+                    )
+                prompt_len = gen_ids.shape[1]
+                all_candidates: list[list[dict]] = []
+                for b in range(B):
+                    cands = []
+                    for k in range(K):
+                        idx = b * K + k
+                        gen_tokens = gen_out.sequences[idx, prompt_len:]
+                        gen_tokens = gen_tokens[gen_tokens != pad_id]
+                        text = policy.tokenizer.decode(
+                            gen_tokens, skip_special_tokens=True
+                        ).strip()
 
-                pert_type = None
-                if step.perturbation_type and step.perturbation_type != PerturbationType.NONE:
-                    pert_type = step.perturbation_type.value
+                        lp = 0.0
+                        if gen_out.scores:
+                            for t, sc in enumerate(gen_out.scores):
+                                if t >= len(gen_tokens):
+                                    break
+                                lp += F.log_softmax(
+                                    sc[idx], dim=-1
+                                )[gen_tokens[t]].item()
 
-                features = extract_features(
-                    policy=policy,
-                    verifier=verifier,
-                    context=context,
-                    step_idx=step_idx,
+                        cands.append({
+                            "text": text,
+                            "log_prob": lp,
+                            "num_tokens": len(gen_tokens),
+                        })
+                    all_candidates.append(cands)
+            except Exception:
+                all_candidates = [
+                    [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
+                ] * B
+
+            # ---------- 3. Batched verifier scoring -------------------
+            flat_ctx, flat_cand, flat_goal = [], [], []
+            for b in range(B):
+                for c in all_candidates[b]:
+                    flat_ctx.append(batch[b]["context"])
+                    flat_cand.append(c["text"])
+                    flat_goal.append(batch[b]["goal"])
+
+            try:
+                flat_scores = verifier.score_batch(
+                    flat_ctx, flat_cand, flat_goal,
+                )
+            except Exception:
+                flat_scores = [0.5] * len(flat_ctx)
+
+            all_scores = [
+                flat_scores[b * K : (b + 1) * K] for b in range(B)
+            ]
+
+            # ---------- 4. Assemble features & write ------------------
+            for i, item in enumerate(batch):
+                features = _assemble_features(
+                    entropy=entropies[i],
+                    scores=all_scores[i],
+                    step_idx=item["step_idx"],
                     max_steps=max_steps,
-                    perturbation_type=pert_type,
-                    goal=goal,
-                    K=args.K,
-                    cfg=cfg,
+                    context_len=len(item["context"]),
+                    pert_type=item["pert_type"],
                 )
-
-                # Label: did SLM succeed from this point?
-                slm_success = 1.0 if episode.success else 0.0
-
-                # Cost: proportion of LLM calls in episode
-                llm_steps = sum(
-                    1 for s in episode.steps if s.action_source == ActionSource.TEACHER
-                )
-                cost = llm_steps / max(len(episode.steps), 1)
-
                 record = {
                     "features": features,
-                    "slm_success": slm_success,
-                    "cost": cost,
-                    "episode_id": episode.episode_id,
-                    "step_idx": step_idx,
+                    "slm_success": item["slm_success"],
+                    "cost": item["cost"],
+                    "episode_id": item["episode_id"],
+                    "step_idx": item["step_idx"],
                 }
                 f.write(json.dumps(record) + "\n")
                 total_features += 1
 
-                context += step.action.raw_text + "\n"
+            # ---------- 5. Progress logging ---------------------------
+            batch_elapsed = time.time() - batch_t0
+            elapsed = time.time() - t0
+            steps_done = total_features
+            rate = steps_done / elapsed if elapsed > 0 else 0
+            remaining = len(all_items) - steps_done
+            eta = remaining / rate if rate > 0 else float("inf")
+            pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
+
+            logger.info(
+                f"[shard {args.shard_id}] "
+                f"Batch {batch_idx + 1}/{total_batches} "
+                f"({pct:5.1f}%)  |  "
+                f"{steps_done}/{len(all_items)} steps  |  "
+                f"{rate:.1f} steps/s  |  "
+                f"batch {batch_elapsed:.2f}s  |  "
+                f"ETA {eta / 60:.1f}min"
+            )
+
+            # Flush every batch so progress is visible in log files
+            f.flush()
+
+    # ---- Cleanup -----------------------------------------------------
+    if torch.cuda.is_available():
+        _stop_keepalive()
 
     elapsed = time.time() - t0
     logger.info(
-        f"Generated {total_features} feature vectors → {output_path} "
-        f"in {elapsed / 60:.1f}min"
+        f"[shard {args.shard_id}] Done: {total_features} feature vectors "
+        f"from {len(episodes)} episodes in {elapsed / 60:.1f}min "
+        f"({total_features / max(elapsed, 1e-6):.1f} steps/s) "
+        f"-> {shard_output}"
     )
 
 

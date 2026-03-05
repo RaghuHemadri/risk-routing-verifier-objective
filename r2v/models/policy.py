@@ -265,6 +265,179 @@ class PolicyModel(nn.Module):
         )
         return dist.entropy().item()
 
+    @torch.no_grad()
+    def compute_entropy_and_candidates(
+        self,
+        context: str,
+        num_candidates: int = 8,
+        max_new_tokens: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> tuple[float, list[dict[str, Any]]]:
+        """Compute entropy and generate candidates from a single tokenization.
+
+        Avoids tokenizing the same context twice when both entropy
+        and candidates are needed (e.g., router feature extraction).
+        """
+        prompt = f"{context}\nAction:"
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True,
+            max_length=self.max_seq_len - max_new_tokens,
+        ).to(self.model.device)
+
+        # 1. Entropy from forward pass (reuses prompt tokens)
+        dist = self.compute_action_distribution(
+            inputs["input_ids"], inputs["attention_mask"]
+        )
+        entropy = dist.entropy().item()
+
+        # 2. Generate candidates
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=num_candidates,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+
+        prompt_len = inputs["input_ids"].shape[1]
+        candidates = []
+        for i in range(num_candidates):
+            generated_ids = outputs.sequences[i, prompt_len:]
+            generated_text = self.tokenizer.decode(
+                generated_ids, skip_special_tokens=True
+            ).strip()
+
+            log_prob = 0.0
+            if outputs.scores:
+                for t, score_t in enumerate(outputs.scores):
+                    if t >= len(generated_ids):
+                        break
+                    token_id = generated_ids[t]
+                    log_probs_t = F.log_softmax(score_t[i], dim=-1)
+                    log_prob += log_probs_t[token_id].item()
+
+            candidates.append({
+                "text": generated_text,
+                "log_prob": log_prob,
+                "num_tokens": len(generated_ids),
+            })
+
+        return entropy, candidates
+
+    @torch.no_grad()
+    def compute_entropy_batch(self, contexts: list[str]) -> list[float]:
+        """Compute entropy H(pi_theta(.|x)) for multiple contexts in one
+        batched forward pass.  Much more GPU-efficient than calling
+        compute_entropy() in a loop."""
+        if not contexts:
+            return []
+
+        prompts = [f"{ctx}\nAction:" for ctx in contexts]
+        inputs = self.tokenizer(
+            prompts, return_tensors="pt", truncation=True,
+            max_length=self.max_seq_len, padding=True,
+        ).to(self.model.device)
+
+        outputs = self.model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+        )
+
+        # Get last non-padding position for each sequence
+        seq_lens = inputs["attention_mask"].sum(dim=1) - 1
+        last_logits = outputs.logits[
+            torch.arange(len(contexts), device=outputs.logits.device),
+            seq_lens,
+        ]
+
+        dists = torch.distributions.Categorical(logits=last_logits)
+        return dists.entropy().tolist()
+
+    @torch.no_grad()
+    def generate_candidates_batch(
+        self,
+        contexts: list[str],
+        num_candidates: int = 8,
+        max_new_tokens: int = 256,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+    ) -> list[list[dict[str, Any]]]:
+        """Generate K candidate actions for multiple contexts in one
+        batched call.
+
+        Uses left-padding so generation starts from the last real token
+        for every sequence in the batch.
+
+        Returns: list (per context) of list (per candidate) of dicts.
+        """
+        if not contexts:
+            return []
+
+        prompts = [f"{ctx}\nAction:" for ctx in contexts]
+        B = len(prompts)
+        K = num_candidates
+
+        # Left-pad so generated tokens are right-aligned
+        orig_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        inputs = self.tokenizer(
+            prompts, return_tensors="pt", truncation=True,
+            max_length=self.max_seq_len - max_new_tokens,
+            padding=True,
+        ).to(self.model.device)
+        self.tokenizer.padding_side = orig_padding_side
+
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            num_return_sequences=K,
+            temperature=temperature,
+            top_p=top_p,
+            do_sample=True,
+            pad_token_id=self.tokenizer.pad_token_id,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+
+        prompt_len = inputs["input_ids"].shape[1]
+        pad_id = self.tokenizer.pad_token_id
+        all_candidates: list[list[dict[str, Any]]] = []
+
+        for b in range(B):
+            candidates = []
+            for k in range(K):
+                idx = b * K + k
+                generated_ids = outputs.sequences[idx, prompt_len:]
+                # Strip padding / EOS that may trail shorter generations
+                mask = generated_ids != pad_id
+                generated_ids = generated_ids[mask]
+                generated_text = self.tokenizer.decode(
+                    generated_ids, skip_special_tokens=True
+                ).strip()
+
+                log_prob = 0.0
+                if outputs.scores:
+                    for t, score_t in enumerate(outputs.scores):
+                        if t >= len(generated_ids):
+                            break
+                        token_id = generated_ids[t]
+                        log_probs_t = F.log_softmax(score_t[idx], dim=-1)
+                        log_prob += log_probs_t[token_id].item()
+
+                candidates.append({
+                    "text": generated_text,
+                    "log_prob": log_prob,
+                    "num_tokens": len(generated_ids),
+                })
+            all_candidates.append(candidates)
+
+        return all_candidates
+
     def get_hidden_state(
         self, context: str, layer: int = -1
     ) -> torch.Tensor:

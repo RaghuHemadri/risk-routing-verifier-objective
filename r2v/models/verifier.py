@@ -168,11 +168,82 @@ class LLMJudgeVerifier(BaseVerifier):
     def score_batch(
         self, contexts: list[str], actions: list[str], goals: list[str]
     ) -> list[float]:
-        # For API-based: could parallelize, for now sequential
+        """Score a batch of (context, action) pairs.
+
+        Uses batched inference for local HF models and threaded
+        parallelism for API providers (OpenAI / Anthropic).
+        """
+        if self.provider == "local":
+            return self._score_batch_local(contexts, actions, goals)
+
+        if self.provider in ("openai", "anthropic"):
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=min(8, len(contexts))) as pool:
+                futures = [
+                    pool.submit(self.score, ctx, act, goal)
+                    for ctx, act, goal in zip(contexts, actions, goals)
+                ]
+                return [fut.result() for fut in futures]
+
         return [
             self.score(ctx, act, goal)
             for ctx, act, goal in zip(contexts, actions, goals)
         ]
+
+    def _score_batch_local(
+        self, contexts: list[str], actions: list[str], goals: list[str]
+    ) -> list[float]:
+        """Batched scoring with the local HF verifier model.
+
+        Tokenises all prompts together and runs a single generate() call
+        so the GPU processes the full batch in one kernel launch.
+        """
+        prompts = [
+            VERIFIER_USER_TEMPLATE.format(goal=g, context=c, action=a)
+            for c, a, g in zip(contexts, actions, goals)
+        ]
+        all_messages = [
+            [
+                {"role": "system", "content": VERIFIER_SYSTEM_PROMPT},
+                {"role": "user", "content": p},
+            ]
+            for p in prompts
+        ]
+        texts = [
+            self.tokenizer.apply_chat_template(
+                msgs, tokenize=False, add_generation_prompt=True
+            )
+            for msgs in all_messages
+        ]
+
+        # Ensure pad token is set (needed for batch padding)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        orig_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = "left"
+        inputs = self.tokenizer(
+            texts, return_tensors="pt", truncation=True,
+            max_length=4096, padding=True,
+        ).to(self.model.device)
+        self.tokenizer.padding_side = orig_side
+
+        pad_id = self.tokenizer.pad_token_id
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs, max_new_tokens=100,
+                temperature=self.temperature, do_sample=True,
+                pad_token_id=pad_id,
+            )
+
+        prompt_len = inputs["input_ids"].shape[1]
+        scores: list[float] = []
+        for i in range(len(prompts)):
+            generated = outputs[i, prompt_len:]
+            generated = generated[generated != pad_id]
+            response = self.tokenizer.decode(generated, skip_special_tokens=True)
+            scores.append(self._parse_score(response))
+        return scores
 
     def _query_local(self, prompt: str) -> str:
         messages = [
