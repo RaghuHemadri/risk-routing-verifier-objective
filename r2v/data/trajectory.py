@@ -169,25 +169,61 @@ class Episode:
 # ============================================================
 
 class TrajectoryStore:
-    """Persistent storage for trajectory datasets using JSONL."""
+    """Persistent storage for trajectory datasets using JSONL.
 
-    def __init__(self, path: str | Path):
+    Parameters
+    ----------
+    path : str | Path
+        Destination JSONL file.
+    async_write : bool
+        When *True* a background thread handles disk I/O so callers
+        (e.g. GPU workers) are never blocked on ``write()`` / ``flush()``.
+    """
+
+    def __init__(self, path: str | Path, *, async_write: bool = False):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._async = async_write
+        self._writer = None
+        if async_write:
+            from r2v.utils.async_writer import AsyncJSONLWriter
+            self._writer = AsyncJSONLWriter(self.path, mode="a")
+            self._writer.start()
 
     def save_episode(self, episode: Episode) -> None:
         """Append a single episode to the JSONL file."""
-        with jsonlines.open(self.path, mode="a") as writer:
-            writer.write(episode.to_dict())
+        if self._writer is not None:
+            self._writer.write(episode.to_dict())
+        else:
+            with jsonlines.open(self.path, mode="a") as writer:
+                writer.write(episode.to_dict())
 
     def save_episodes(self, episodes: list[Episode]) -> None:
         """Append episodes to the JSONL file."""
-        with jsonlines.open(self.path, mode="a") as writer:
-            for ep in episodes:
-                writer.write(ep.to_dict())
+        if self._writer is not None:
+            self._writer.write_many([ep.to_dict() for ep in episodes])
+        else:
+            with jsonlines.open(self.path, mode="a") as writer:
+                for ep in episodes:
+                    writer.write(ep.to_dict())
+
+    def flush(self) -> None:
+        """Block until all queued writes are flushed (async mode only)."""
+        if self._writer is not None:
+            self._writer.flush()
+
+    def close(self) -> None:
+        """Drain outstanding writes and shut down the background thread."""
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
 
     def load_episodes(self, max_count: int | None = None) -> list[Episode]:
-        """Load episodes from the JSONL file."""
+        """Load episodes from the JSONL file.
+
+        Flushes the async writer first so reads are consistent.
+        """
+        self.flush()
         episodes = []
         if not self.path.exists():
             return episodes
@@ -200,6 +236,7 @@ class TrajectoryStore:
 
     def count(self) -> int:
         """Count episodes without loading all into memory."""
+        self.flush()
         if not self.path.exists():
             return 0
         count = 0

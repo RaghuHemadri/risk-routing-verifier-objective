@@ -47,6 +47,7 @@ from omegaconf import OmegaConf
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
+from r2v.utils.async_writer import AsyncJSONLWriter
 from r2v.utils.config import config_to_dict, load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
@@ -105,36 +106,22 @@ def load_completed_episodes(output_file: Path) -> set[str]:
     return done
 
 
-def completed_episode_ids_from_file(path: Path) -> set[str]:
-    """Read a single JSONL file and return all episode_ids found."""
-    if not path.exists():
+def completed_episode_ids(output_file: Path) -> set[str]:
+    """Return set of episode_ids that have ALL their steps already done."""
+    if not output_file.exists():
         return set()
-    eids: set[str] = set()
-    with open(path) as f:
+    ep_steps: dict[str, set[int]] = {}
+    with open(output_file) as f:
         for line in f:
             try:
-                eids.add(json.loads(line)["episode_id"])
+                rec = json.loads(line)
+                eid = rec["episode_id"]
+                ep_steps.setdefault(eid, set()).add(rec["step_idx"])
             except (json.JSONDecodeError, KeyError):
                 continue
-    return eids
-
-
-def completed_episode_ids_global(output_path: Path) -> set[str]:
-    """Scan ALL shard files + main output for completed episode IDs.
-
-    This allows changing --num-shards between runs (e.g. 2 → 4) without
-    redoing work that was already completed under a different shard count.
-    """
-    done: set[str] = set()
-    # Check the main output file
-    done |= completed_episode_ids_from_file(output_path)
-    # Check all shard files (any shard count)
-    shard_pattern = str(
-        output_path.parent / f"{output_path.stem}.shard_*{output_path.suffix}"
-    )
-    for sf in glob.glob(shard_pattern):
-        done |= completed_episode_ids_from_file(Path(sf))
-    return done
+    # We can't know total steps per episode from the output alone,
+    # so we return all episode_ids that appear at all (conservative: skip them).
+    return set(ep_steps.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -219,19 +206,14 @@ def main():
     )
 
     # --------------- Resume: check what's already done ---------------
-    # Scan ALL shard files (not just this shard's), so changing --num-shards
-    # between runs (e.g. 2 → 4 GPUs) still skips previously completed episodes.
     if args.no_resume:
         done_eids: set[str] = set()
         file_mode = "w"
     else:
-        done_eids = completed_episode_ids_global(output_path)
-        file_mode = "a"  # append to this shard's output
+        done_eids = completed_episode_ids(shard_output)
+        file_mode = "a"  # append to existing output
         if done_eids:
-            logger.info(
-                f"Resuming: found {len(done_eids)} completed episodes "
-                f"across all shard files"
-            )
+            logger.info(f"Resuming: {len(done_eids)} episodes already completed in {shard_output}")
 
     # --------------- Load models ---------------
     logger.info(f"Loading policy from {args.policy_path}")
@@ -302,79 +284,94 @@ def main():
     total_pairs = 0
     total_steps = 0
     t0 = time.time()
-    with open(shard_output, file_mode) as f:
-        for ep_idx, episode in enumerate(episodes):
-            ep_t0 = time.time()
-            num_steps = len(episode.steps)
-            goal = episode.metadata.goal if episode.metadata else ""
-            context = ""
 
-            for step_idx, step in enumerate(episode.steps):
-                context += step.observation.raw_text + "\n"
+    # Async writer: JSON serialisation + disk flush happen on a background
+    # thread so the GPU never stalls waiting for I/O.
+    writer = AsyncJSONLWriter(shard_output, mode=file_mode, flush_every=1)
+    writer.start()
+    logger.info("Async JSONL writer started (disk I/O decoupled from GPU)")
 
-                # Generate K candidates (batched: one forward pass)
-                candidates = policy.generate_candidates(
-                    context=context,
-                    num_candidates=args.K,
-                    temperature=gen_temperature,
-                    max_new_tokens=gen_max_tokens,
-                )
+    for ep_idx, episode in enumerate(episodes):
+        ep_t0 = time.time()
+        num_steps = len(episode.steps)
+        goal = episode.metadata.goal if episode.metadata else ""
+        context = ""
 
-                # Score all candidates in one batched verifier call
-                cand_texts = [c["text"] for c in candidates]
-                scores = verifier.score_candidates(
-                    context=context,
-                    candidates=cand_texts,
-                    goal=goal,
-                )
+        for step_idx, step in enumerate(episode.steps):
+            context += step.observation.raw_text + "\n"
 
-                scored = [
-                    {
-                        "action": cand["text"],
-                        "log_prob": cand["log_prob"],
-                        "verifier_score": sc,
-                    }
-                    for cand, sc in zip(candidates, scores)
-                ]
-
-                # Sort by verifier score → create preference pairs
-                scored.sort(key=lambda x: x["verifier_score"], reverse=True)
-
-                if len(scored) >= 2:
-                    pair = {
-                        "context": context,
-                        "chosen": scored[0]["action"],
-                        "rejected": scored[-1]["action"],
-                        "chosen_score": scored[0]["verifier_score"],
-                        "rejected_score": scored[-1]["verifier_score"],
-                        "episode_id": episode.episode_id,
-                        "step_idx": step_idx,
-                        "all_candidates": scored,
-                    }
-                    f.write(json.dumps(pair) + "\n")
-                    f.flush()
-                    total_pairs += 1
-
-                context += step.action.raw_text + "\n"
-                total_steps += 1
-
-            # Per-episode log
-            ep_elapsed = time.time() - ep_t0
-            elapsed = time.time() - t0
-            rate = (ep_idx + 1) / elapsed
-            remaining = len(episodes) - (ep_idx + 1)
-            eta = remaining / rate if rate > 0 else float('inf')
-            logger.info(
-                f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
-                f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
-                f"{total_pairs} pairs | {rate:.2f} ep/s, ETA {eta/60:.0f}min"
+            # Generate K candidates (batched: one forward pass)
+            candidates = policy.generate_candidates(
+                context=context,
+                num_candidates=args.K,
+                temperature=gen_temperature,
+                max_new_tokens=gen_max_tokens,
             )
+
+            # Score all candidates in one batched verifier call
+            cand_texts = [c["text"] for c in candidates]
+            scores = verifier.score_candidates(
+                context=context,
+                candidates=cand_texts,
+                goal=goal,
+            )
+
+            scored = [
+                {
+                    "action": cand["text"],
+                    "log_prob": cand["log_prob"],
+                    "verifier_score": sc,
+                }
+                for cand, sc in zip(candidates, scores)
+            ]
+
+            # Sort by verifier score → create preference pairs
+            scored.sort(key=lambda x: x["verifier_score"], reverse=True)
+
+            if len(scored) >= 2:
+                pair = {
+                    "context": context,
+                    "chosen": scored[0]["action"],
+                    "rejected": scored[-1]["action"],
+                    "chosen_score": scored[0]["verifier_score"],
+                    "rejected_score": scored[-1]["verifier_score"],
+                    "episode_id": episode.episode_id,
+                    "step_idx": step_idx,
+                    "all_candidates": scored,
+                }
+                # Non-blocking: dict is queued; background thread
+                # serialises to JSON and flushes to disk.
+                writer.write(pair)
+                total_pairs += 1
+
+            context += step.action.raw_text + "\n"
+            total_steps += 1
+
+        # Per-episode log
+        ep_elapsed = time.time() - ep_t0
+        elapsed = time.time() - t0
+        rate = (ep_idx + 1) / elapsed
+        remaining = len(episodes) - (ep_idx + 1)
+        eta = remaining / rate if rate > 0 else float('inf')
+        logger.info(
+            f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
+            f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
+            f"{total_pairs} pairs ({writer.pending} queued) | "
+            f"{rate:.2f} ep/s, ETA {eta/60:.0f}min"
+        )
+
+    # Drain remaining queued writes before proceeding
+    writer.close()
+    logger.info(f"Async writer flushed & closed ({writer.items_written} items written)")
 
     # --------------- Cleanup ---------------
     if _torch.cuda.is_available():
         stop_keepalive()
 
     elapsed = time.time() - t0
+    assert writer.items_written == total_pairs, (
+        f"Writer mismatch: wrote {writer.items_written}, expected {total_pairs}"
+    )
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "
         f"{len(episodes)} episodes in {elapsed / 60:.1f}min → {shard_output}"
