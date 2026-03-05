@@ -77,6 +77,11 @@ class PolicyModel(nn.Module):
             self.model_name, **model_kwargs
         )
 
+        # Sync pad_token_id into model config to suppress
+        # "Setting pad_token_id to eos_token_id" warning during generate()
+        if self.model.config.pad_token_id is None:
+            self.model.config.pad_token_id = self.tokenizer.pad_token_id
+
         # Apply LoRA if configured
         lora_config = config.get("lora", {})
         if lora_config.get("enabled", False):
