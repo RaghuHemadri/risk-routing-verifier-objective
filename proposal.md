@@ -103,9 +103,10 @@ This directly implements "small models need strong verifiers" as a training sign
    * Sample two tool outcomes $(y,y')$ under different seeds for the same query, producing contexts $(x, x')$.
    * Encourage consistent *high-level action choice* (e.g., same next tool call type or same stop condition):
 
-     $$
-     \mathcal{L}_{\text{cons}}(\theta)=\mathbb{E}_{(x,x')}\text{KL}\big(\pi_\theta(\cdot|x)\,||\,\pi_\theta(\cdot|x')\big)
-     $$
+$$
+\mathcal{L}_{\text{cons}}(\theta)=\mathbb{E}_{(x,x')}\text{KL}\big(\pi_\theta(\cdot|x)\,||\,\pi_\theta(\cdot|x')\big)
+$$
+
      This is the "under tool noise" part that is not present in clean imitation.
 
 **Overall:**
@@ -137,6 +138,7 @@ Let success under seed $z$ be $S_z$. Define $\text{CVaR}_\alpha(1-S_z)$ as tail 
 $$
 \min_\psi \; \mathbb{E}[ \text{cost}(d_{1:T})] \;\text{s.t.}\; \text{CVaR}_\alpha(1-S_z)\le \epsilon
 $$
+
    Implement via Lagrangian with empirical CVaR over sampled seeds.
 
 2. **Worst-case (min over seeds)**
