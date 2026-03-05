@@ -187,10 +187,10 @@ Every experiment produces structured outputs in multiple formats:
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-03-03 (perturbations generated), 2026-03-04 (BC + verifier trained) |
+| **Date** | 2026-03-03 (perturbations), 2026-03-04 (BC + verifier), 2026-03-05 (candidates + router features) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ BC + verifier + candidates done, router feature generation next |
+| **Status** | ☑ BC + verifier + candidates + router features done, DPO + router training next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -270,6 +270,33 @@ python scripts/generate_candidates.py --merge \
     --output data/candidates/swebench_noisy.jsonl
 ```
 
+**Step 6 — Router Feature Generation (completed 2026-03-05):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 4× H200 GPU (4 shards), Singularity container |
+| Policy | Llama-3.1-8B-Instruct + LoRA (from Step 3a) |
+| Verifier | Trained Llama-3.1-8B-Instruct verifier (from Step 3b) |
+| K (candidates per step) | 5 |
+| Batch size | 16 |
+| Total Feature Vectors | 4,016 |
+| Shards | 4 (shard_000 through shard_003) |
+| Merged Output | `data/router_features/swebench.jsonl` |
+| Feature Dim | 13 (entropy, score spread/mean/std/best, horizon frac, step, ctx len, 5-dim pert one-hot) |
+| GPU Optimizations | Batched entropy + generation + verifier scoring, left-pad generation, CPU prefetch thread, GPU keepalive |
+| Git Commit | `0353417` |
+
+**Command used:**
+
+```bash
+bash scripts/launch_router_features.sh 4 \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/router_features/swebench.jsonl \
+    --batch-size 16 --K 5
+```
+
 **Evaluation results (pending training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
 |--------|----:|----------:|----------:|-----:|
@@ -339,7 +366,7 @@ python scripts/generate_candidates.py --merge \
 | BC policy training (SWE-bench noisy) | 2× H200 | ~0.6h | ~17min | ☑ Done |
 | Verifier training (SWE-bench noisy) | 1× H200 | ~2h | ~2h | ☑ Done |
 | Candidate generation | 2× H200 | ~3.1h | ~94min/shard | ☑ Done |
-| Router feature generation | 1× H200 | ~TBD | ~TBD | ☐ Next |
+| Router feature generation | 4× H200 | ~TBD | completed | ☑ Done |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
@@ -362,6 +389,7 @@ python scripts/generate_candidates.py --merge \
 | BC examples | step-level | 480 | From 120 successful episodes (~4 steps avg) |
 | Verifier examples | step-level | 36,144 | From all 3600 episodes (correct/incorrect step labels) |
 | Preference pairs | step-level | 4,015 | K=5 candidates per step, top vs bottom scored by verifier |
+| Router features | step-level | 4,016 | 13-dim feature vectors (entropy, verifier scores, step, context, perturbation) |
 
 ### Token Length Distribution (Verifier Training Data)
 
@@ -499,6 +527,10 @@ All perturbations are **composite** — each perturbed episode applies all four 
 16. **Candidate generation throughput:** ~0.10 ep/s per shard on H200. With 2 shards, ~94 min for 1162 episodes total (3600 trajectories → 4015 preference pairs). Most time is GPU inference (generate + verifier score), not I/O. Async JSONL writing was implemented but reverted — `json.dumps()` + `f.write()` cost ~1-2ms vs seconds of GPU time per step, so synchronous writes have negligible impact on GPU utilization.
 
 17. **KV cache for inference:** When using a LoRA model trained with `gradient_checkpointing=True`, inference also disables KV cache by default. Must explicitly call `model.gradient_checkpointing_disable()` and set `model.config.use_cache = True` before `generate()` — otherwise every decoding step recomputes the full prefix attention, causing a massive slowdown.
+
+18. **Router feature generation GPU utilization:** Initial single-GPU, batch-size-1 implementation had very low GPU util (~5-10%). Root causes: (a) sequential per-step processing with 7 individual GPU kernel launches per step, (b) `LLMJudgeVerifier.score_batch()` was a Python loop calling generate() K times sequentially, (c) redundant tokenization of the same growing context for both entropy and generation. Fix: batched entropy + generation + verifier scoring across B steps, left-padding for batched generation, `_PrefetchIter` background CPU thread overlapping tokenization with GPU work, GPU keepalive thread to prevent HPC scheduler from killing the job. With `--batch-size 16` on 4× H200, GPU utilization is dramatically improved.
+
+19. **Multi-GPU sharding for feature generation:** Following the same pattern as `launch_candidates.sh`, episode-level sharding (`episodes[shard_id::num_shards]`) via `--shard-id`/`--num-shards` CLI args lets each GPU process an independent slice. Auto-merge combines `.shard_NNN.jsonl` files. Resume support (skip episodes already in the shard file) allows crash recovery without restarting from scratch.
 
 ---
 
