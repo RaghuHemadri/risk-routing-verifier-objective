@@ -127,9 +127,11 @@ def main():
     policy.load(args.policy_path)
     policy.model.eval()
 
-    # Load verifier
+    # Load verifier — force mode=trained when --verifier-path is given
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
+    if args.verifier_path:
+        vcfg["mode"] = "trained"
     verifier = create_verifier(vcfg)
 
     # Load trained weights if provided
