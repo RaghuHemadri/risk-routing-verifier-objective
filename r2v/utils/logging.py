@@ -149,11 +149,25 @@ class JSONLLogger:
 
     Each line is a JSON object with a timestamp and event type.
     Designed for machine-readable experiment records.
+
+    Parameters
+    ----------
+    path : str | Path
+        Destination JSONL file.
+    async_write : bool
+        If *True*, writes are handed to a background thread so the caller
+        never blocks on disk I/O — critical for keeping the GPU busy.
     """
 
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, *, async_write: bool = False):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._async = async_write
+        self._writer = None
+        if async_write:
+            from r2v.utils.async_writer import AsyncJSONLWriter
+            self._writer = AsyncJSONLWriter(self.path, mode="a")
+            self._writer.start()
 
     def log(self, event_type: str, data: dict[str, Any]) -> None:
         """Append a structured event to the JSONL file."""
@@ -162,8 +176,11 @@ class JSONLLogger:
             "event": event_type,
             **data,
         }
-        with open(self.path, "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
+        if self._writer is not None:
+            self._writer.write(record)
+        else:
+            with open(self.path, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
 
     def log_config(self, config: dict) -> None:
         """Log experiment configuration."""
@@ -189,8 +206,23 @@ class JSONLLogger:
         """Log evaluation results."""
         self.log("evaluation", results)
 
+    def flush(self) -> None:
+        """Block until all queued writes are flushed to disk (async mode)."""
+        if self._writer is not None:
+            self._writer.flush()
+
+    def close(self) -> None:
+        """Drain outstanding writes and shut down the background thread."""
+        if self._writer is not None:
+            self._writer.close()
+            self._writer = None
+
     def read_all(self) -> list[dict]:
-        """Read all events from the log."""
+        """Read all events from the log.
+
+        Flushes the async writer first so reads are consistent.
+        """
+        self.flush()
         events = []
         if self.path.exists():
             with open(self.path) as f:
