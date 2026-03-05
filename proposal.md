@@ -107,7 +107,7 @@ $$
 \mathcal{L}_{\text{cons}}(\theta)=\mathbb{E}_{(x,x')}\text{KL}\big(\pi_\theta(\cdot|x)\,||\,\pi_\theta(\cdot|x')\big)
 $$
 
-     This is the "under tool noise" part that is not present in clean imitation.
+This is the "under tool noise" part that is not present in clean imitation.
 
 **Overall:**
 
