@@ -32,6 +32,7 @@ class BCTrainer:
         eval_dataset=None,
         config: dict[str, Any] = None,
         output_dir: str = "experiments/checkpoints/bc",
+        collate_fn=None,
     ):
         self.policy = policy
         self.train_dataset = train_dataset
@@ -39,6 +40,7 @@ class BCTrainer:
         self.config = config or {}
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.collate_fn = collate_fn
 
         # Training hyperparameters
         self.epochs = self.config.get("epochs", 3)
@@ -73,14 +75,19 @@ class BCTrainer:
                 mixed_precision="bf16",
             )
 
-        # DataLoader
+        # DataLoader — num_workers=2 prefetches batches on CPU while GPU trains,
+        # pin_memory speeds up CPU→GPU transfer on CUDA devices.
+        _use_workers = self.config.get("num_workers", 2)
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=0,
-            pin_memory=False,
+            num_workers=_use_workers,
+            pin_memory=True,
+            persistent_workers=_use_workers > 0,
+            prefetch_factor=2 if _use_workers > 0 else None,
             drop_last=True,
+            collate_fn=self.collate_fn,
         )
 
         eval_loader = None
@@ -89,8 +96,11 @@ class BCTrainer:
                 self.eval_dataset,
                 batch_size=self.batch_size * 2,
                 shuffle=False,
-                num_workers=0,
-                pin_memory=False,
+                num_workers=_use_workers,
+                pin_memory=True,
+                persistent_workers=_use_workers > 0,
+                prefetch_factor=2 if _use_workers > 0 else None,
+                collate_fn=self.collate_fn,
             )
 
         # Optimizer (only train LoRA params if applicable)
