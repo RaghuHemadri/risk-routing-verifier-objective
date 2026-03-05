@@ -190,7 +190,7 @@ Every experiment produces structured outputs in multiple formats:
 | **Date** | 2026-03-03 (perturbations generated), 2026-03-04 (BC + verifier trained) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ BC + verifier trained, candidate generation next |
+| **Status** | ☑ BC + verifier + candidates done, router feature generation next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -228,6 +228,47 @@ Every experiment produces structured outputs in multiple formats:
 | Wall Time | ~1h 56min |
 | Output | `outputs/verifier/swebench_noisy/final/verifier.pt` |
 | Git Commit | `4ca21fb` |
+
+**Step 5 — Candidate Generation / Preference Pairs (completed 2026-03-05):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 2× H200 GPU (2 shards), Singularity container |
+| Policy | Llama-3.1-8B-Instruct + LoRA (from Step 3a) |
+| Verifier | Trained verifier (from Step 3b) |
+| K (candidates per step) | 5 |
+| Total Preference Pairs | 4,015 |
+| Shard 0 Output | `data/candidates/swebench_noisy.shard_000.jsonl` |
+| Shard 1 Output | `data/candidates/swebench_noisy.shard_001.jsonl` (624 pairs, 581 episodes, 93.7min) |
+| Merged Output | `data/candidates/swebench_noisy.jsonl` (26 MB) |
+| Wall Time | ~94 min per shard (~0.10 ep/s) |
+| Git Commit | TBD |
+
+**Commands used:**
+
+```bash
+# Shard 0 (GPU 0):
+python scripts/generate_candidates.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/candidates/swebench_noisy.jsonl \
+    --K 5 --shard-id 0 --num-shards 2
+
+# Shard 1 (GPU 1):
+python scripts/generate_candidates.py \
+    --config configs/swebench/noisy.yaml \
+    --policy-path outputs/policy/swebench_noisy/final \
+    --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --output data/candidates/swebench_noisy.jsonl \
+    --K 5 --shard-id 1 --num-shards 2
+
+# Merge shards:
+python scripts/generate_candidates.py --merge \
+    --output data/candidates/swebench_noisy.jsonl
+```
 
 **Evaluation results (pending training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
@@ -297,7 +338,8 @@ Every experiment produces structured outputs in multiple formats:
 | Perturbation generation | CPU | 0 | 79s | ☑ Done |
 | BC policy training (SWE-bench noisy) | 2× H200 | ~0.6h | ~17min | ☑ Done |
 | Verifier training (SWE-bench noisy) | 1× H200 | ~2h | ~2h | ☑ Done |
-| Candidate generation | 1× H200 | ~TBD | ~TBD | ☐ Next |
+| Candidate generation | 2× H200 | ~3.1h | ~94min/shard | ☑ Done |
+| Router feature generation | 1× H200 | ~TBD | ~TBD | ☐ Next |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
@@ -319,6 +361,7 @@ Every experiment produces structured outputs in multiple formats:
 | Successful episodes | episode-level | 120 | 13.3% success rate |
 | BC examples | step-level | 480 | From 120 successful episodes (~4 steps avg) |
 | Verifier examples | step-level | 36,144 | From all 3600 episodes (correct/incorrect step labels) |
+| Preference pairs | step-level | 4,015 | K=5 candidates per step, top vs bottom scored by verifier |
 
 ### Token Length Distribution (Verifier Training Data)
 
@@ -452,6 +495,10 @@ All perturbations are **composite** — each perturbed episode applies all four 
 14. **Observation attribute:** The correct attribute for raw observation text is `Observation.raw_text`, not `Observation.text` (which doesn't exist).
 
 15. **PolicyModel constructor:** Takes a `config: dict`, not `(model_name, lora_config)` as originally coded. Loading from checkpoint: `PolicyModel(config)` then `model.load_checkpoint(path)`.
+
+16. **Candidate generation throughput:** ~0.10 ep/s per shard on H200. With 2 shards, ~94 min for 1162 episodes total (3600 trajectories → 4015 preference pairs). Most time is GPU inference (generate + verifier score), not I/O. Async JSONL writing was implemented but reverted — `json.dumps()` + `f.write()` cost ~1-2ms vs seconds of GPU time per step, so synchronous writes have negligible impact on GPU utilization.
+
+17. **KV cache for inference:** When using a LoRA model trained with `gradient_checkpointing=True`, inference also disables KV cache by default. Must explicitly call `model.gradient_checkpointing_disable()` and set `model.config.use_cache = True` before `generate()` — otherwise every decoding step recomputes the full prefix attention, causing a massive slowdown.
 
 ---
 

@@ -47,7 +47,6 @@ from omegaconf import OmegaConf
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
-from r2v.utils.async_writer import AsyncJSONLWriter
 from r2v.utils.config import config_to_dict, load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
@@ -284,94 +283,79 @@ def main():
     total_pairs = 0
     total_steps = 0
     t0 = time.time()
+    with open(shard_output, file_mode) as f:
+        for ep_idx, episode in enumerate(episodes):
+            ep_t0 = time.time()
+            num_steps = len(episode.steps)
+            goal = episode.metadata.goal if episode.metadata else ""
+            context = ""
 
-    # Async writer: JSON serialisation + disk flush happen on a background
-    # thread so the GPU never stalls waiting for I/O.
-    writer = AsyncJSONLWriter(shard_output, mode=file_mode, flush_every=1)
-    writer.start()
-    logger.info("Async JSONL writer started (disk I/O decoupled from GPU)")
+            for step_idx, step in enumerate(episode.steps):
+                context += step.observation.raw_text + "\n"
 
-    for ep_idx, episode in enumerate(episodes):
-        ep_t0 = time.time()
-        num_steps = len(episode.steps)
-        goal = episode.metadata.goal if episode.metadata else ""
-        context = ""
+                # Generate K candidates (batched: one forward pass)
+                candidates = policy.generate_candidates(
+                    context=context,
+                    num_candidates=args.K,
+                    temperature=gen_temperature,
+                    max_new_tokens=gen_max_tokens,
+                )
 
-        for step_idx, step in enumerate(episode.steps):
-            context += step.observation.raw_text + "\n"
+                # Score all candidates in one batched verifier call
+                cand_texts = [c["text"] for c in candidates]
+                scores = verifier.score_candidates(
+                    context=context,
+                    candidates=cand_texts,
+                    goal=goal,
+                )
 
-            # Generate K candidates (batched: one forward pass)
-            candidates = policy.generate_candidates(
-                context=context,
-                num_candidates=args.K,
-                temperature=gen_temperature,
-                max_new_tokens=gen_max_tokens,
+                scored = [
+                    {
+                        "action": cand["text"],
+                        "log_prob": cand["log_prob"],
+                        "verifier_score": sc,
+                    }
+                    for cand, sc in zip(candidates, scores)
+                ]
+
+                # Sort by verifier score → create preference pairs
+                scored.sort(key=lambda x: x["verifier_score"], reverse=True)
+
+                if len(scored) >= 2:
+                    pair = {
+                        "context": context,
+                        "chosen": scored[0]["action"],
+                        "rejected": scored[-1]["action"],
+                        "chosen_score": scored[0]["verifier_score"],
+                        "rejected_score": scored[-1]["verifier_score"],
+                        "episode_id": episode.episode_id,
+                        "step_idx": step_idx,
+                        "all_candidates": scored,
+                    }
+                    f.write(json.dumps(pair) + "\n")
+                    f.flush()
+                    total_pairs += 1
+
+                context += step.action.raw_text + "\n"
+                total_steps += 1
+
+            # Per-episode log
+            ep_elapsed = time.time() - ep_t0
+            elapsed = time.time() - t0
+            rate = (ep_idx + 1) / elapsed
+            remaining = len(episodes) - (ep_idx + 1)
+            eta = remaining / rate if rate > 0 else float('inf')
+            logger.info(
+                f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
+                f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
+                f"{total_pairs} pairs | {rate:.2f} ep/s, ETA {eta/60:.0f}min"
             )
-
-            # Score all candidates in one batched verifier call
-            cand_texts = [c["text"] for c in candidates]
-            scores = verifier.score_candidates(
-                context=context,
-                candidates=cand_texts,
-                goal=goal,
-            )
-
-            scored = [
-                {
-                    "action": cand["text"],
-                    "log_prob": cand["log_prob"],
-                    "verifier_score": sc,
-                }
-                for cand, sc in zip(candidates, scores)
-            ]
-
-            # Sort by verifier score → create preference pairs
-            scored.sort(key=lambda x: x["verifier_score"], reverse=True)
-
-            if len(scored) >= 2:
-                pair = {
-                    "context": context,
-                    "chosen": scored[0]["action"],
-                    "rejected": scored[-1]["action"],
-                    "chosen_score": scored[0]["verifier_score"],
-                    "rejected_score": scored[-1]["verifier_score"],
-                    "episode_id": episode.episode_id,
-                    "step_idx": step_idx,
-                    "all_candidates": scored,
-                }
-                # Non-blocking: dict is queued; background thread
-                # serialises to JSON and flushes to disk.
-                writer.write(pair)
-                total_pairs += 1
-
-            context += step.action.raw_text + "\n"
-            total_steps += 1
-
-        # Per-episode log
-        ep_elapsed = time.time() - ep_t0
-        elapsed = time.time() - t0
-        rate = (ep_idx + 1) / elapsed
-        remaining = len(episodes) - (ep_idx + 1)
-        eta = remaining / rate if rate > 0 else float('inf')
-        logger.info(
-            f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
-            f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
-            f"{total_pairs} pairs ({writer.pending} queued) | "
-            f"{rate:.2f} ep/s, ETA {eta/60:.0f}min"
-        )
-
-    # Drain remaining queued writes before proceeding
-    writer.close()
-    logger.info(f"Async writer flushed & closed ({writer.items_written} items written)")
 
     # --------------- Cleanup ---------------
     if _torch.cuda.is_available():
         stop_keepalive()
 
     elapsed = time.time() - t0
-    assert writer.items_written == total_pairs, (
-        f"Writer mismatch: wrote {writer.items_written}, expected {total_pairs}"
-    )
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "
         f"{len(episodes)} episodes in {elapsed / 60:.1f}min → {shard_output}"
