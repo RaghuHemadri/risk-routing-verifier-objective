@@ -19,6 +19,9 @@ Usage (multi-GPU via launch_candidates.sh — 4 GPUs):
         --output data/candidates/swebench_noisy.jsonl \
         --K 5
 
+Resume after a crash (just re-run the same command — skips completed episodes):
+    # Same command as above; completed episode IDs are read from the output file.
+
 Merge shards after all finish:
     python scripts/generate_candidates.py --merge \
         --output data/candidates/swebench_noisy.jsonl
@@ -33,6 +36,7 @@ import argparse
 import glob
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -47,6 +51,82 @@ from r2v.utils.config import config_to_dict, load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
 
+# ---------------------------------------------------------------------------
+# GPU keepalive: periodic small forward passes to prevent HPC from killing
+# the job due to low GPU utilization during CPU-bound bookkeeping.
+# ---------------------------------------------------------------------------
+
+_keepalive_stop = threading.Event()
+
+
+def _gpu_keepalive(model, tokenizer, device, interval: float = 8.0):
+    """Background thread: run a tiny forward pass every `interval` seconds."""
+    import torch
+    dummy_ids = tokenizer("keepalive", return_tensors="pt")["input_ids"].to(device)
+    while not _keepalive_stop.is_set():
+        try:
+            with torch.no_grad():
+                model(dummy_ids)
+        except Exception:
+            pass
+        _keepalive_stop.wait(interval)
+
+
+def start_keepalive(model, tokenizer, device, interval: float = 8.0):
+    _keepalive_stop.clear()
+    t = threading.Thread(
+        target=_gpu_keepalive, args=(model, tokenizer, device, interval),
+        daemon=True,
+    )
+    t.start()
+    return t
+
+
+def stop_keepalive():
+    _keepalive_stop.set()
+
+
+# ---------------------------------------------------------------------------
+# Resume helpers
+# ---------------------------------------------------------------------------
+
+def load_completed_episodes(output_file: Path) -> set[str]:
+    """Read already-written JSONL and return set of (episode_id, step_idx)."""
+    done: set[str] = set()
+    if not output_file.exists():
+        return done
+    with open(output_file) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                done.add(f"{rec['episode_id']}_{rec['step_idx']}")
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return done
+
+
+def completed_episode_ids(output_file: Path) -> set[str]:
+    """Return set of episode_ids that have ALL their steps already done."""
+    if not output_file.exists():
+        return set()
+    ep_steps: dict[str, set[int]] = {}
+    with open(output_file) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+                eid = rec["episode_id"]
+                ep_steps.setdefault(eid, set()).add(rec["step_idx"])
+            except (json.JSONDecodeError, KeyError):
+                continue
+    # We can't know total steps per episode from the output alone,
+    # so we return all episode_ids that appear at all (conservative: skip them).
+    return set(ep_steps.keys())
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate candidate actions")
     parser.add_argument("--config", type=str, default=None)
@@ -56,6 +136,8 @@ def parse_args():
     parser.add_argument("--trajectories", type=str, default=None)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--K", type=int, default=5, help="Number of candidates per step")
+    parser.add_argument("--max-new-tokens", type=int, default=None,
+                        help="Override max tokens to generate (default: config or 128)")
     # Multi-GPU sharding
     parser.add_argument("--shard-id", type=int, default=0,
                         help="This worker's shard index (0-based)")
@@ -63,6 +145,8 @@ def parse_args():
                         help="Total number of parallel workers")
     parser.add_argument("--merge", action="store_true",
                         help="Merge shard outputs instead of generating")
+    parser.add_argument("--no-resume", action="store_true",
+                        help="Do not resume; overwrite existing output")
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -120,7 +204,17 @@ def main():
         output_path.parent / f"candidates_log_shard{args.shard_id}.jsonl"
     )
 
-    # Load policy
+    # --------------- Resume: check what's already done ---------------
+    if args.no_resume:
+        done_eids: set[str] = set()
+        file_mode = "w"
+    else:
+        done_eids = completed_episode_ids(shard_output)
+        file_mode = "a"  # append to existing output
+        if done_eids:
+            logger.info(f"Resuming: {len(done_eids)} episodes already completed in {shard_output}")
+
+    # --------------- Load models ---------------
     logger.info(f"Loading policy from {args.policy_path}")
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
@@ -148,35 +242,46 @@ def main():
     if hasattr(verifier, 'eval'):
         verifier.eval()
 
-    # Load trajectories and select this shard's slice
+    # --------------- Start GPU keepalive ---------------
+    if _torch.cuda.is_available():
+        keepalive_thread = start_keepalive(
+            policy.model, policy.tokenizer, policy.model.device, interval=8.0,
+        )
+        logger.info("GPU keepalive thread started (8s interval)")
+
+    # --------------- Load & shard trajectories ---------------
     store = TrajectoryStore(args.trajectories)
     all_episodes = store.load_episodes()
     episodes = all_episodes[args.shard_id::args.num_shards]
-    logger.info(
-        f"Loaded {len(all_episodes)} total episodes, "
-        f"shard {args.shard_id} processing {len(episodes)} episodes, "
-        f"generating K={args.K} candidates per step"
-    )
 
-    # Resolve generation hyperparams once
+    # Filter out already-completed episodes
+    if done_eids:
+        episodes = [ep for ep in episodes if ep.episode_id not in done_eids]
+
+    # Resolve generation hyperparams
     inf_cfg = cfg.get("inference", {})
     gen_temperature = float(inf_cfg.get("temperature", 0.7)) if inf_cfg else 0.7
-    gen_max_tokens = int(inf_cfg.get("max_tokens", 128)) if inf_cfg else 128
+    if args.max_new_tokens is not None:
+        gen_max_tokens = args.max_new_tokens
+    else:
+        gen_max_tokens = int(inf_cfg.get("max_tokens", 128)) if inf_cfg else 128
+
     logger.info(
-        f"Generation config: K={args.K}, max_new_tokens={gen_max_tokens}, "
-        f"temperature={gen_temperature}"
+        f"Processing {len(episodes)} episodes (skipped {len(done_eids)} done), "
+        f"K={args.K}, max_new_tokens={gen_max_tokens}, temp={gen_temperature}"
     )
 
+    # --------------- Main loop ---------------
     total_pairs = 0
     total_steps = 0
     t0 = time.time()
-    with open(shard_output, "w") as f:
+    with open(shard_output, file_mode) as f:
         for ep_idx, episode in enumerate(episodes):
             ep_t0 = time.time()
             num_steps = len(episode.steps)
-
             goal = episode.metadata.goal if episode.metadata else ""
             context = ""
+
             for step_idx, step in enumerate(episode.steps):
                 context += step.observation.raw_text + "\n"
 
@@ -226,7 +331,7 @@ def main():
                 context += step.action.raw_text + "\n"
                 total_steps += 1
 
-            # Log every episode
+            # Per-episode log
             ep_elapsed = time.time() - ep_t0
             elapsed = time.time() - t0
             rate = (ep_idx + 1) / elapsed
@@ -234,10 +339,13 @@ def main():
             eta = remaining / rate if rate > 0 else float('inf')
             logger.info(
                 f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
-                f"({num_steps} steps, {ep_elapsed:.1f}s) | "
-                f"{total_pairs} pairs, {total_steps} steps total | "
-                f"{rate:.2f} ep/s, ETA {eta/60:.0f}min"
+                f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
+                f"{total_pairs} pairs | {rate:.2f} ep/s, ETA {eta/60:.0f}min"
             )
+
+    # --------------- Cleanup ---------------
+    if _torch.cuda.is_available():
+        stop_keepalive()
 
     elapsed = time.time() - t0
     logger.info(
