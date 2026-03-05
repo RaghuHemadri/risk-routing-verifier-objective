@@ -92,30 +92,50 @@ class BCDataset(Dataset):
         prompt = f"{ex.context}\nAction:"
         full_text = f"{prompt} {ex.target_action}"
 
+        # Return plain lists — collate_fn handles dynamic padding per batch.
+        # This avoids wasting ~58% of FLOPs on padding tokens (median 1723 vs max 4096).
         encoding = self.tokenizer(
             full_text,
             max_length=self.max_seq_len,
             truncation=True,
-            padding="max_length",
-            return_tensors="pt",
+            padding=False,
         )
 
-        # Create labels: mask the prompt tokens with -100
-        prompt_encoding = self.tokenizer(
-            prompt,
-            max_length=self.max_seq_len,
-            truncation=True,
-            return_tensors="pt",
-        )
-        prompt_len = prompt_encoding["input_ids"].shape[1]
+        # Get prompt length for label masking (no tensor overhead)
+        prompt_len = len(self.tokenizer(
+            prompt, max_length=self.max_seq_len, truncation=True,
+        )["input_ids"])
 
-        labels = encoding["input_ids"].clone().squeeze(0)
-        labels[:prompt_len] = -100  # Don't compute loss on prompt
+        # Labels: -100 for prompt tokens (no loss), actual ids for target
+        labels = list(encoding["input_ids"])
+        labels[:prompt_len] = [-100] * min(prompt_len, len(labels))
 
         return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "input_ids": encoding["input_ids"],
+            "attention_mask": encoding["attention_mask"],
             "labels": labels,
+        }
+
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
+        """Dynamic padding: pad to the longest sequence in the batch.
+
+        Instead of padding every sample to max_seq_len (4096), pad only to
+        the longest in the current batch. This gives ~2-3× throughput boost.
+        """
+        max_len = max(len(b["input_ids"]) for b in batch)
+
+        input_ids, attention_mask, labels = [], [], []
+        for b in batch:
+            pad_len = max_len - len(b["input_ids"])
+            input_ids.append(b["input_ids"] + [0] * pad_len)
+            attention_mask.append(b["attention_mask"] + [0] * pad_len)
+            labels.append(b["labels"] + [-100] * pad_len)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
         }
 
 
@@ -175,34 +195,64 @@ class PreferenceDataset(Dataset):
         chosen_text = f"{prompt} {ex.chosen_action}"
         rejected_text = f"{prompt} {ex.rejected_action}"
 
+        # Return plain lists — collate_fn pads to max-in-batch, not max_seq_len.
         chosen_enc = self.tokenizer(
             chosen_text, max_length=self.max_seq_len,
-            truncation=True, padding="max_length", return_tensors="pt"
+            truncation=True, padding=False,
         )
         rejected_enc = self.tokenizer(
             rejected_text, max_length=self.max_seq_len,
-            truncation=True, padding="max_length", return_tensors="pt"
+            truncation=True, padding=False,
         )
 
-        prompt_enc = self.tokenizer(
-            prompt, max_length=self.max_seq_len,
-            truncation=True, return_tensors="pt"
-        )
-        prompt_len = prompt_enc["input_ids"].shape[1]
+        # Tokenize prompt once for label masking (no tensor overhead)
+        prompt_len = len(self.tokenizer(
+            prompt, max_length=self.max_seq_len, truncation=True,
+        )["input_ids"])
 
-        chosen_labels = chosen_enc["input_ids"].clone().squeeze(0)
-        chosen_labels[:prompt_len] = -100
-        rejected_labels = rejected_enc["input_ids"].clone().squeeze(0)
-        rejected_labels[:prompt_len] = -100
+        chosen_labels = list(chosen_enc["input_ids"])
+        chosen_labels[:prompt_len] = [-100] * min(prompt_len, len(chosen_labels))
+        rejected_labels = list(rejected_enc["input_ids"])
+        rejected_labels[:prompt_len] = [-100] * min(prompt_len, len(rejected_labels))
 
         return {
-            "chosen_input_ids": chosen_enc["input_ids"].squeeze(0),
-            "chosen_attention_mask": chosen_enc["attention_mask"].squeeze(0),
+            "chosen_input_ids": chosen_enc["input_ids"],
+            "chosen_attention_mask": chosen_enc["attention_mask"],
             "chosen_labels": chosen_labels,
-            "rejected_input_ids": rejected_enc["input_ids"].squeeze(0),
-            "rejected_attention_mask": rejected_enc["attention_mask"].squeeze(0),
+            "rejected_input_ids": rejected_enc["input_ids"],
+            "rejected_attention_mask": rejected_enc["attention_mask"],
             "rejected_labels": rejected_labels,
         }
+
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
+        """Dynamic padding for DPO pairs.
+
+        Pads chosen and rejected to the SAME max length so they can be
+        concatenated into a single forward pass (2× fewer kernel launches).
+        """
+        max_len = max(
+            max(len(b["chosen_input_ids"]) for b in batch),
+            max(len(b["rejected_input_ids"]) for b in batch),
+        )
+
+        result = {k: [] for k in [
+            "chosen_input_ids", "chosen_attention_mask", "chosen_labels",
+            "rejected_input_ids", "rejected_attention_mask", "rejected_labels",
+        ]}
+
+        for b in batch:
+            ch_pad = max_len - len(b["chosen_input_ids"])
+            result["chosen_input_ids"].append(b["chosen_input_ids"] + [0] * ch_pad)
+            result["chosen_attention_mask"].append(b["chosen_attention_mask"] + [0] * ch_pad)
+            result["chosen_labels"].append(b["chosen_labels"] + [-100] * ch_pad)
+
+            rj_pad = max_len - len(b["rejected_input_ids"])
+            result["rejected_input_ids"].append(b["rejected_input_ids"] + [0] * rj_pad)
+            result["rejected_attention_mask"].append(b["rejected_attention_mask"] + [0] * rj_pad)
+            result["rejected_labels"].append(b["rejected_labels"] + [-100] * rj_pad)
+
+        return {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
 
 
 # ============================================================
@@ -243,21 +293,49 @@ class ConsistencyDataset(Dataset):
         prompt_a = f"{ex.context_a}\nAction:"
         prompt_b = f"{ex.context_b}\nAction:"
 
+        # Return plain lists — collate_fn handles dynamic padding.
         enc_a = self.tokenizer(
             prompt_a, max_length=self.max_seq_len,
-            truncation=True, padding="max_length", return_tensors="pt"
+            truncation=True, padding=False,
         )
         enc_b = self.tokenizer(
             prompt_b, max_length=self.max_seq_len,
-            truncation=True, padding="max_length", return_tensors="pt"
+            truncation=True, padding=False,
         )
 
         return {
-            "input_ids_a": enc_a["input_ids"].squeeze(0),
-            "attention_mask_a": enc_a["attention_mask"].squeeze(0),
-            "input_ids_b": enc_b["input_ids"].squeeze(0),
-            "attention_mask_b": enc_b["attention_mask"].squeeze(0),
+            "input_ids_a": enc_a["input_ids"],
+            "attention_mask_a": enc_a["attention_mask"],
+            "input_ids_b": enc_b["input_ids"],
+            "attention_mask_b": enc_b["attention_mask"],
         }
+
+    @staticmethod
+    def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
+        """Dynamic padding for paired contexts.
+
+        Both contexts padded to same max length since they go through
+        the model together for KL divergence computation.
+        """
+        max_len = max(
+            max(len(b["input_ids_a"]) for b in batch),
+            max(len(b["input_ids_b"]) for b in batch),
+        )
+
+        result = {k: [] for k in [
+            "input_ids_a", "attention_mask_a", "input_ids_b", "attention_mask_b",
+        ]}
+        for b in batch:
+            for suffix in ("a", "b"):
+                pad_len = max_len - len(b[f"input_ids_{suffix}"])
+                result[f"input_ids_{suffix}"].append(
+                    b[f"input_ids_{suffix}"] + [0] * pad_len
+                )
+                result[f"attention_mask_{suffix}"].append(
+                    b[f"attention_mask_{suffix}"] + [0] * pad_len
+                )
+
+        return {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
 
 
 # ============================================================

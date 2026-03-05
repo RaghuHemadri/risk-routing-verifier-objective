@@ -117,6 +117,7 @@ def main():
             eval_dataset=val_ds,
             config=bc_cfg,
             output_dir=str(output_dir / "bc"),
+            collate_fn=BCDataset.collate_fn,
         )
 
         bc_trainer.train()
@@ -142,6 +143,7 @@ def main():
                 train_dataset=pref_dataset,
                 config=pref_cfg,
                 output_dir=str(output_dir / "preference"),
+                collate_fn=PreferenceDataset.collate_fn,
             )
 
             pref_trainer.train()

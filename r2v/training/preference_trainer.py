@@ -36,6 +36,7 @@ class PreferenceTrainer:
         eval_dataset=None,
         config: dict[str, Any] = None,
         output_dir: str = "experiments/checkpoints/preference",
+        collate_fn=None,
     ):
         self.policy = policy
         self.train_dataset = train_dataset
@@ -43,6 +44,7 @@ class PreferenceTrainer:
         self.config = config or {}
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.collate_fn = collate_fn
 
         # DPO hyperparameters
         self.beta = self.config.get("beta", 0.1)
@@ -118,13 +120,18 @@ class PreferenceTrainer:
         else:
             ref_model = None
 
+        # DataLoader — num_workers=2 prefetches on CPU, pin_memory for fast transfers.
+        _use_workers = self.config.get("num_workers", 2)
         train_loader = DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=0,
-            pin_memory=False,
+            num_workers=_use_workers,
+            pin_memory=True,
+            persistent_workers=_use_workers > 0,
+            prefetch_factor=2 if _use_workers > 0 else None,
             drop_last=True,
+            collate_fn=self.collate_fn,
         )
 
         trainable_params = [
@@ -155,28 +162,36 @@ class PreferenceTrainer:
 
             for batch in train_loader:
                 with accelerator.accumulate(model):
-                    # Compute policy log probs for chosen and rejected
-                    policy_chosen_logps = self._compute_logps(
-                        model, batch["chosen_input_ids"],
-                        batch["chosen_attention_mask"], batch["chosen_labels"]
+                    # ── Concatenate chosen + rejected for a single forward pass ──
+                    # Instead of 4 separate passes (policy×2 + ref×2), we do 2
+                    # passes with 2× batch size.  The collate_fn already pads
+                    # chosen and rejected to the same length, so shapes match.
+                    concat_ids = torch.cat(
+                        [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
                     )
-                    policy_rejected_logps = self._compute_logps(
-                        model, batch["rejected_input_ids"],
-                        batch["rejected_attention_mask"], batch["rejected_labels"]
+                    concat_mask = torch.cat(
+                        [batch["chosen_attention_mask"], batch["rejected_attention_mask"]], dim=0
                     )
+                    concat_labels = torch.cat(
+                        [batch["chosen_labels"], batch["rejected_labels"]], dim=0
+                    )
+                    bs = batch["chosen_input_ids"].size(0)
 
-                    # Compute reference log probs
+                    # Policy forward (one pass for both chosen + rejected)
+                    policy_logps = self._compute_logps(
+                        model, concat_ids, concat_mask, concat_labels
+                    )
+                    policy_chosen_logps = policy_logps[:bs]
+                    policy_rejected_logps = policy_logps[bs:]
+
+                    # Reference forward (one pass for both chosen + rejected)
                     if ref_model is not None:
                         with torch.no_grad():
-                            ref_chosen_logps = self._compute_logps(
-                                ref_model, batch["chosen_input_ids"],
-                                batch["chosen_attention_mask"], batch["chosen_labels"]
+                            ref_logps = self._compute_logps(
+                                ref_model, concat_ids, concat_mask, concat_labels
                             )
-                            ref_rejected_logps = self._compute_logps(
-                                ref_model, batch["rejected_input_ids"],
-                                batch["rejected_attention_mask"],
-                                batch["rejected_labels"]
-                            )
+                            ref_chosen_logps = ref_logps[:bs]
+                            ref_rejected_logps = ref_logps[bs:]
                     else:
                         ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
                         ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
