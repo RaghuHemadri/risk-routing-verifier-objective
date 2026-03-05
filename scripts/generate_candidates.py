@@ -264,7 +264,7 @@ def main():
     if args.max_new_tokens is not None:
         gen_max_tokens = args.max_new_tokens
     else:
-        gen_max_tokens = int(inf_cfg.get("max_tokens", 128)) if inf_cfg else 128
+        gen_max_tokens = int(inf_cfg.get("max_tokens", 256)) if inf_cfg else 256
 
     logger.info(
         f"Processing {len(episodes)} episodes (skipped {len(done_eids)} done), "
