@@ -21,9 +21,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from r2v.data.datasets import RouterDataset, RouterExample
 from r2v.models.router import Router, TemperatureScaling
 from r2v.training.router_trainer import RouterTrainer
 from r2v.utils.config import config_to_dict, load_config, save_config
@@ -39,23 +41,32 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_router_features(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Load router training features from JSONL.
+def load_router_features(path: str) -> list[RouterExample]:
+    """Load router training features from JSONL into RouterExample objects.
 
-    Each line: {"features": [...], "slm_success": 0/1, "cost": 1.0}
+    Each line: {"features": [...], "slm_success": 0/1, "cost": 1.0,
+                "episode_id": ..., "step_idx": ...}
 
-    Returns:
-        features, labels (SLM success), costs
+    The router needs:
+    - features: 13-dim feature vector
+    - label: routing decision (1.0 = should fallback to LLM = SLM failed)
+    - success: episode-level SLM success indicator (for CVaR)
+    - perturbation_seed: for per-seed CVaR (default 0 if not present)
+    - cost: step cost
     """
-    features, labels, costs = [], [], []
+    examples = []
     with open(path) as f:
         for line in f:
             record = json.loads(line)
-            features.append(record["features"])
-            labels.append(record["slm_success"])
-            costs.append(record.get("cost", 1.0))
-
-    return np.array(features), np.array(labels), np.array(costs)
+            slm_success = float(record.get("slm_success", 0))
+            examples.append(RouterExample(
+                features=record["features"],
+                label=1.0 - slm_success,  # label=1 means "should have used LLM"
+                success=slm_success,
+                perturbation_seed=record.get("perturbation_seed", 0),
+                cost=record.get("cost", 1.0),
+            ))
+    return examples
 
 
 def main():
@@ -77,48 +88,51 @@ def main():
         mode=cfg.get("logging", {}).get("wandb_mode", "online"),
     )
 
-    # Load features
-    features, labels, costs = load_router_features(args.features)
-    logger.info(f"Loaded {len(features)} router training samples")
-    logger.info(f"  SLM success rate: {labels.mean():.3f}")
-    logger.info(f"  Mean cost: {costs.mean():.3f}")
+    # Load features into RouterExample objects (dict-style __getitem__)
+    examples = load_router_features(args.features)
+    logger.info(f"Loaded {len(examples)} router training samples")
 
-    # Convert to tensors
-    X = torch.tensor(features, dtype=torch.float32)
-    y = torch.tensor(labels, dtype=torch.float32)
-    c = torch.tensor(costs, dtype=torch.float32)
+    successes = [ex.success for ex in examples]
+    logger.info(f"  SLM success rate: {sum(successes) / len(successes):.3f}")
+    logger.info(f"  Mean cost: {sum(ex.cost for ex in examples) / len(examples):.3f}")
 
     # Split into train/val
-    n = len(X)
+    n = len(examples)
     val_size = max(1, int(n * 0.15))
-    perm = torch.randperm(n)
-    train_idx = perm[val_size:]
-    val_idx = perm[:val_size]
+    perm = torch.randperm(n).tolist()
+    train_examples = [examples[i] for i in perm[val_size:]]
+    val_examples = [examples[i] for i in perm[:val_size]]
 
-    train_dataset = torch.utils.data.TensorDataset(X[train_idx], y[train_idx], c[train_idx])
-    val_dataset = torch.utils.data.TensorDataset(X[val_idx], y[val_idx], c[val_idx])
+    train_dataset = RouterDataset(train_examples)
+    val_dataset = RouterDataset(val_examples)
 
-    # Create router
-    rcfg = cfg.get("router", {})
-    input_dim = features.shape[1]
-    router = Router(
-        input_dim=input_dim,
-        hidden_dims=[rcfg.get("hidden_dim", 128)] * rcfg.get("num_layers", 2),
-        dropout=rcfg.get("dropout", 0.1),
-    )
+    # Create router — Router takes a config dict, not keyword args.
+    # Override input_features to match actual feature dimensionality from data.
+    rcfg = OmegaConf.to_container(cfg.get("router", {}), resolve=True)
+    input_dim = len(examples[0].features)
+
+    # Build a config that tells Router the exact input dim
+    router_config = dict(rcfg)
+    # Override _compute_input_dim by setting policy_hidden_dim so total = input_dim
+    # Simplest: just set the feature flags to False and use policy_hidden_dim as the dim
+    router_config["input_features"] = {
+        "verifier_score": False,
+        "entropy": False,
+        "step_number": False,
+        "token_count": False,
+        "policy_hidden_dim": input_dim - 1,  # +1 for the always-included risk_score
+    }
+    router = Router(router_config)
+    logger.info(f"Router input_dim={input_dim} (from data)")
 
     # Train
+    train_cfg = OmegaConf.to_container(cfg.get("training", {}).get("router", {}), resolve=True)
     trainer = RouterTrainer(
-        model=router,
+        router=router,
         train_dataset=train_dataset,
-        val_dataset=val_dataset,
+        eval_dataset=val_dataset,
+        config=train_cfg,
         output_dir=str(output_dir),
-        num_epochs=rcfg.get("num_epochs", 50),
-        batch_size=rcfg.get("batch_size", 256),
-        learning_rate=rcfg.get("lr", 1e-3),
-        dual_learning_rate=rcfg.get("dual_lr", 1e-2),
-        cvar_alpha=rcfg.get("cvar_alpha", 0.3),
-        cvar_epsilon=rcfg.get("cvar_epsilon", 0.3),
     )
 
     trainer.train()
@@ -128,18 +142,22 @@ def main():
     temp_scaler = TemperatureScaling()
 
     router.eval()
+    device = next(router.parameters()).device
     with torch.no_grad():
-        val_features = X[val_idx]
-        val_labels = y[val_idx]
-        val_logits = router.get_logits(val_features)
+        val_feats = torch.tensor(
+            [ex.features for ex in val_examples], dtype=torch.float32
+        ).to(device)
+        val_labels_np = np.array([ex.success for ex in val_examples])
+        # Router.mlp gives raw logits before temperature/sigmoid
+        val_logits = router.mlp(val_feats).squeeze(-1).cpu().numpy()
 
-    temp_scaler.fit(val_logits, val_labels)
-    logger.info(f"Optimal temperature: {temp_scaler.temperature.item():.3f}")
+    temp_scaler.fit(val_logits, val_labels_np)
+    logger.info(f"Optimal temperature: {temp_scaler.temperature:.3f}")
 
     # Save
     torch.save({
         "router_state_dict": router.state_dict(),
-        "temperature": temp_scaler.temperature.item(),
+        "temperature": temp_scaler.temperature,
         "input_dim": input_dim,
         "config": config_to_dict(cfg),
     }, output_dir / "router_final.pt")
