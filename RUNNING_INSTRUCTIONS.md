@@ -306,10 +306,13 @@ python scripts/generate_router_features.py --merge \
 python scripts/train_router.py \
     --config configs/swebench/noisy.yaml \
     --features data/router_features/swebench.jsonl \
-    --output outputs/router/swebench_noisy
+    --output outputs/router/swebench_noisy \
+    --overrides logging.wandb_mode=disabled
 
 # Router trains on 4,016 feature vectors (13-dim), no LLM needed.
 # Uses Lagrangian CVaR objective + temperature scaling.
+# MLP architecture: 13 → 128 → 64 → 1 (10,499 params)
+# Results: 20 epochs, ~25s, Acc=22.1% (88% class imbalance), λ=1→11.6
 # Output: outputs/router/swebench_noisy/router_final.pt
 ```
 
@@ -319,11 +322,11 @@ python scripts/evaluate.py \
     --config configs/swebench/noisy.yaml \
     --policy-path outputs/policy/swebench_noisy/final \
     --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-    --router-path outputs/router/swebench_noisy/final \
+    --router-path outputs/router/swebench_noisy/router_final.pt \
     --output results/swebench_noisy \
-    --seeds 1 2 3 4 5 \
+    --seeds 1 2 3 \
     --methods r2v slm_only llm_only entropy_router \
-    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained logging.wandb_mode=disabled
 ```
 
 ### Step 9: Run ablations
@@ -332,10 +335,10 @@ python scripts/run_ablations.py \
     --config configs/swebench/noisy.yaml \
     --policy-path outputs/policy/swebench_noisy/final \
     --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-    --router-path outputs/router/swebench_noisy/final \
+    --router-path outputs/router/swebench_noisy/router_final.pt \
     --output results/ablations/swebench_noisy \
     --seeds 1 2 3 \
-    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+    --overrides policy.quantization.load_in_4bit=false verifier.mode=trained logging.wandb_mode=disabled
 ```
 
 ---
