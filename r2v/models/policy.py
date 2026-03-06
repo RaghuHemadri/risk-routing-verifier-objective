@@ -70,8 +70,12 @@ class PolicyModel(nn.Module):
         }
         if quant_config:
             model_kwargs["quantization_config"] = quant_config
-            # bitsandbytes needs device_map for quantized loading
-            model_kwargs["device_map"] = "auto"
+            # bitsandbytes needs device_map for quantized loading, but
+            # device_map="auto" is incompatible with Accelerate DDP.
+            # When WORLD_SIZE > 1, Accelerate handles device placement itself.
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+            if world_size <= 1:
+                model_kwargs["device_map"] = "auto"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name, **model_kwargs
