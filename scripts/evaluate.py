@@ -105,9 +105,17 @@ def load_episode_metadata(traj_path: str) -> dict[str, dict]:
     meta = {}
     store = TrajectoryStore(traj_path)
     for ep in store.iter_episodes():
+        pt = ep.perturbation_type
+        # Handle both enum and raw string
+        if hasattr(pt, "value"):
+            pt_str = pt.value
+        elif pt:
+            pt_str = str(pt)
+        else:
+            pt_str = "none"
         meta[ep.episode_id] = {
             "perturbation_seed": ep.perturbation_seed or 0,
-            "perturbation_type": ep.perturbation_type.value if ep.perturbation_type else "none",
+            "perturbation_type": pt_str,
             "success": ep.success,
             "num_steps": ep.num_steps,
         }
