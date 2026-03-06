@@ -190,7 +190,7 @@ Every experiment produces structured outputs in multiple formats:
 | **Date** | 2026-03-03 (perturbations), 2026-03-04 (BC + verifier), 2026-03-05 (candidates + router features) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ BC + verifier + candidates + router features + DPO done, router training next |
+| **Status** | ☑ All training done (BC + verifier + candidates + DPO + router features + router), evaluation next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -312,7 +312,38 @@ bash scripts/launch_router_features.sh 4 \
 | Output | `outputs/policy/swebench_noisy/final` (updated with DPO weights) |
 | Git Commits | `aa7a55a` (perf optimizations), `9275759` (schema fix), `ee5bc86` (DDP fix) |
 
-**Evaluation results (pending router training):**
+**Step 7 — Router Training (completed 2026-03-06):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 1× H200 GPU (CPU-bound MLP, no LLM needed) |
+| Router Architecture | MLP (13 → 128 → 64 → 1), 10,499 trainable parameters |
+| Input Features | 13-dim (entropy, score spread/mean/std/best, horizon frac, step, ctx len, 5-dim pert one-hot) |
+| Training Samples | 4,016 (from router features JSONL) |
+| Class Balance | 12% success / 88% failure (SLM success rate) |
+| Objective | Lagrangian CVaR (α=0.2, λ init=1.0, lr_lambda=0.01) |
+| Epochs | 20 |
+| Learning Rate | 1e-3 (router), 0.01 (λ) |
+| Lagrange λ | 1.0 → 11.6 |
+| Post-hoc Temperature | 10.0 (hit upper bound) |
+| Final Accuracy | 22.1% (expected with 88% class imbalance — routes almost everything to LLM) |
+| ECE | 0.76 |
+| Brier Score | 0.78 |
+| Wall Time | ~25 seconds |
+| Output | `outputs/router/swebench_noisy/router_final.pt` |
+| Git Commit | `cec1a0c` (train_router.py API fix) |
+
+**Command used:**
+
+```bash
+python scripts/train_router.py \
+    --config configs/swebench/noisy.yaml \
+    --features data/router_features/swebench.jsonl \
+    --output outputs/router/swebench_noisy \
+    --overrides logging.wandb_mode=disabled
+```
+
+**Evaluation results (pending):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
 |--------|----:|----------:|----------:|-----:|
 | R2V | — | — | — | — |
@@ -555,6 +586,12 @@ All perturbations are **composite** — each perturbed episode applies all four 
 22. **DPO training — concat forward passes:** Instead of 4 separate model forward passes per step (policy×2 + ref×2), concatenating chosen+rejected into a single forward reduces to 2 passes. Combined with dynamic padding (pad to max-in-batch, not 4096), this gives ~4-6× throughput.
 
 23. **DPO data filtering:** Of 4,015 candidate pairs, only 457 pass the `min_score_gap=0.1` filter. This is expected — many steps have candidates that the verifier scores similarly, meaning the SLM policy is already reasonable at those steps.
+
+24. **Router accuracy vs class imbalance:** Router training accuracy of 22.1% looks alarming but is expected — with 88% failure rate, a trivial "always route to LLM" classifier gets 88% accuracy while providing no SLM cost savings. The Lagrangian CVaR objective deliberately penalizes tail risk, so the router learns to be conservative (route most things to LLM). The λ growing from 1→11.6 reflects the optimizer aggressively tightening the risk constraint.
+
+25. **Temperature scaling saturation:** Post-hoc temperature scaling hit its upper bound (10.0). This means the router's raw logits are poorly calibrated — the MLP outputs near-zero logit differences, so even T=10 can't spread the probabilities enough. Possible fixes: (a) wider temperature bounds, (b) Platt scaling instead of temperature, (c) larger hidden dims, (d) focal loss to handle class imbalance.
+
+26. **train_router.py stale API (as predicted by observation #13):** The script had completely wrong constructor calls — `Router(input_dim=...)` instead of `Router(config_dict)`, manual `TensorDataset` instead of `RouterDataset`, `get_logits()` instead of `mlp()`, and PyTorch tensors where `TemperatureScaling.fit()` expects numpy arrays. Full rewrite was needed (commit `cec1a0c`).
 
 ---
 

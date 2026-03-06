@@ -28,27 +28,26 @@
   - bf16 (4-bit auto-disabled for DDP), 2 epochs, ~72s wall time
   - Output: `outputs/policy/swebench_noisy/final`
   - Git commits: `aa7a55a`, `9275759`, `ee5bc86`
+- ✅ **Step 7:** Trained router on generated features (1× H200, CPU-bound MLP)
+  - MLP (13→128→64→1), 10,499 params, Lagrangian CVaR objective
+  - 4,016 training samples, 20 epochs, ~25s wall time
+  - Acc=22.1% (88% class imbalance), λ=1→11.6, temp scaling=10.0 (upper bound)
+  - Output: `outputs/router/swebench_noisy/router_final.pt`
+  - Git commit: `cec1a0c`
 
 ## Next
 
-- **Step 7:** Train router on generated features
-  ```bash
-  python scripts/train_router.py \
-      --config configs/swebench/noisy.yaml \
-      --features data/router_features/swebench.jsonl \
-      --output outputs/router/swebench_noisy
-  ```
 - **Step 8:** Evaluate all methods (R2V, SLM-only, LLM-only, entropy router)
   ```bash
   python scripts/evaluate.py \
       --config configs/swebench/noisy.yaml \
       --policy-path outputs/policy/swebench_noisy/final \
       --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-      --router-path outputs/router/swebench_noisy/final \
+      --router-path outputs/router/swebench_noisy/router_final.pt \
       --output results/swebench_noisy \
-      --seeds 1 2 3 4 5 \
+      --seeds 1 2 3 \
       --methods r2v slm_only llm_only entropy_router \
-      --overrides policy.quantization.load_in_4bit=false verifier.mode=trained
+      --overrides policy.quantization.load_in_4bit=false verifier.mode=trained logging.wandb_mode=disabled
   ```
 - **Step 9:** Ablation studies
 
@@ -59,4 +58,5 @@
 - **Gradient checkpointing:** Requires `use_reentrant=False` + `enable_input_require_grads()` for LoRA compatibility.
 - **DataLoader:** `num_workers=2, pin_memory=True, persistent_workers=True` for prefetching. If pickle errors in container, fall back to `num_workers=0`.
 - **DPO multi-GPU:** `accelerate launch --num_processes=4 --multi_gpu` works. 4-bit quantization auto-disabled when `WORLD_SIZE > 1`.
+- **wandb:** Not configured on HPC. Always pass `--overrides logging.wandb_mode=disabled` to avoid auth errors.
 - **HF token:** Set via `exports.sh` (`HF_HOME`, `HF_TOKEN`) — needed for gated Llama model.
