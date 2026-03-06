@@ -252,37 +252,3 @@ class TrajectoryStore:
         with jsonlines.open(self.path, mode="r") as reader:
             for obj in reader:
                 yield Episode.from_dict(obj)
-
-
-@dataclass
-class CandidateActions:
-    """Container for K candidate actions scored by verifier.
-    Used during preference distillation and inference."""
-    context: str
-    candidates: list[Action]
-    verifier_scores: list[float]
-    policy_log_probs: list[float]
-    episode_id: str
-    step_idx: int
-
-    @property
-    def best_action(self) -> Action:
-        idx = max(range(len(self.verifier_scores)), key=lambda i: self.verifier_scores[i])
-        return self.candidates[idx]
-
-    @property
-    def worst_action(self) -> Action:
-        idx = min(range(len(self.verifier_scores)), key=lambda i: self.verifier_scores[i])
-        return self.candidates[idx]
-
-    @property
-    def best_score(self) -> float:
-        return max(self.verifier_scores)
-
-    @property
-    def worst_score(self) -> float:
-        return min(self.verifier_scores)
-
-    def to_preference_pair(self) -> tuple[Action, Action, float, float]:
-        """Return (a+, a-, s+, s-) for DPO training."""
-        return self.best_action, self.worst_action, self.best_score, self.worst_score

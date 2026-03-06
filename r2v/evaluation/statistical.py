@@ -50,22 +50,6 @@ def bootstrap_ci(
     return point_estimate, ci_lower, ci_upper
 
 
-def paired_bootstrap_ci(
-    data_a: np.ndarray,
-    data_b: np.ndarray,
-    statistic: Callable = np.mean,
-    num_bootstrap: int = 1000,
-    confidence_level: float = 0.95,
-    seed: int = 42,
-) -> tuple[float, float, float]:
-    """Paired bootstrap CI for difference in means.
-
-    Tests whether method A is better than method B on paired tasks.
-    """
-    diff = data_a - data_b
-    return bootstrap_ci(diff, statistic, num_bootstrap, confidence_level, seed)
-
-
 def paired_mcnemar_test(
     successes_a: np.ndarray,
     successes_b: np.ndarray,
@@ -106,49 +90,3 @@ def paired_mcnemar_test(
         p_value = 1 - stats.chi2.cdf(statistic, df=1)
 
     return float(statistic), float(p_value)
-
-
-def holm_bonferroni_correction(
-    p_values: list[float],
-    alpha: float = 0.05,
-) -> list[tuple[int, float, bool]]:
-    """Holm-Bonferroni method for multiple comparison correction.
-
-    Args:
-        p_values: List of p-values from multiple tests
-        alpha: Family-wise error rate
-
-    Returns:
-        List of (original_index, adjusted_p, is_significant)
-    """
-    n = len(p_values)
-    sorted_indices = np.argsort(p_values)
-
-    results = [None] * n
-    for rank, idx in enumerate(sorted_indices):
-        adjusted_alpha = alpha / (n - rank)
-        p = p_values[idx]
-        significant = p < adjusted_alpha
-        # Adjusted p-value
-        adjusted_p = min(p * (n - rank), 1.0)
-        results[idx] = (int(idx), adjusted_p, significant)
-
-    return results
-
-
-def compute_effect_size(
-    successes_a: np.ndarray,
-    successes_b: np.ndarray,
-) -> float:
-    """Compute Cohen's h effect size for proportions.
-
-    h = 2 * arcsin(sqrt(p_a)) - 2 * arcsin(sqrt(p_b))
-
-    Interpretation:
-    - |h| < 0.2: small
-    - 0.2 ≤ |h| < 0.5: medium
-    - |h| ≥ 0.5: large
-    """
-    p_a = np.mean(successes_a)
-    p_b = np.mean(successes_b)
-    return float(2 * np.arcsin(np.sqrt(p_a)) - 2 * np.arcsin(np.sqrt(p_b)))
