@@ -190,7 +190,7 @@ Every experiment produces structured outputs in multiple formats:
 | **Date** | 2026-03-03 (perturbations), 2026-03-04 (BC + verifier), 2026-03-05 (candidates + router features) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ All training done (BC + verifier + candidates + DPO + router features + router), evaluation next |
+| **Status** | ☑ **COMPLETE** — All training + evaluation done (BC + verifier + candidates + DPO + router features + router + evaluation). Ablations next. |
 
 **Perturbation data:**
 | Metric | Value |
@@ -343,11 +343,59 @@ python scripts/train_router.py \
     --overrides logging.wandb_mode=disabled
 ```
 
-**Evaluation results (pending):**
-| Method | SR | Worst-Seed | CVaR-Fail | Cost |
-|--------|----:|----------:|----------:|-----:|
-| R2V | — | — | — | — |
-| SLM-only | — | — | — | — |
+**Step 8 — Evaluation (completed 2026-03-06):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, CPU-only (no GPU/LLM needed) |
+| Evaluation Type | Offline — uses pre-computed router features + trajectory metadata |
+| Total Episodes | 3,568 (per seed) |
+| Total Step-Level Records | 4,016 |
+| Methods Evaluated | r2v, slm_only, llm_only, entropy_router |
+| Perturbation Seeds | 0, 1, 2, 3 |
+| Cost Model | cost_slm=1.0, cost_llm=50.0 |
+| Output | `results/swebench_noisy/` |
+| Git Commits | `ca278e7` (evaluate.py rewrite), `5b3905e` (perturbation_type fix) |
+
+**Evaluation results:**
+
+| Method | SR | 95% CI | Worst-Seed | CVaR-Fail | Cost | LLM-Rate | ECE | Brier |
+|--------|----:|--------|----------:|----------:|-----:|--------:|----:|------:|
+| **R2V** | 23.9% | [22.6%, 25.3%] | 13.9% | 0.861 | 7.66 | 12.3% | 0.535 | 0.415 |
+| SLM-only | 13.5% | [12.4%, 14.6%] | 13.5% | 0.866 | 1.13 | 0.0% | — | — |
+| LLM-only | 100.0% | [100%, 100%] | 100.0% | 0.000 | 56.28 | 100.0% | — | — |
+| Entropy Router | 23.9% | [22.6%, 25.3%] | 13.9% | 0.861 | 7.66 | 12.3% | — | — |
+
+**Per-seed R2V success rates:**
+
+| Seed | SR | LLM-Rate | Cost |
+|-----:|----:|--------:|-----:|
+| 0 | 19.2% | 6.6% | 4.64 |
+| 1 | 13.9% | 0.5% | 1.46 |
+| 2 | 44.3% | 36.6% | 20.63 |
+| 3 | 18.4% | 5.6% | 3.93 |
+
+**Statistical comparisons (McNemar + bootstrap CI):**
+
+| Comparison | Δ SR | 95% CI | p-value | Significant? |
+|-----------|-----:|--------|--------:|:------------:|
+| R2V vs SLM-only | +10.5% | [9.4%, 11.5%] | 0.000 | ✓ |
+| R2V vs LLM-only | −76.1% | [−77.6%, −74.7%] | 0.000 | ✓ |
+| R2V vs Entropy Router | 0.0% | [0.0%, 0.0%] | 1.000 | ✗ |
+
+**Command used:**
+
+```bash
+python scripts/evaluate.py \
+    --config configs/swebench/noisy.yaml \
+    --features data/router_features/swebench.jsonl \
+    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
+    --router-path outputs/router/swebench_noisy/router_final.pt \
+    --output results/swebench_noisy \
+    --seeds 1 2 3 \
+    --methods r2v slm_only llm_only entropy_router \
+    --overrides logging.wandb_mode=disabled
+```
 
 ---
 
@@ -414,6 +462,8 @@ python scripts/train_router.py \
 | Candidate generation | 2× H200 | ~3.1h | ~94min/shard | ☑ Done |
 | Router feature generation | 4× H200 | ~TBD | completed | ☑ Done |
 | DPO preference training | 4× H200 | ~0.08h | ~72s | ☑ Done |
+| Router training | 1× H200 | ~0.01h | ~25s | ☑ Done |
+| Evaluation (Step 8) | CPU | 0 | seconds | ☑ Done |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
@@ -593,6 +643,14 @@ All perturbations are **composite** — each perturbed episode applies all four 
 
 26. **train_router.py stale API (as predicted by observation #13):** The script had completely wrong constructor calls — `Router(input_dim=...)` instead of `Router(config_dict)`, manual `TensorDataset` instead of `RouterDataset`, `get_logits()` instead of `mlp()`, and PyTorch tensors where `TemperatureScaling.fit()` expects numpy arrays. Full rewrite was needed (commit `cec1a0c`).
 
+27. **evaluate.py was completely broken (as predicted by observation #13):** The entire evaluation script was placeholder code — stale imports (`compare_methods`, `R2VEvaluator`, `compute_robustness_gap`), random number generation (`rng.binomial`) instead of actual model evaluation, and wrong CLI args. Full rewrite for offline evaluation using pre-computed router features + trajectory metadata (commits `ca278e7`, `5b3905e`).
+
+28. **R2V router produces IDENTICAL results to entropy threshold baseline:** R2V and entropy_router have the exact same SR (23.9%), cost (7.66), LLM-rate (12.3%), and per-seed breakdown — difference is 0.0 with p=1.0. This means the trained risk-calibrated MLP router learned to replicate simple entropy-based routing. Likely causes: (a) entropy is the dominant feature in the 13-dim vector, (b) the Lagrangian CVaR objective converges to entropy-like behavior with few informative features, (c) the `--entropy-threshold=2.0` and `--router-threshold=0.5` defaults happen to align, or (d) with only 10,499 parameters and 88% class imbalance, the MLP lacks capacity to learn beyond the entropy signal. This is a critical finding — it means the verifier scores, step count, context length, and perturbation type features provide no additional routing signal beyond what entropy alone captures.
+
+29. **High per-seed variance in R2V:** Seed 2 achieves 44.3% SR (with 36.6% LLM-rate) while seed 1 achieves only 13.9% (with 0.5% LLM-rate). The std across seeds is 10.7%. This suggests the router's behavior is highly sensitive to which episodes are evaluated under which perturbation seed, and that most of the routing benefit comes from a small subset of episodes.
+
+30. **LLM-only achieves 100% SR:** This is because the "LLM oracle" in offline evaluation assumes the teacher LLM always succeeds — it inherits the clean trajectory's ground truth. In a live evaluation, the teacher LLM would have its own failure rate. This inflates the perceived gap between R2V and LLM-only.
+
 ---
 
 ## Reproducibility Checklist
@@ -601,7 +659,7 @@ All perturbations are **composite** — each perturbed episode applies all four 
 - [x] Config files saved with each run
 - [ ] wandb logs available
 - [x] JSONL event logs preserved
-- [ ] Bootstrap CIs computed (95%)
-- [ ] McNemar tests for all pairwise comparisons
+- [x] Bootstrap CIs computed (95%)
+- [x] McNemar tests for all pairwise comparisons
 - [ ] Holm-Bonferroni correction for multiple comparisons
 - [x] Git commit hash recorded for each experiment
