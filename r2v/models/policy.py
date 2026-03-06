@@ -50,9 +50,14 @@ class PolicyModel(nn.Module):
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Quantization config
+        # NOTE: 4-bit quantization (bitsandbytes) is incompatible with
+        # Accelerate DDP multi-GPU training — quantized weights can't be
+        # wrapped in DistributedDataParallel. When WORLD_SIZE > 1, skip
+        # quantization entirely and use bf16 (H200 80GB has plenty of VRAM).
         quant_config = None
+        world_size = int(os.environ.get("WORLD_SIZE", "1"))
         quant_settings = config.get("quantization", {})
-        if quant_settings.get("load_in_4bit", False):
+        if quant_settings.get("load_in_4bit", False) and world_size <= 1:
             quant_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_compute_dtype=getattr(
@@ -60,6 +65,11 @@ class PolicyModel(nn.Module):
                 ),
                 bnb_4bit_quant_type=quant_settings.get("bnb_4bit_quant_type", "nf4"),
                 bnb_4bit_use_double_quant=True,
+            )
+        elif quant_settings.get("load_in_4bit", False) and world_size > 1:
+            logger.info(
+                "Skipping 4-bit quantization for multi-GPU DDP training "
+                f"(WORLD_SIZE={world_size}). Using bf16 instead."
             )
 
         # Load base model
@@ -70,12 +80,7 @@ class PolicyModel(nn.Module):
         }
         if quant_config:
             model_kwargs["quantization_config"] = quant_config
-            # bitsandbytes needs device_map for quantized loading, but
-            # device_map="auto" is incompatible with Accelerate DDP.
-            # When WORLD_SIZE > 1, Accelerate handles device placement itself.
-            world_size = int(os.environ.get("WORLD_SIZE", "1"))
-            if world_size <= 1:
-                model_kwargs["device_map"] = "auto"
+            model_kwargs["device_map"] = "auto"
 
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name, **model_kwargs
