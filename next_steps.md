@@ -41,13 +41,13 @@
   ```bash
   python scripts/evaluate.py \
       --config configs/swebench/noisy.yaml \
-      --policy-path outputs/policy/swebench_noisy/final \
-      --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
+      --features data/router_features/swebench.jsonl \
+      --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
       --router-path outputs/router/swebench_noisy/router_final.pt \
       --output results/swebench_noisy \
       --seeds 1 2 3 \
       --methods r2v slm_only llm_only entropy_router \
-      --overrides policy.quantization.load_in_4bit=false verifier.mode=trained logging.wandb_mode=disabled
+      --overrides logging.wandb_mode=disabled
   ```
 - **Step 9:** Ablation studies
 
