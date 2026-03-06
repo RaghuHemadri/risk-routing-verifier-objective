@@ -34,22 +34,36 @@
   - Acc=22.1% (88% class imbalance), λ=1→11.6, temp scaling=10.0 (upper bound)
   - Output: `outputs/router/swebench_noisy/router_final.pt`
   - Git commit: `cec1a0c`
+- ✅ **Step 8:** Evaluated all methods (CPU-only, offline using pre-computed features)
+  - R2V: SR=23.9% [22.6%, 25.3%], Worst-Seed=13.9%, CVaR-Fail=0.861, Cost=7.66, LLM-Rate=12.3%
+  - SLM-only: SR=13.5%, Cost=1.13, LLM-Rate=0%
+  - LLM-only: SR=100% (oracle), Cost=56.28, LLM-Rate=100%
+  - Entropy Router: SR=23.9% — **identical to R2V** (Δ=0.0, p=1.0)
+  - R2V vs SLM-only: Δ=+10.5% (p=0.000, significant)
+  - **Key finding:** Trained router = entropy threshold baseline (see EXPERIMENT_TRACKER.md obs #28)
+  - Output: `results/swebench_noisy/`
+  - Git commits: `ca278e7`, `5b3905e`
 
 ## Next
 
-- **Step 8:** Evaluate all methods (R2V, SLM-only, LLM-only, entropy router)
+- **Step 9:** Ablation studies
+  - Audit `scripts/run_ablations.py` for stale APIs (same pattern as Steps 7-8)
+  - Ablations to run: No preference (BC-only), No verifier, No risk calibration, Static threshold, No self-correction
   ```bash
-  python scripts/evaluate.py \
+  python scripts/run_ablations.py \
       --config configs/swebench/noisy.yaml \
       --features data/router_features/swebench.jsonl \
       --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
       --router-path outputs/router/swebench_noisy/router_final.pt \
-      --output results/swebench_noisy \
-      --seeds 1 2 3 \
-      --methods r2v slm_only llm_only entropy_router \
+      --output results/ablations/swebench_noisy \
       --overrides logging.wandb_mode=disabled
   ```
-- **Step 9:** Ablation studies
+
+- **Investigate R2V = Entropy Router identity (obs #28):**
+  - Analyze feature importance in trained router MLP
+  - Try different entropy thresholds to confirm alignment
+  - Consider training with entropy feature ablated
+  - May indicate need for richer feature set or different router architecture
 
 ## HPC Notes
 
