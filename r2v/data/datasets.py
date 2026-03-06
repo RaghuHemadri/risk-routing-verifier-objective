@@ -166,24 +166,41 @@ class PreferenceDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.examples: list[PreferenceExample] = []
 
-        # Load candidate action data
+        # Load candidate action data.
+        # Supports two JSONL schemas:
+        #   1. Pre-paired: {context, chosen, rejected, chosen_score, rejected_score}
+        #   2. Raw candidates: {context, candidates, verifier_scores}
         import jsonlines
         with jsonlines.open(candidates_path, mode="r") as reader:
             for obj in reader:
-                best_idx = max(range(len(obj["verifier_scores"])),
-                               key=lambda i: obj["verifier_scores"][i])
-                worst_idx = min(range(len(obj["verifier_scores"])),
-                                key=lambda i: obj["verifier_scores"][i])
-                score_gap = obj["verifier_scores"][best_idx] - obj["verifier_scores"][worst_idx]
-                if score_gap < min_score_gap:
-                    continue
-                self.examples.append(PreferenceExample(
-                    context=obj["context"],
-                    chosen_action=obj["candidates"][best_idx],
-                    rejected_action=obj["candidates"][worst_idx],
-                    chosen_score=obj["verifier_scores"][best_idx],
-                    rejected_score=obj["verifier_scores"][worst_idx],
-                ))
+                if "chosen" in obj and "rejected" in obj:
+                    # Schema 1: already paired by generate_candidates
+                    score_gap = obj.get("chosen_score", 1.0) - obj.get("rejected_score", 0.0)
+                    if score_gap < min_score_gap:
+                        continue
+                    self.examples.append(PreferenceExample(
+                        context=obj["context"],
+                        chosen_action=obj["chosen"],
+                        rejected_action=obj["rejected"],
+                        chosen_score=obj.get("chosen_score", 1.0),
+                        rejected_score=obj.get("rejected_score", 0.0),
+                    ))
+                elif "verifier_scores" in obj and "candidates" in obj:
+                    # Schema 2: raw candidates — pick best/worst pair
+                    best_idx = max(range(len(obj["verifier_scores"])),
+                                   key=lambda i: obj["verifier_scores"][i])
+                    worst_idx = min(range(len(obj["verifier_scores"])),
+                                    key=lambda i: obj["verifier_scores"][i])
+                    score_gap = obj["verifier_scores"][best_idx] - obj["verifier_scores"][worst_idx]
+                    if score_gap < min_score_gap:
+                        continue
+                    self.examples.append(PreferenceExample(
+                        context=obj["context"],
+                        chosen_action=obj["candidates"][best_idx],
+                        rejected_action=obj["candidates"][worst_idx],
+                        chosen_score=obj["verifier_scores"][best_idx],
+                        rejected_score=obj["verifier_scores"][worst_idx],
+                    ))
 
     def __len__(self) -> int:
         return len(self.examples)
