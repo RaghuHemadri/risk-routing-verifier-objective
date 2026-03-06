@@ -47,7 +47,7 @@ from omegaconf import OmegaConf
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
-from r2v.utils.config import config_to_dict, load_config
+from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
 

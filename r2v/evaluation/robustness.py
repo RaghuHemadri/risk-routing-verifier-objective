@@ -10,7 +10,6 @@ Implements the robust success metrics that are central to the paper:
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
 
 import numpy as np
 
@@ -92,55 +91,3 @@ def compute_bottom_k_sr(
     k = max(1, int(len(sorted_srs) * k_fraction))
 
     return float(np.mean(sorted_srs[:k]))
-
-
-def compute_per_perturbation_type_sr(
-    episodes: list[Episode],
-) -> dict[str, float]:
-    """Success rate broken down by perturbation type."""
-    type_results: dict[str, list[float]] = defaultdict(list)
-
-    for ep in episodes:
-        ptype = ep.perturbation_type.value
-        type_results[ptype].append(float(ep.success))
-
-    return {
-        ptype: np.mean(results) for ptype, results in type_results.items()
-    }
-
-
-def compute_robustness_gap(
-    clean_episodes: list[Episode],
-    noisy_episodes: list[Episode],
-) -> float:
-    """Compute the gap between clean and noisy success rates.
-
-    A smaller gap indicates better robustness.
-    """
-    clean_sr = np.mean([float(ep.success) for ep in clean_episodes])
-    noisy_sr = np.mean([float(ep.success) for ep in noisy_episodes])
-    return clean_sr - noisy_sr
-
-
-def compute_success_cost_frontier(
-    episodes_by_method: dict[str, list[Episode]],
-) -> list[dict[str, Any]]:
-    """Compute the success-rate vs cost frontier across methods.
-
-    Returns list of (method, success_rate, avg_cost) points for plotting.
-    """
-    frontier = []
-    for method, episodes in episodes_by_method.items():
-        sr = np.mean([float(ep.success) for ep in episodes])
-        cost = np.mean([ep.total_cost for ep in episodes])
-        llm_frac = np.mean([
-            ep.num_llm_fallbacks / max(ep.num_steps, 1) for ep in episodes
-        ])
-        frontier.append({
-            "method": method,
-            "success_rate": sr,
-            "avg_cost": cost,
-            "llm_call_fraction": llm_frac,
-        })
-
-    return sorted(frontier, key=lambda x: x["avg_cost"])

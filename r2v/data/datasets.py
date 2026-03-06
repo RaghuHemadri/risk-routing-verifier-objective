@@ -4,7 +4,6 @@ PyTorch datasets for R2V-Agent training.
 Provides:
 - BCDataset: behavior cloning from teacher trajectories
 - PreferenceDataset: DPO pairs from verifier-scored candidates
-- ConsistencyDataset: paired observations under different tool seeds
 - VerifierDataset: (context, action, label) for verifier training
 - RouterDataset: features + routing labels for router training
 """
@@ -19,7 +18,7 @@ import torch
 from torch.utils.data import Dataset
 
 from r2v.data.trajectory import (
-    Episode, Step, CandidateActions, TrajectoryStore, PerturbationType
+    Episode, Step, TrajectoryStore,
 )
 
 
@@ -268,89 +267,6 @@ class PreferenceDataset(Dataset):
             result["rejected_input_ids"].append(b["rejected_input_ids"] + [0] * rj_pad)
             result["rejected_attention_mask"].append(b["rejected_attention_mask"] + [0] * rj_pad)
             result["rejected_labels"].append(b["rejected_labels"] + [-100] * rj_pad)
-
-        return {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
-
-
-# ============================================================
-# Consistency Dataset
-# ============================================================
-
-@dataclass
-class ConsistencyExample:
-    context_a: str   # Context with tool output under seed z
-    context_b: str   # Context with tool output under seed z'
-    episode_id: str
-    step_idx: int
-
-
-class ConsistencyDataset(Dataset):
-    """Paired observations under different tool seeds for KL regularization."""
-
-    def __init__(
-        self,
-        paired_path: str,
-        tokenizer,
-        max_seq_len: int = 4096,
-    ):
-        self.tokenizer = tokenizer
-        self.max_seq_len = max_seq_len
-        self.examples: list[ConsistencyExample] = []
-
-        import jsonlines
-        with jsonlines.open(paired_path, mode="r") as reader:
-            for obj in reader:
-                self.examples.append(ConsistencyExample(**obj))
-
-    def __len__(self) -> int:
-        return len(self.examples)
-
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        ex = self.examples[idx]
-        prompt_a = f"{ex.context_a}\nAction:"
-        prompt_b = f"{ex.context_b}\nAction:"
-
-        # Return plain lists — collate_fn handles dynamic padding.
-        enc_a = self.tokenizer(
-            prompt_a, max_length=self.max_seq_len,
-            truncation=True, padding=False,
-        )
-        enc_b = self.tokenizer(
-            prompt_b, max_length=self.max_seq_len,
-            truncation=True, padding=False,
-        )
-
-        return {
-            "input_ids_a": enc_a["input_ids"],
-            "attention_mask_a": enc_a["attention_mask"],
-            "input_ids_b": enc_b["input_ids"],
-            "attention_mask_b": enc_b["attention_mask"],
-        }
-
-    @staticmethod
-    def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
-        """Dynamic padding for paired contexts.
-
-        Both contexts padded to same max length since they go through
-        the model together for KL divergence computation.
-        """
-        max_len = max(
-            max(len(b["input_ids_a"]) for b in batch),
-            max(len(b["input_ids_b"]) for b in batch),
-        )
-
-        result = {k: [] for k in [
-            "input_ids_a", "attention_mask_a", "input_ids_b", "attention_mask_b",
-        ]}
-        for b in batch:
-            for suffix in ("a", "b"):
-                pad_len = max_len - len(b[f"input_ids_{suffix}"])
-                result[f"input_ids_{suffix}"].append(
-                    b[f"input_ids_{suffix}"] + [0] * pad_len
-                )
-                result[f"attention_mask_{suffix}"].append(
-                    b[f"attention_mask_{suffix}"] + [0] * pad_len
-                )
 
         return {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
 
