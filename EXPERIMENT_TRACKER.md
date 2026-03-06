@@ -190,7 +190,7 @@ Every experiment produces structured outputs in multiple formats:
 | **Date** | 2026-03-03 (perturbations), 2026-03-04 (BC + verifier), 2026-03-05 (candidates + router features) |
 | **Config** | `configs/swebench/noisy.yaml` |
 | **Seeds** | 1, 2, 3 |
-| **Status** | ☑ BC + verifier + candidates + router features done, DPO + router training next |
+| **Status** | ☑ BC + verifier + candidates + router features + DPO done, router training next |
 
 **Perturbation data:**
 | Metric | Value |
@@ -297,7 +297,22 @@ bash scripts/launch_router_features.sh 4 \
     --batch-size 16 --K 5
 ```
 
-**Evaluation results (pending training):**
+**Step 5 — DPO Preference Training (completed 2026-03-06):**
+
+| Metric | Value |
+|--------|-------|
+| Platform | NYU Greene HPC, 4× H200 GPU (DDP via Accelerate), Singularity container |
+| Model | Llama-3.1-8B-Instruct + LoRA (167M trainable / 8B total, 2.05%) |
+| Precision | bf16 (4-bit quantization auto-disabled for multi-GPU DDP) |
+| Preference Pairs | 457 (from 4,015 candidates, filtered by score gap ≥ 0.1) |
+| DPO β | 0.1 |
+| Epochs | 2 |
+| Wall Time | ~72 seconds |
+| GPU Optimizations | Dynamic padding (collate_fn), concat chosen+rejected forward (4→2 passes), num_workers=2, pin_memory=True |
+| Output | `outputs/policy/swebench_noisy/final` (updated with DPO weights) |
+| Git Commits | `aa7a55a` (perf optimizations), `9275759` (schema fix), `ee5bc86` (DDP fix) |
+
+**Evaluation results (pending router training):**
 | Method | SR | Worst-Seed | CVaR-Fail | Cost |
 |--------|----:|----------:|----------:|-----:|
 | R2V | — | — | — | — |
@@ -367,6 +382,7 @@ bash scripts/launch_router_features.sh 4 \
 | Verifier training (SWE-bench noisy) | 1× H200 | ~2h | ~2h | ☑ Done |
 | Candidate generation | 2× H200 | ~3.1h | ~94min/shard | ☑ Done |
 | Router feature generation | 4× H200 | ~TBD | completed | ☑ Done |
+| DPO preference training | 4× H200 | ~0.08h | ~72s | ☑ Done |
 | MRP | 1× A100 | ~6h | ~6h | ☐ |
 | WebArena full | 2× A100 | ~150h | ~4d | ☐ |
 | SWE-bench full | 2× A100 | ~150h | ~4d | ☐ |
@@ -531,6 +547,14 @@ All perturbations are **composite** — each perturbed episode applies all four 
 18. **Router feature generation GPU utilization:** Initial single-GPU, batch-size-1 implementation had very low GPU util (~5-10%). Root causes: (a) sequential per-step processing with 7 individual GPU kernel launches per step, (b) `LLMJudgeVerifier.score_batch()` was a Python loop calling generate() K times sequentially, (c) redundant tokenization of the same growing context for both entropy and generation. Fix: batched entropy + generation + verifier scoring across B steps, left-padding for batched generation, `_PrefetchIter` background CPU thread overlapping tokenization with GPU work, GPU keepalive thread to prevent HPC scheduler from killing the job. With `--batch-size 16` on 4× H200, GPU utilization is dramatically improved.
 
 19. **Multi-GPU sharding for feature generation:** Following the same pattern as `launch_candidates.sh`, episode-level sharding (`episodes[shard_id::num_shards]`) via `--shard-id`/`--num-shards` CLI args lets each GPU process an independent slice. Auto-merge combines `.shard_NNN.jsonl` files. Resume support (skip episodes already in the shard file) allows crash recovery without restarting from scratch.
+
+20. **DPO training — `device_map='auto'` breaks DDP:** When `load_in_4bit=true` is in config, `device_map='auto'` gets set, which Accelerate rejects for distributed training. Fix: auto-detect `WORLD_SIZE > 1` and skip both quantization and device_map, letting Accelerate handle placement. Models load in bf16 (~16GB per GPU on H200 80GB).
+
+21. **DPO training — PreferenceDataset schema mismatch:** `generate_candidates.py` writes pre-paired format (`chosen`, `rejected`, `chosen_score`, `rejected_score`) but `PreferenceDataset` expected raw candidates (`candidates`, `verifier_scores`). Fixed to accept both schemas.
+
+22. **DPO training — concat forward passes:** Instead of 4 separate model forward passes per step (policy×2 + ref×2), concatenating chosen+rejected into a single forward reduces to 2 passes. Combined with dynamic padding (pad to max-in-batch, not 4096), this gives ~4-6× throughput.
+
+23. **DPO data filtering:** Of 4,015 candidate pairs, only 457 pass the `min_score_gap=0.1` filter. This is expected — many steps have candidates that the verifier scores similarly, meaning the SLM policy is already reasonable at those steps.
 
 ---
 

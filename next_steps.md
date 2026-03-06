@@ -23,26 +23,20 @@
   - 4,016 feature vectors (13-dim), batched GPU inference, `--batch-size 16`
   - Output: `data/router_features/swebench.jsonl`
   - Git commit: `0353417`
+- ✅ **Step 5:** DPO preference training (4× H200, Accelerate DDP)
+  - 457 preference pairs (from 4,015 candidates, filtered by score gap ≥ 0.1)
+  - bf16 (4-bit auto-disabled for DDP), 2 epochs, ~72s wall time
+  - Output: `outputs/policy/swebench_noisy/final`
+  - Git commits: `aa7a55a`, `9275759`, `ee5bc86`
 
 ## Next
 
-- **Step 5:** Train DPO preference stage (uses candidates + verifier scores)
-  ```bash
-  python scripts/train_policy.py \
-      --config configs/swebench/noisy.yaml \
-      --output outputs/policy/swebench_noisy \
-      --stage preference \
-      --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-      --preference-data data/candidates/swebench_noisy.jsonl \
-      --overrides policy.quantization.load_in_4bit=false
-  ```
 - **Step 7:** Train router on generated features
   ```bash
   python scripts/train_router.py \
       --config configs/swebench/noisy.yaml \
       --features data/router_features/swebench.jsonl \
-      --output outputs/router/swebench_noisy \
-      --overrides policy.quantization.load_in_4bit=false
+      --output outputs/router/swebench_noisy
   ```
 - **Step 8:** Evaluate all methods (R2V, SLM-only, LLM-only, entropy router)
   ```bash
@@ -63,5 +57,6 @@
 - **GPU access in Singularity:** Must use `srun --jobid=<JID> --overlap --cpu-bind=none --pty` to attach to SLURM GPU job, then `singularity exec --nv` inside that shell. SSH-ing directly to compute nodes does not expose GPUs.
 - **4-bit quantization:** Disabled (`load_in_4bit=false`) because bitsandbytes is broken in the Singularity container. bf16 works fine on H200.
 - **Gradient checkpointing:** Requires `use_reentrant=False` + `enable_input_require_grads()` for LoRA compatibility.
-- **DataLoader:** `num_workers=0, pin_memory=False` to avoid fork-based OOM in container.
+- **DataLoader:** `num_workers=2, pin_memory=True, persistent_workers=True` for prefetching. If pickle errors in container, fall back to `num_workers=0`.
+- **DPO multi-GPU:** `accelerate launch --num_processes=4 --multi_gpu` works. 4-bit quantization auto-disabled when `WORLD_SIZE > 1`.
 - **HF token:** Set via `exports.sh` (`HF_HOME`, `HF_TOKEN`) — needed for gated Llama model.

@@ -144,7 +144,7 @@ This submits ~10 SLURM jobs per benchmark with proper dependencies:
 | 3a | Train policy (BC) | 1× H200 | ~17min | Stage 2 |
 | 3b | Train verifier | 1× H200 | ~2h | Stage 2 |
 | 4 | Generate candidates | 1× H200 | 1-3h | 3a, 3b |
-| 5 | Train policy (DPO) | 1× H200 | ~1h | Stage 4 |
+| 5 | Train policy (DPO) | 4× H200 | ~72s | Stage 4 |
 | 6 | Router features | 4× H200 | <30min | 3a, 3b |
 | 7 | Train router | 1× GPU | <1h | Stage 6 |
 | 8 | Evaluate | 1× H200 | 1-4h | Stage 7 |
@@ -247,11 +247,23 @@ python scripts/generate_candidates.py \
 
 ### Step 5: Train policy (DPO preference)
 ```bash
+# Actual command used (completed 2026-03-06, 4× H200 DDP, ~72s):
+accelerate launch --num_processes=4 --multi_gpu \
+    scripts/train_policy.py \
+    --config configs/swebench/noisy.yaml \
+    --output outputs/policy/swebench_noisy \
+    --stage preference \
+    --preference-data data/candidates/swebench_noisy.jsonl
+
+# Result: 457 preference pairs (filtered from 4015), 2 epochs DPO (β=0.1)
+# 4-bit quantization auto-disabled for DDP (bf16 instead, ~16GB/GPU)
+# Output: outputs/policy/swebench_noisy/final (updated with DPO weights)
+
+# Single-GPU alternative:
 python scripts/train_policy.py \
     --config configs/swebench/noisy.yaml \
     --output outputs/policy/swebench_noisy \
     --stage preference \
-    --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
     --preference-data data/candidates/swebench_noisy.jsonl \
     --overrides policy.quantization.load_in_4bit=false
 ```
@@ -290,11 +302,15 @@ python scripts/generate_router_features.py --merge \
 
 ### Step 7: Train router
 ```bash
+# Router is a small MLP — single GPU or even CPU is fine:
 python scripts/train_router.py \
     --config configs/swebench/noisy.yaml \
-    --features data/router_features/swebench_noisy.jsonl \
-    --output outputs/router/swebench_noisy \
-    --overrides policy.quantization.load_in_4bit=false
+    --features data/router_features/swebench.jsonl \
+    --output outputs/router/swebench_noisy
+
+# Router trains on 4,016 feature vectors (13-dim), no LLM needed.
+# Uses Lagrangian CVaR objective + temperature scaling.
+# Output: outputs/router/swebench_noisy/router_final.pt
 ```
 
 ### Step 8: Evaluate
