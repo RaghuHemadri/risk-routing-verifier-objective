@@ -275,7 +275,7 @@ The router receives a carefully engineered 13-dimensional feature vector $f_t$ a
 | 4 | `verifier_score_best` | Best verifier score among candidates | $\max_k V_\phi(x_t, a^{(k)})$ |
 | 5 | `horizon_fraction` | Fraction of episode budget consumed | $t / T_{\max}$ where $T_{\max} = 30$ |
 | 6 | `step_number` | Absolute step index (normalized) | $t / 50$ |
-| 7 | `normalized_context_length` | Context length as fraction of max | $\text{len}(x_t) / \text{max\_seq\_len}$ |
+| 7 | `normalized_context_length` | Context length as fraction of max | $\text{len}(x_t)$ / max_seq_len |
 | 8 | `perturbation_tool_flakiness` | One-hot: tool flakiness active | $\mathbb{1}[\text{flakiness active}]$ |
 | 9 | `perturbation_partial_obs` | One-hot: partial observability active | $\mathbb{1}[\text{partial obs active}]$ |
 | 10 | `perturbation_prompt_injection` | One-hot: prompt injection active | $\mathbb{1}[\text{injection active}]$ |
