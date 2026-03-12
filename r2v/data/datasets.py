@@ -107,7 +107,10 @@ class BCDataset(Dataset):
 
         # Labels: -100 for prompt tokens (no loss), actual ids for target
         labels = list(encoding["input_ids"])
-        labels[:prompt_len] = [-100] * min(prompt_len, len(labels))
+        # Guard against fully-masked labels when long prompts consume the
+        # entire sequence budget (can produce NaN loss in CE reduction).
+        num_mask = min(prompt_len, max(0, len(labels) - 1))
+        labels[:num_mask] = [-100] * num_mask
 
         return {
             "input_ids": encoding["input_ids"],
@@ -227,9 +230,11 @@ class PreferenceDataset(Dataset):
         )["input_ids"])
 
         chosen_labels = list(chosen_enc["input_ids"])
-        chosen_labels[:prompt_len] = [-100] * min(prompt_len, len(chosen_labels))
+        num_mask_chosen = min(prompt_len, max(0, len(chosen_labels) - 1))
+        chosen_labels[:num_mask_chosen] = [-100] * num_mask_chosen
         rejected_labels = list(rejected_enc["input_ids"])
-        rejected_labels[:prompt_len] = [-100] * min(prompt_len, len(rejected_labels))
+        num_mask_rejected = min(prompt_len, max(0, len(rejected_labels) - 1))
+        rejected_labels[:num_mask_rejected] = [-100] * num_mask_rejected
 
         return {
             "chosen_input_ids": chosen_enc["input_ids"],

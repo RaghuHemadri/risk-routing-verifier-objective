@@ -139,12 +139,26 @@ class BCTrainer:
 
             for batch_idx, batch in enumerate(train_loader):
                 with accelerator.accumulate(model):
+                    if (batch["labels"] != -100).sum().item() == 0:
+                        accelerator.print(
+                            "[BC] Warning: skipping batch with no supervised tokens"
+                        )
+                        optimizer.zero_grad()
+                        continue
+
                     outputs = model(
                         input_ids=batch["input_ids"],
                         attention_mask=batch["attention_mask"],
                         labels=batch["labels"],
                     )
                     loss = outputs.loss if hasattr(outputs, 'loss') else outputs["loss"]
+
+                    if not torch.isfinite(loss):
+                        accelerator.print(
+                            "[BC] Warning: non-finite loss encountered; skipping batch"
+                        )
+                        optimizer.zero_grad()
+                        continue
 
                     accelerator.backward(loss)
 
