@@ -3,7 +3,7 @@ Abstract base class for benchmark environments.
 
 All benchmark wrappers implement this interface so that the collection
 script (collect_trajectories.py) can work uniformly across WebArena,
-SWE-bench, or any future benchmark.
+GAIA, HumanEval+, ALFWorld, or any future benchmark.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ class BenchmarkTask:
 
     task_id: str
     goal: str  # Natural-language intent / problem statement
-    benchmark: str  # "webarena" or "swebench"
+    benchmark: str  # e.g. "webarena", "gaia", "humaneval", "alfworld"
     template_id: Optional[str] = None
     site: Optional[str] = None  # WebArena site category
-    repo: Optional[str] = None  # SWE-bench repo
+    repo: Optional[str] = None  # repository (if applicable)
     difficulty: Optional[str] = None
     config_file: Optional[str] = None  # WebArena config JSON path
     extra: dict[str, Any] = field(default_factory=dict)

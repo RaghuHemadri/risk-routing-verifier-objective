@@ -1,5 +1,5 @@
 # ============================================================
-# Smoke-test config: SWE-bench Lite, 1 instance, no Docker eval
+# Smoke-test config: GAIA, 1 instance
 # Use this to verify the full pipeline is wired up correctly.
 #
 #   python -m scripts.collect_trajectories \
@@ -10,7 +10,7 @@
 defaults:
   - base
 
-benchmark: swebench
+benchmark: gaia
 
 teacher:
   provider: openai
@@ -18,21 +18,14 @@ teacher:
   max_tokens: 512
   temperature: 0.0
 
-swebench:
+gaia:
   dataset:
-    name: princeton-nlp/SWE-bench_Lite   # 300 instances (~10 MB), not full ~2 GB
-    split: test
-    max_instances: 1                     # load only 1 instance
+    name: gaia-benchmark/GAIA
+    split: validation
+    levels: [1]              # easiest level only
+    max_instances: 1
 
-  docker:
-    timeout: 120
-    memory_limit: 4g
-    cpu_limit: 2
-
-  evaluation:
-    run_tests: false          # skip Docker-based test execution
-    compute_resolved: false
-    compute_applied: false
+  cmd_timeout: 30
 
 data:
   num_teacher_trajectories: 1

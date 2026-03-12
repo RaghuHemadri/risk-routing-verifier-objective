@@ -10,7 +10,7 @@ Usage:
         --seeds 1 2 3
 
 This script:
-1. Loads benchmark tasks (WebArena or SWE-bench)
+1. Loads benchmark tasks from the configured benchmark
 2. Initializes the appropriate environment wrapper
 3. Runs the teacher LLM on each task to generate actions
 4. Saves trajectories in JSONL format for downstream training
@@ -51,6 +51,8 @@ from r2v.utils.logging import JSONLLogger, setup_logging
 
 # ── Prompt templates ─────────────────────────────────────────────
 
+_MAX_PROMPT_CHARS = 16_000  # Max observation chars in prompt
+
 WEBARENA_SYSTEM_PROMPT = """\
 You are an autonomous web agent. You interact with websites by issuing actions \
 in the following format:
@@ -84,29 +86,96 @@ Previous actions:
 
 What is your next action?"""
 
-SWEBENCH_SYSTEM_PROMPT = """\
-You are an expert software engineer tasked with fixing a GitHub issue. \
-You will be given a problem statement describing a bug or feature request. \
-Analyze the issue carefully and provide a patch (in unified diff format) \
-that resolves it.
+# ── GAIA prompt templates ─────────────────────────────────────────
 
-Respond with your analysis followed by the patch in this format:
-<patch>
---- a/path/to/file.py
-+++ b/path/to/file.py
-@@ -line,count +line,count @@
- context
--old line
-+new line
- context
-</patch>
+GAIA_SYSTEM_PROMPT = """\
+You are a general AI assistant. You solve questions by using available tools.
 
-When you are confident in your patch, end with: stop [done]"""
+Actions available (use EXACTLY ONE action per turn):
+  web_search [query]      – Search the web for information
+  python [code]           – Execute Python code
+  calculator [expression] – Evaluate a math expression
+  file_read [filename]    – Read an attached file
+  answer [final_answer]   – Submit your final answer
 
-SWEBENCH_USER_TEMPLATE = """\
+Respond with EXACTLY ONE action per turn. Think step-by-step about which \
+tool to use, then output the action on its own line prefixed with "Action: ".
+
+Your final answer must be concise and precise — a number, name, or short phrase."""
+
+GAIA_USER_TEMPLATE = """\
 {observation}
 
-Please analyze this issue and provide a fix as a unified diff patch."""
+Previous actions:
+{action_history}
+
+What is your next action?"""
+
+
+# ── ALFWorld prompt templates ────────────────────────────────────
+
+ALFWORLD_SYSTEM_PROMPT = """\
+You are an embodied AI agent in a household environment. You complete tasks \
+by taking actions to interact with objects and navigate rooms.
+
+Actions available:
+  go to {receptacle}           – Navigate to a location
+  take {object} from {recep}   – Pick up an object
+  put {object} in/on {recep}   – Place an object
+  open {receptacle}            – Open a container/receptacle
+  close {receptacle}           – Close a container/receptacle
+  toggle {object/receptacle}   – Toggle on/off
+  clean {object} with {recep}  – Clean an object
+  heat {object} with {recep}   – Heat an object
+  cool {object} with {recep}   – Cool an object
+  use {receptacle}             – Use a device
+  examine {object/receptacle}  – Look at something closely
+  inventory                    – Check what you are carrying
+  look                         – Look around
+
+Respond with EXACTLY ONE action per turn. Think step-by-step, then output \
+the action on its own line prefixed with "Action: "."""
+
+ALFWORLD_USER_TEMPLATE = """\
+Goal: {goal}
+
+Observation:
+{observation}
+
+Previous actions:
+{action_history}
+
+What is your next action?"""
+
+
+# ── HumanEval+ prompt templates ──────────────────────────────────
+
+HUMANEVAL_SYSTEM_PROMPT = """\
+You are an expert Python programmer. You solve coding problems by writing \
+and testing code iteratively.
+
+Actions available:
+  write_code [your_python_code]  – Write/overwrite your solution
+  test                           – Test your current solution
+  submit                         – Submit your solution for evaluation
+
+Workflow:
+1. Read the function signature and docstring carefully.
+2. Write your implementation using write_code [...].
+3. Test it using test.
+4. Fix any errors and re-test.
+5. Submit when confident.
+
+Respond with EXACTLY ONE action per turn. Think step-by-step, then output \
+the action on its own line prefixed with "Action: "."""
+
+HUMANEVAL_USER_TEMPLATE = """\
+{observation}
+
+Previous actions:
+{action_history}
+
+What is your next action?"""
 
 
 # ── Benchmark factory ────────────────────────────────────────────
@@ -119,11 +188,20 @@ def create_benchmark_env(cfg) -> BenchmarkEnv:
     if benchmark == "webarena":
         from r2v.data.benchmarks.webarena_env import WebArenaEnv
         return WebArenaEnv(cfg)
-    elif benchmark == "swebench":
-        from r2v.data.benchmarks.swebench_env import SWEBenchEnv
-        return SWEBenchEnv(cfg)
+    elif benchmark == "gaia":
+        from r2v.data.benchmarks.gaia_env import GAIAEnv
+        return GAIAEnv(cfg)
+    elif benchmark == "alfworld":
+        from r2v.data.benchmarks.alfworld_env import ALFWorldEnv
+        return ALFWorldEnv(cfg)
+    elif benchmark == "humaneval":
+        from r2v.data.benchmarks.humaneval_env import HumanEvalPlusEnv
+        return HumanEvalPlusEnv(cfg)
     else:
-        raise ValueError(f"Unknown benchmark: {benchmark}. Supported: webarena, swebench")
+        raise ValueError(
+            f"Unknown benchmark: {benchmark}. "
+            f"Supported: webarena, gaia, alfworld, humaneval"
+        )
 
 
 # ── Action parsing ───────────────────────────────────────────────
@@ -133,7 +211,7 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
     """Extract the action string from the teacher LLM's response.
 
     For WebArena: looks for "Action: <action>" pattern.
-    For SWE-bench: extracts the patch or stop command.
+    For GAIA/ALFWorld/HumanEval: looks for "Action: <action>" pattern.
     """
     if benchmark == "webarena":
         # Look for "Action: <action>" pattern
@@ -154,18 +232,81 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
         # Last resort
         return "stop [unable to parse action]"
 
-    elif benchmark == "swebench":
-        # Check for stop command
-        match = re.search(r"stop\s*\[(.+?)\]", response_text, re.IGNORECASE)
+    elif benchmark in ("gaia", "alfworld", "humaneval"):
+        # ── HumanEval: needs multiline-aware extraction ──────────
+        # `write_code [<code>]` spans many lines; the generic single-line
+        # regex below would truncate it to just `write_code [`.
+        if benchmark == "humaneval":
+            # 1) Full markdown code block with or without Action: prefix
+            cb = re.search(r"```(?:python)?\n(.*?)```", response_text, re.DOTALL | re.IGNORECASE)
+            if cb:
+                return f"write_code [{cb.group(1).strip()}]"
+
+            # 2) write_code [...] spanning multiple lines — find opening bracket,
+            #    then scan forward to the last ']' in the response.
+            wc = re.search(r"write_code\s*\[", response_text, re.IGNORECASE)
+            if wc:
+                body = response_text[wc.end():]
+                last_bracket = body.rfind("]")
+                if last_bracket != -1:
+                    code = body[:last_bracket].strip()
+                    if code:
+                        return f"write_code [{code}]"
+                # Opening bracket found but no closing — take everything after it
+                code = body.strip()
+                if code:
+                    return f"write_code [{code}]"
+
+            # 3) test / submit are single-word, safe to match on one line
+            for keyword in ("submit", "test"):
+                if re.search(rf"\bAction:\s*{keyword}\b", response_text, re.IGNORECASE):
+                    return keyword
+                if re.search(rf"^{keyword}\b", response_text.strip(), re.IGNORECASE | re.MULTILINE):
+                    return keyword
+
+            # 4) Raw Python code anywhere in the response
+            raw_py = re.search(r"^def \w+", response_text, re.MULTILINE)
+            if raw_py:
+                return f"write_code [{response_text[raw_py.start():].strip()}]"
+
+            return response_text.strip().split("\n")[-1]
+
+        # ── Single-line "Action: <action>" pattern (GAIA, ALFWorld) ──
+        match = re.search(r"Action:\s*(.+?)(?:\n|$)", response_text, re.IGNORECASE)
         if match:
-            return f"stop [{match.group(1)}]"
+            return match.group(1).strip()
 
-        # Check for patch content — if we find a patch, wrap it in a stop
-        # action so the episode terminates (SWE-bench is single-turn).
-        if "<patch>" in response_text or "```diff" in response_text or "---" in response_text:
-            return f"stop [{response_text}]"
+        # Fallback: look for tool call patterns
+        if benchmark == "gaia":
+            tool_match = re.search(
+                r"(web_search|python|calculator|file_read|answer)\s*\[",
+                response_text,
+            )
+            if tool_match:
+                start = tool_match.start()
+                # Find matching bracket
+                depth = 0
+                for i in range(tool_match.end() - 1, len(response_text)):
+                    if response_text[i] == "[":
+                        depth += 1
+                    elif response_text[i] == "]":
+                        depth -= 1
+                        if depth == 0:
+                            return response_text[start : i + 1]
+                return response_text[start:]
 
-        return response_text
+        elif benchmark == "alfworld":
+            alf_verbs = [
+                "go to", "take", "put", "open", "close", "toggle",
+                "clean", "heat", "cool", "use", "examine", "inventory", "look",
+            ]
+            for line in response_text.strip().split("\n"):
+                line = line.strip()
+                for verb in alf_verbs:
+                    if line.lower().startswith(verb):
+                        return line
+
+        return response_text.strip().split("\n")[-1]  # Last line as fallback
 
     return response_text
 
@@ -175,10 +316,30 @@ def classify_action_type(action_text: str, benchmark: str) -> str:
     if benchmark == "webarena":
         verb = action_text.strip().split()[0].lower() if action_text.strip() else "unknown"
         return verb
-    elif benchmark == "swebench":
-        if action_text.lower().startswith("stop"):
-            return "stop"
-        return "patch"
+    elif benchmark == "gaia":
+        match = re.match(r"^(\w+)\s*\[", action_text)
+        if match:
+            tool = match.group(1)
+            if tool == "answer":
+                return "finish"
+            return tool
+        return "unknown"
+    elif benchmark == "alfworld":
+        lower = action_text.strip().lower()
+        for verb in ["go to", "take", "put", "open", "close", "toggle",
+                      "clean", "heat", "cool", "use", "examine", "inventory", "look"]:
+            if lower.startswith(verb):
+                return verb.replace(" ", "_")
+        return "unknown"
+    elif benchmark == "humaneval":
+        lower = action_text.strip().lower()
+        if lower == "submit":
+            return "submit"
+        if lower.startswith("write_code") or lower.startswith("def "):
+            return "write_code"
+        if lower.startswith("test"):
+            return "test"
+        return "unknown"
     return "unknown"
 
 
@@ -199,24 +360,34 @@ def collect_with_teacher(
 ) -> Episode | None:
     """Run the teacher LLM on a single task and collect a trajectory.
 
-    This function:
-    1. Resets the environment for the task
-    2. In a loop: builds a prompt -> calls teacher LLM -> parses action -> steps env
-    3. Evaluates the final trajectory for correctness
-    4. Returns an Episode object
+    For WebArena: rebuilds the prompt each turn with the current page observation.
+    For GAIA/ALFWorld/HumanEval: single-turn per step with context re-build.
     """
     benchmark = cfg.get("benchmark", "webarena")
-    max_steps = cfg.get("inference", {}).get("step_limit", 15)
+    # data.max_episode_steps is set per-benchmark (e.g. 10 for humaneval, 30 for
+    # webarena); fall back to inference.step_limit only if not provided.
+    max_steps = (
+        cfg.get("data", {}).get("max_episode_steps")
+        or cfg.get("inference", {}).get("step_limit", 15)
+    )
 
-    logger.info(f"Collecting trajectory: task={task.task_id}, seed={seed}")
+    logger.info(f"Collecting trajectory: task={task.task_id}, seed={seed}, max_steps={max_steps}")
 
     # Select prompt templates based on benchmark
     if benchmark == "webarena":
         system_prompt = WEBARENA_SYSTEM_PROMPT
         user_template = WEBARENA_USER_TEMPLATE
+    elif benchmark == "gaia":
+        system_prompt = GAIA_SYSTEM_PROMPT
+        user_template = GAIA_USER_TEMPLATE
+    elif benchmark == "alfworld":
+        system_prompt = ALFWORLD_SYSTEM_PROMPT
+        user_template = ALFWORLD_USER_TEMPLATE
+    elif benchmark == "humaneval":
+        system_prompt = HUMANEVAL_SYSTEM_PROMPT
+        user_template = HUMANEVAL_USER_TEMPLATE
     else:
-        system_prompt = SWEBENCH_SYSTEM_PROMPT
-        user_template = SWEBENCH_USER_TEMPLATE
+        raise ValueError(f"Unknown benchmark: {benchmark}")
 
     try:
         # Reset environment
@@ -236,7 +407,7 @@ def collect_with_teacher(
     wall_start = time.time()
 
     while not done and t < max_steps:
-        # Build the prompt
+        # ── Build prompt / call LLM ──
         if benchmark == "webarena":
             max_obs_chars = cfg.get("webarena", {}).get("observation", {}).get("max_tokens", 4096) * 4
             user_prompt = user_template.format(
@@ -245,17 +416,41 @@ def collect_with_teacher(
                 observation=current_obs[:max_obs_chars],
                 action_history="\n".join(action_history[-5:]) if action_history else "(none)",
             )
-        else:
-            user_prompt = user_template.format(observation=current_obs)
-
-        # Call the teacher LLM
-        try:
-            step_start = time.time()
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-            response: LLMResponse = teacher_client.chat(messages)
+        elif benchmark in ("gaia", "alfworld", "humaneval"):
+            # Single-turn per step with full context re-build
+            fmt_kwargs = {
+                "observation": current_obs[:_MAX_PROMPT_CHARS],
+                "action_history": "\n".join(action_history[-5:]) if action_history else "(none)",
+            }
+            if benchmark == "alfworld":
+                fmt_kwargs["goal"] = task.goal
+            user_prompt = user_template.format(**fmt_kwargs)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        else:
+            raise ValueError(f"Unknown benchmark: {benchmark}")
+
+        try:
+            step_start = time.time()
+            # Hard per-step timeout: kills the thread if the API hangs.
+            _LLM_STEP_TIMEOUT = 180  # seconds
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            with ThreadPoolExecutor(max_workers=1) as _pool:
+                _fut = _pool.submit(teacher_client.chat, messages)
+                try:
+                    response: LLMResponse = _fut.result(timeout=_LLM_STEP_TIMEOUT)
+                except FutureTimeout:
+                    logger.error(
+                        f"Teacher LLM call timed out at step {t} "
+                        f"after {_LLM_STEP_TIMEOUT}s — aborting episode"
+                    )
+                    break
             total_cost += response.cost
             step_dur = time.time() - step_start
             logger.info(
@@ -312,6 +507,7 @@ def collect_with_teacher(
         if step_result.url:
             current_url = step_result.url
         done = step_result.done or is_stop
+
         t += 1
 
     wall_time = time.time() - wall_start
@@ -402,8 +598,16 @@ def parse_args():
         help=(
             "Number of parallel worker processes for trajectory collection. "
             "Each worker gets its own environment instance and LLM client. "
-            "Recommended: 4-8 for SWE-bench (API-bound), 2-4 for WebArena "
+            "Recommended: 2-4 for WebArena "
             "(browser memory). Default: 1 (sequential)."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from", type=str, default="",
+        help=(
+            "Path to an existing trajectories JSONL file. Episodes whose "
+            "episode_id already appears there will be skipped. Useful for "
+            "resuming a partially-completed run without re-doing finished work."
         ),
     )
     return parser.parse_args()
@@ -664,6 +868,32 @@ def main():
         for seed in args.seeds
         for task in tasks
     ]
+
+    # ── Resume: skip already-collected episodes ───────────────────
+    if args.resume_from:
+        resume_path = Path(args.resume_from)
+        if not resume_path.exists():
+            logger.error(f"--resume-from file not found: {resume_path}")
+            sys.exit(1)
+        already_done: set[str] = set()
+        with open(resume_path) as _rf:
+            for _line in _rf:
+                _line = _line.strip()
+                if _line:
+                    _ep = json.loads(_line)
+                    _eid = _ep.get("episode_id", "")
+                    if _eid:
+                        already_done.add(_eid)
+        before = len(task_seed_pairs)
+        task_seed_pairs = [
+            (tid, seed) for tid, seed in task_seed_pairs
+            if f"{tid}_seed{seed}" not in already_done
+        ]
+        logger.info(
+            f"--resume-from: skipping {before - len(task_seed_pairs)} already-collected "
+            f"episodes ({len(task_seed_pairs)} remaining)"
+        )
+
     logger.info(f"Total episodes to collect: {len(task_seed_pairs)}")
 
     total_success = 0

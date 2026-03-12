@@ -3,23 +3,23 @@
 #
 # Each GPU gets its own process handling a non-overlapping slice of episodes.
 # Both the policy model and verifier are loaded on each GPU independently
-# (they fit in ~16GB bf16 each, well within H200 80GB).
+# (they fit in ~16GB bf16 each, well within a 24GB+ GPU).
 #
-# Usage (inside Singularity on Greene):
+# Usage:
 #   bash scripts/launch_candidates.sh <NUM_GPUS> [generate_candidates.py args...]
 #
 # Example:
 #   bash scripts/launch_candidates.sh 4 \
-#       --config configs/swebench/noisy.yaml \
-#       --policy-path outputs/policy/swebench_noisy/final \
-#       --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-#       --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-#       --output data/candidates/swebench_noisy.jsonl \
-#       --K 5
+#       --config configs/gaia/noisy.yaml \
+#       --policy-path outputs/policy/gaia_noisy/final \
+#       --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
+#       --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+#       --output data/candidates/gaia_noisy.jsonl \
+#       --K 5 --batch-size 8
 #
 # After all shards finish, merge:
 #   python scripts/generate_candidates.py --merge \
-#       --output data/candidates/swebench_noisy.jsonl
+#       --output data/candidates/gaia_noisy.jsonl
 
 set -euo pipefail
 

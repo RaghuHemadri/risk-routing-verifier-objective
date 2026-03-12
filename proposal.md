@@ -12,10 +12,10 @@
 We model a tool-using agent as a POMDP with *tool noise*:
 
 * State $s_t$, observation $o_t = \Omega(s_t)$ (webpage accessibility tree + URL + goal; or repo state + logs).
-* Action $a_t \in \mathcal{A}$ (WebArena action grammar; SWE-bench patch/tool actions).
+* Action $a_t \in \mathcal{A}$ (WebArena action grammar; GAIA tool actions).
 * Tool response randomness via perturbation seed $z \sim \mathcal{Z}$: executing $a_t$ yields next state $s_{t+1} \sim P(\cdot \mid s_t, a_t; z)$.
 
-Let $G$ be the task goal, and define episode success $S(\tau) \in \{0,1\}$ (WebArena functional correctness; SWE-bench tests passing). WebArena already provides functional correctness evaluation and a standardized action interface.  
+Let $G$ be the task goal, and define episode success $S(\tau) \in \{0,1\}$ (WebArena functional correctness; benchmark evaluation). WebArena already provides functional correctness evaluation and a standardized action interface.  
 
 We have:
 
@@ -28,7 +28,7 @@ We have:
 
 1. **Policy backbone (SLM):** decoder-only LM (7–13B class) producing:
 
-   * action token sequence (WebArena action grammar; SWE-bench patch/tool calls)
+   * action token sequence (WebArena action grammar; GAIA tool calls)
    * optional short "plan tag" $(not\ full\ CoT;\ just\ a\ structured\ plan\ string)$ used as input to verifier.
 2. **Verifier $V_\phi$:** can be:
 
@@ -43,7 +43,7 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 
 1. **Clean teacher trajectories**
 
-   * Run $\pi_T$ in base environments (WebArena, SWE-bench) to collect successful trajectories $\tau = (x_t, a_t, o_{t+1})_{t=1}^T$.
+   * Run $\pi_T$ in base environments (WebArena, GAIA) to collect successful trajectories $\tau = (x_t, a_t, o_{t+1})_{t=1}^T$.
    * Use ReAct-style prompting or direct-agent prompting as baselines for teacher trajectory generation (WebArena provides direct-agent system prompt and action grammar).  ReAct provides a standard “reasoning+acting” pattern and shows it improves interactive task success (e.g., WebShop). 
 
 2. **Perturbation operator $\mathcal{P}_k$**
@@ -57,7 +57,7 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 3. **Step labels for verifier training (automatic where possible)**
 
    * **WebArena:** define progress signal using evaluation script components $(exact\ match\ /\ must\text{-}include\ /\ fuzzy\ match\ etc.)$ and intermediate subgoals; WebArena's evaluation is designed for functional correctness.
-   * **SWE-bench:** label success via “% resolved” (tests pass after patch) and “% applied”. 
+   * **GAIA:** label success via “% resolved” (tests pass after patch) and “% applied”. 
 
    We create labels:
 
@@ -66,7 +66,7 @@ We build a dataset of trajectories with *paired clean + perturbed replays*:
 
 4. **Contamination controls** $(esp.\ SWE\text{-}bench)$
 
-   * Use SWE-bench train split for training; evaluation on test split; note SWE-bench explicitly uses disjoint repos for SFT to reduce contamination. 
+   * Use GAIA train split for training; evaluation on test split; note GAIA explicitly uses disjoint repos for SFT to reduce contamination. 
    * For WebArena, ensure train/eval tasks are disjoint by template + seed.
 
 ### Training objectives
@@ -244,12 +244,12 @@ def act(goal, obs, history, budget):
 **Standard tasks (≥2):**
 
 1. **WebArena (clean)** — interactive web tasks with functional correctness evaluation. 
-2. **SWE-bench (clean)** — real GitHub issue resolution measured by “% resolved / % applied”. 
+2. **GAIA (clean)** — real GitHub issue resolution measured by “% resolved / % applied”. 
 
 **Stress/OOD suite (≥1): SLM-AgentGym perturbations**
 
 * **Noisy-WebArena**: tool flakiness, partial observability, injection, distractors $(factorized)$.
-* **Noisy-SWE-bench**: flaky tests $(random\ fails)$, truncated logs, dependency/version drift, misleading error messages.
+* **Noisy-GAIA**: flaky tests $(random\ fails)$, truncated logs, dependency/version drift, misleading error messages.
 
 ## Baselines (must be strong + explicit variants)
 
@@ -268,11 +268,11 @@ def act(goal, obs, history, budget):
    * oracle router $(upper\ bound)$: route if SLM fails in hindsight
 5. **Conversion pipeline baseline**: implement the decompose→route→distill steps as described $(closest\ prior)$. 
 
-### For SWE-bench
+### For GAIA
 
 1. LLM-only agentic patching $(single\ attempt)$
 2. LLM-only + multi-sample rerank $(best\text{-}of\text{-}N)$
-3. SLM-only fine-tune on SWE-bench train $(repo\text{-}disjoint\ split\ noted)$. 
+3. SLM-only fine-tune on GAIA train $(repo\text{-}disjoint\ split\ noted)$. 
 4. SLM + verifier rerank $(SCORE\text{-}style\ oversample\text{-}then\text{-}rerank)$. 
 5. Your robust router + verifier-distilled SLM
 
@@ -298,7 +298,7 @@ def act(goal, obs, history, budget):
 * **Distribution shift**:
 
   * WebArena: unseen templates or increased task length $(more\ repetitive\ operations)$; WebArena notes complexity increases within template variants. 
-  * SWE-bench: unseen repos; stricter tests; larger diffs.
+  * GAIA: unseen repos; stricter tests; larger diffs.
 
 Report tail metrics: min-over-seeds, and “bottom-10% seed success”.
 
@@ -325,10 +325,10 @@ Report tail metrics: min-over-seeds, and “bottom-10% seed success”.
 
 ## Reliability & leakage controls
 
-* **SWE-bench split hygiene**: train only on SWE-bench train split; evaluate on test; note repo-disjoint design for SFT. 
+* **split hygiene**: train only on GAIA train split; evaluate on test; note repo-disjoint design for SFT. 
 * **Prompt/template leakage**: keep prompts fixed across methods; report prompt tokens; avoid tuning on test templates.
 * **WebArena hidden seeds**: hold out perturbation seeds; refresh seeds periodically.
 * **Contamination checks**:
 
-  * For SWE-bench: deduplicate against training corpora when possible; at minimum, track whether the model reproduces known PR patches verbatim $(hash\text{-}based)$.
+  * For GAIA: deduplicate against training corpora when possible; at minimum, track whether the model reproduces known PR patches verbatim $(hash\text{-}based)$.
   * For WebArena: ensure no overlap in $(template,\ site,\ entity\ IDs)$ between train and eval.

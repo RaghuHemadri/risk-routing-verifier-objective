@@ -1,0 +1,7 @@
+usage: collect_trajectories.py [-h] --config CONFIG [--output OUTPUT]
+                               [--num-episodes NUM_EPISODES]
+                               [--seeds SEEDS [SEEDS ...]]
+                               [--overrides [OVERRIDES ...]]
+                               [--run-tags [RUN_TAGS ...]] [--notes NOTES]
+                               [--run-id RUN_ID] [--num-workers NUM_WORKERS]
+collect_trajectories.py: error: unrecognized arguments:  

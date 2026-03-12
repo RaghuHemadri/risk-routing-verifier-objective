@@ -10,11 +10,11 @@ LLM teacher.
 
 Usage:
     python scripts/evaluate.py \
-        --config configs/swebench/noisy.yaml \
-        --features data/router_features/swebench.jsonl \
-        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-        --router-path outputs/router/swebench_noisy/router_final.pt \
-        --output results/swebench_noisy \
+        --config configs/gaia/noisy.yaml \
+        --features data/router_features/gaia.jsonl \
+        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+        --router-path outputs/router/gaia_noisy/router_final.pt \
+        --output results/gaia_noisy \
         --seeds 1 2 3 \
         --methods r2v slm_only llm_only entropy_router
 

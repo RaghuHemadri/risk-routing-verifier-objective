@@ -1,0 +1,44 @@
+# HumanEval+ Noisy Configuration
+defaults:
+  - ../base
+
+benchmark: humaneval
+
+humaneval:
+  dataset:
+    name: evalplus/humanevalplus
+    split: test
+    max_instances: null
+
+  use_plus_tests: true
+  cmd_timeout: 30
+  test_timeout: 60
+
+data:
+  num_teacher_trajectories: 164
+  num_perturbation_seeds: 20
+  max_episode_steps: 10
+
+# HumanEval-specific perturbations
+perturbations:
+  tool_flakiness:
+    enabled: true
+    failure_prob: 0.10       # test execution failures
+    timeout_prob: 0.05
+
+  partial_observability:
+    enabled: true
+    log_truncation_prob: 0.20    # truncated error messages
+    log_line_drop_prob: 0.15     # missing lines in tracebacks
+    stacktrace_truncation_prob: 0.15
+
+  prompt_injection:
+    enabled: true
+    misleading_error_prob: 0.15   # fake error messages in output
+    misleading_comment_prob: 0.10 # misleading code suggestions
+
+  distractors:
+    enabled: true
+    plausible_wrong_fix_prob: 0.15  # wrong code suggestions in output
+    semantic_distractor_prob: 0.15  # irrelevant code patterns
+    decoy_error_prob: 0.10          # fake but plausible errors

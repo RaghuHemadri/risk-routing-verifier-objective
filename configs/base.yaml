@@ -179,7 +179,7 @@ inference:
   max_self_correct_iters: 2
   accept_threshold: 0.7
   max_llm_calls: 10         # per episode budget
-  step_limit: 30
+  step_limit: 100
 
 # ---------- Evaluation defaults ----------
 evaluation:

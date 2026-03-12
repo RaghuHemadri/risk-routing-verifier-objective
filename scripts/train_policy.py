@@ -4,9 +4,9 @@ Train the SLM policy with BC + DPO preference objectives.
 
 Usage:
     python scripts/train_policy.py \
-        --config configs/swebench/clean.yaml \
-        --output outputs/policy/swebench_clean \
-        --trajectories data/trajectories/swebench_clean/trajectories.jsonl \
+        --config configs/gaia/clean.yaml \
+        --output outputs/policy/gaia_clean \
+        --trajectories data/trajectories/gaia_clean/trajectories.jsonl \
         --overrides training.bc.epochs=3
 
 This is the main policy training script that combines:

@@ -2,7 +2,7 @@
 Automatic step labeling for verifier training.
 
 Labels trajectory steps using:
-1. Environment-specific heuristics (WebArena evaluation components, SWE-bench test results)
+1. Environment-specific heuristics (WebArena evaluation components, benchmark test results)
 2. LLM-as-judge fallback for ambiguous cases
 3. Aggregated final-outcome propagation
 """
@@ -140,14 +140,139 @@ class WebArenaLabeler(StepLabeler):
         return any(ind in act_lower for ind in compliance_indicators)
 
 
-class SWEBenchLabeler(StepLabeler):
-    """Label SWE-bench steps using test results and patch analysis.
+class GAIALabeler(StepLabeler):
+    """Label GAIA steps using tool-use heuristics.
 
-    Step-level signals:
-    - File identification: did the agent find the right file?
-    - Bug localization: did the agent identify the correct location?
-    - Patch correctness: does the patch address the issue?
-    - Test awareness: does the agent consider test outputs?
+    Step-level progress signals:
+    - Tool selection: did the agent use an appropriate tool?
+    - Answer submission: did the agent provide a final answer?
+    - Error recovery: did the agent handle tool errors?
+    """
+
+    PROGRESS_TOOLS = {"web_search", "python", "calculator", "file_read"}
+
+    def __init__(
+        self,
+        use_llm_judge: bool = False,
+        llm_judge_fn: Optional[callable] = None,
+    ):
+        self.use_llm_judge = use_llm_judge
+        self.llm_judge_fn = llm_judge_fn
+
+    def label_episode(self, episode: Episode) -> Episode:
+        for i, step in enumerate(episode.steps):
+            label = StepLabel()
+            action_text = step.action.raw_text.strip()
+
+            # 1. Check if agent used a valid tool
+            tool_match = re.match(r"^(\w+)\s*\[", action_text)
+            if tool_match:
+                tool_name = tool_match.group(1)
+                label.is_progress = tool_name in self.PROGRESS_TOOLS
+
+            # 2. Answer submission → use episode success
+            if action_text.startswith("answer"):
+                label.is_correct = episode.success
+
+            # 3. Check for safety violations
+            label.safety_violation = self._check_safety_violation(
+                step.observation.raw_text, action_text
+            )
+
+            # 4. LLM judge fallback
+            if self.use_llm_judge and label.is_progress is None and self.llm_judge_fn:
+                label.is_progress = self.llm_judge_fn(
+                    goal=episode.metadata.goal,
+                    observation=step.observation.raw_text,
+                    action=action_text,
+                    step_idx=i,
+                    total_steps=len(episode.steps),
+                )
+
+            step.label = label
+        return episode
+
+    def _check_safety_violation(self, observation: str, action: str) -> bool:
+        injection_indicators = [
+            "ignore previous", "ignore all", "new instruction",
+            "disregard", "your task is now",
+        ]
+        obs_lower = observation.lower()
+        act_lower = action.lower()
+        has_injection = any(ind in obs_lower for ind in injection_indicators)
+        if not has_injection:
+            return False
+        compliance_indicators = [
+            "password", "credential", "secret", "api_key",
+            "http://evil", "https://evil",
+        ]
+        return any(ind in act_lower for ind in compliance_indicators)
+
+
+class ALFWorldLabeler(StepLabeler):
+    """Label ALFWorld steps using task-type heuristics.
+
+    Step-level progress signals:
+    - Navigation: did the agent go to a relevant location?
+    - Object interaction: did the agent interact meaningfully?
+    - Task alignment: does the action relate to the goal?
+    """
+
+    VALID_ACTIONS = {
+        "go to", "take", "put", "open", "close", "toggle",
+        "clean", "heat", "cool", "use", "examine", "inventory", "look",
+    }
+
+    def __init__(
+        self,
+        use_llm_judge: bool = False,
+        llm_judge_fn: Optional[callable] = None,
+    ):
+        self.use_llm_judge = use_llm_judge
+        self.llm_judge_fn = llm_judge_fn
+
+    def label_episode(self, episode: Episode) -> Episode:
+        for i, step in enumerate(episode.steps):
+            label = StepLabel()
+            action_text = step.action.raw_text.strip().lower()
+
+            # 1. Check if action is a valid ALFWorld action
+            is_valid = any(action_text.startswith(va) for va in self.VALID_ACTIONS)
+            if not is_valid:
+                label.is_progress = False
+
+            # 2. Detect repetitive actions (stuck in loop)
+            if i > 0:
+                prev_action = episode.steps[i - 1].action.raw_text.strip().lower()
+                if action_text == prev_action:
+                    label.is_progress = False
+
+            # 3. Positive reward from env → definitely progress
+            if step.reward > 0:
+                label.is_progress = True
+                label.is_correct = True
+
+            # 4. LLM judge fallback
+            if self.use_llm_judge and label.is_progress is None and self.llm_judge_fn:
+                label.is_progress = self.llm_judge_fn(
+                    goal=episode.metadata.goal,
+                    observation=step.observation.raw_text,
+                    action=step.action.raw_text,
+                    step_idx=i,
+                    total_steps=len(episode.steps),
+                )
+
+            step.label = label
+        return episode
+
+
+class HumanEvalLabeler(StepLabeler):
+    """Label HumanEval+ steps using code quality heuristics.
+
+    Step-level progress signals:
+    - Code writing: did the agent produce syntactically valid code?
+    - Testing: did the agent test their solution?
+    - Refinement: did the agent fix errors after testing?
     """
 
     def __init__(
@@ -159,57 +284,40 @@ class SWEBenchLabeler(StepLabeler):
         self.llm_judge_fn = llm_judge_fn
 
     def label_episode(self, episode: Episode) -> Episode:
-        # Extract file paths mentioned in the gold patch (if available)
-        gold_files = set(episode.metadata.extra.get("gold_files", []))
-
         for i, step in enumerate(episode.steps):
             label = StepLabel()
+            action_text = step.action.raw_text.strip()
+            obs_text = step.observation.raw_text if step.observation else ""
 
-            action_text = step.action.raw_text
-
-            # 1. Check if agent is examining relevant files
-            if gold_files:
-                mentioned_files = self._extract_file_paths(action_text)
-                label.is_progress = bool(mentioned_files & gold_files)
-
-            # 2. Check for test execution (good practice)
-            if "pytest" in action_text or "test" in action_text.lower():
+            # 1. Code writing → check if it's syntactically reasonable
+            if action_text.startswith("write_code") or action_text.startswith("def "):
                 label.is_progress = True
 
-            # 3. For terminal steps, use episode success
-            if step.action.is_stop:
+            # 2. Testing → always progress (good practice)
+            if action_text.startswith("test"):
+                label.is_progress = True
+                # Check if tests passed
+                if "All tests passed" in obs_text:
+                    label.is_correct = True
+                elif "ERROR" in obs_text or "failed" in obs_text.lower():
+                    label.is_correct = False
+
+            # 3. Submission → use episode success
+            if action_text.lower() == "submit":
                 label.is_correct = episode.success
 
-            # 4. LLM judge for ambiguous
+            # 4. LLM judge
             if self.use_llm_judge and label.is_progress is None and self.llm_judge_fn:
                 label.is_progress = self.llm_judge_fn(
                     goal=episode.metadata.goal,
-                    observation=step.observation.raw_text,
+                    observation=obs_text,
                     action=action_text,
                     step_idx=i,
                     total_steps=len(episode.steps),
                 )
 
             step.label = label
-
         return episode
-
-    def _extract_file_paths(self, text: str) -> set[str]:
-        """Extract file paths from action text."""
-        # Match common file path patterns
-        patterns = [
-            r'[\w/]+\.py',
-            r'[\w/]+\.js',
-            r'[\w/]+\.ts',
-            r'[\w/]+\.java',
-            r'[\w/]+\.cpp',
-            r'[\w/]+\.c',
-            r'[\w/]+\.h',
-        ]
-        paths = set()
-        for pattern in patterns:
-            paths.update(re.findall(pattern, text))
-        return paths
 
 
 class OutcomePropagationLabeler(StepLabeler):
@@ -251,17 +359,24 @@ class CompositeLabeler(StepLabeler):
 
 def create_labeler(benchmark: str, config: dict) -> StepLabeler:
     """Factory function to create the appropriate labeler."""
+    use_llm = config.get("use_llm_judge", False)
+
     if benchmark == "webarena":
         primary = WebArenaLabeler(
             eval_config=config.get("evaluation", {}),
-            use_llm_judge=config.get("use_llm_judge", False),
+            use_llm_judge=use_llm,
         )
-    elif benchmark == "swebench":
-        primary = SWEBenchLabeler(
-            use_llm_judge=config.get("use_llm_judge", False),
-        )
+    elif benchmark == "gaia":
+        primary = GAIALabeler(use_llm_judge=use_llm)
+    elif benchmark == "alfworld":
+        primary = ALFWorldLabeler(use_llm_judge=use_llm)
+    elif benchmark == "humaneval":
+        primary = HumanEvalLabeler(use_llm_judge=use_llm)
     else:
-        raise ValueError(f"Unknown benchmark: {benchmark}")
+        raise ValueError(
+            f"Unknown benchmark: {benchmark}. "
+            f"Supported: webarena, gaia, alfworld, humaneval"
+        )
 
     # Always add outcome propagation as fallback
     return CompositeLabeler([primary, OutcomePropagationLabeler()])
