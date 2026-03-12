@@ -228,7 +228,7 @@ class AnthropicClient(BaseLLMClient):
 
 
 class GeminiClient(BaseLLMClient):
-    """Client for Google Gemini API."""
+    """Client for Google Gemini API (google.genai SDK)."""
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
@@ -236,67 +236,89 @@ class GeminiClient(BaseLLMClient):
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment. Add it to your .env file.")
 
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types as genai_types
 
-        genai.configure(api_key=api_key)
-        generation_config = genai.types.GenerationConfig(
+        # Set a hard HTTP timeout so calls never hang indefinitely.
+        # connect_timeout=30s, read_timeout=120s.
+        try:
+            http_opts = genai_types.HttpOptions(timeout=120_000)  # ms
+            self._client = genai.Client(api_key=api_key, http_options=http_opts)
+        except Exception:
+            # Fallback if this version of the SDK doesn't support http_options
+            self._client = genai.Client(api_key=api_key)
+        self._genai_types = genai_types
+        self._gen_config = genai_types.GenerateContentConfig(
             temperature=config.temperature,
             top_p=config.top_p,
             max_output_tokens=config.max_tokens,
+            system_instruction=config.system_prompt if config.system_prompt else None,
         )
-        system_instruction = config.system_prompt if config.system_prompt else None
-        self.model = genai.GenerativeModel(
-            model_name=config.model_name,
-            generation_config=generation_config,
-            system_instruction=system_instruction,
+
+    def _extract_response(self, response) -> LLMResponse:
+        text = ""
+        if response.candidates:
+            parts = response.candidates[0].content.parts if response.candidates[0].content else []
+            text = "".join(p.text for p in parts if hasattr(p, "text"))
+        usage = getattr(response, "usage_metadata", None)
+        input_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
+        output_tokens = getattr(usage, "candidates_token_count", 0) if usage else 0
+        finish_reason = (
+            str(response.candidates[0].finish_reason)
+            if response.candidates else ""
         )
-        self._genai = genai
+        return LLMResponse(
+            text=text,
+            model=self.config.model_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=estimate_cost(self.config.model_name, input_tokens, output_tokens),
+            finish_reason=finish_reason,
+            raw=response,
+        )
 
     @retry(wait=wait_random_exponential(min=10, max=120), stop=stop_after_attempt(6))
     def generate(self, prompt: str, **kwargs) -> LLMResponse:
-        response = self.model.generate_content(prompt)
-        # Extract usage metadata
-        usage = getattr(response, "usage_metadata", None)
-        input_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
-        output_tokens = getattr(usage, "candidates_token_count", 0) if usage else 0
-        return LLMResponse(
-            text=response.text if response.text else "",
+        response = self._client.models.generate_content(
             model=self.config.model_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost=estimate_cost(self.config.model_name, input_tokens, output_tokens),
-            finish_reason=str(getattr(response.candidates[0], "finish_reason", "")) if response.candidates else "",
-            raw=response,
+            contents=prompt,
+            config=self._gen_config,
         )
+        return self._extract_response(response)
 
     @retry(wait=wait_random_exponential(min=10, max=120), stop=stop_after_attempt(6))
     def chat(self, messages: list[dict[str, str]], **kwargs) -> LLMResponse:
-        # Convert OpenAI-style messages to Gemini format
-        gemini_messages = []
+        from google.genai import types as genai_types
+
+        contents = []
+        system_parts: list[str] = []
         for msg in messages:
             role = msg["role"]
             if role == "system":
-                # System messages are handled via model config; prepend to first user msg
+                system_parts.append(msg["content"])
                 continue
-            gemini_role = "user" if role == "user" else "model"
-            gemini_messages.append({"role": gemini_role, "parts": [msg["content"]]})
+            genai_role = "user" if role == "user" else "model"
+            contents.append(genai_types.Content(
+                role=genai_role,
+                parts=[genai_types.Part(text=msg["content"])],
+            ))
 
-        chat = self.model.start_chat(history=gemini_messages[:-1])
-        last_msg = gemini_messages[-1]["parts"][0] if gemini_messages else ""
-        response = chat.send_message(last_msg)
+        # Prepend system content to first user message if not already in gen_config
+        if system_parts and contents:
+            prefix = "\n\n".join(system_parts) + "\n\n"
+            first_text = contents[0].parts[0].text
+            contents[0] = genai_types.Content(
+                role=contents[0].role,
+                parts=[genai_types.Part(text=prefix + first_text)],
+            )
 
-        usage = getattr(response, "usage_metadata", None)
-        input_tokens = getattr(usage, "prompt_token_count", 0) if usage else 0
-        output_tokens = getattr(usage, "candidates_token_count", 0) if usage else 0
-        return LLMResponse(
-            text=response.text if response.text else "",
+        cfg = self._gen_config
+        response = self._client.models.generate_content(
             model=self.config.model_name,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost=estimate_cost(self.config.model_name, input_tokens, output_tokens),
-            finish_reason=str(getattr(response.candidates[0], "finish_reason", "")) if response.candidates else "",
-            raw=response,
+            contents=contents,
+            config=cfg,
         )
+        return self._extract_response(response)
 
 
 # ── DeepSeek ─────────────────────────────────────────────────────

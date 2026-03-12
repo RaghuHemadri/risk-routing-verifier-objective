@@ -4,20 +4,20 @@
 # Each GPU gets its own process handling a non-overlapping slice of episodes.
 # Both the policy and verifier are loaded independently on each GPU.
 #
-# Usage (inside Singularity on Greene / any multi-GPU node):
+# Usage:
 #   bash scripts/launch_router_features.sh <NUM_GPUS> [generate_router_features.py args...]
 #
 # Example:
 #   bash scripts/launch_router_features.sh 4 \
-#       --config configs/swebench/noisy.yaml \
-#       --policy-path outputs/policy/swebench_noisy/final \
-#       --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-#       --output data/router_features/swebench.jsonl \
+#       --config configs/gaia/noisy.yaml \
+#       --policy-path outputs/policy/gaia_noisy/final \
+#       --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+#       --output data/router_features/gaia.jsonl \
 #       --batch-size 4 --K 5
 #
 # After all shards finish the script auto-merges.  You can also merge manually:
 #   python scripts/generate_router_features.py --merge \
-#       --output data/router_features/swebench.jsonl
+#       --output data/router_features/gaia.jsonl
 #
 # Resume after a crash: just re-run the same command — each worker detects
 # already-completed episodes in its shard file and skips them.

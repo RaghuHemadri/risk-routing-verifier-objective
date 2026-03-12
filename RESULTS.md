@@ -1,7 +1,7 @@
 # R2V-Agent: Experimental Results and Evaluation
 
 > **Date:** 2026-03-06  
-> **Benchmark:** SWE-bench (princeton-nlp/SWE-bench, test split)  
+> **Benchmark:** GAIA (princeton-nlp/GAIA_Verified, test split — 500 human-validated instances)  
 > **Condition:** Noisy (all 4 perturbation types enabled)  
 > **Evaluation Seeds:** 4 perturbation seeds (seeds 0–3), each applied across 20 base perturbation seeds  
 > **Evaluation timestamp:** 2026-03-06T17:16:50
@@ -30,7 +30,7 @@
 
 ## 1. Executive Summary
 
-R2V-Agent was evaluated on SWE-bench under the **noisy** condition, where all four perturbation categories (tool flakiness, partial observability, prompt injection, distractors) are simultaneously active. Four methods were compared:
+R2V-Agent was evaluated on GAIA under the **noisy** condition, where all four perturbation categories (tool flakiness, partial observability, prompt injection, distractors) are simultaneously active. Four methods were compared:
 
 | | R2V | SLM-only | LLM-only | Entropy Router |
 |---|---|---|---|---|
@@ -52,10 +52,10 @@ R2V-Agent was evaluated on SWE-bench under the **noisy** condition, where all fo
 
 | Parameter | Value |
 |---|---|
-| Benchmark | SWE-bench (princeton-nlp/SWE-bench) |
+| Benchmark | GAIA (princeton-nlp/GAIA_Verified) |
 | Split | test |
 | Condition | noisy (all perturbation types active) |
-| SWE-bench Docker timeout | 600s |
+| Docker timeout | 600s |
 | Docker memory limit | 8 GB |
 | Docker CPU limit | 4 cores |
 
@@ -64,7 +64,7 @@ R2V-Agent was evaluated on SWE-bench under the **noisy** condition, where all fo
 | Component | Model | Details |
 |---|---|---|
 | SLM Policy | Llama-3.1-8B-Instruct | LoRA (r=64, α=128), 4-bit NF4 quantization |
-| Teacher LLM | GPT-4o (OpenAI) | temperature=0.7, top_p=0.95, max_tokens=4096 |
+| Teacher LLM | Gemini 3 Flash (Google) | temperature=0.7, top_p=0.95, max_tokens=4096 |
 | Verifier (judge) | Llama-3.1-70B-Instruct | LLM-as-Judge mode |
 | Router | MLP [13→128→64→1] | Temperature-scaled sigmoid, CVaR-constrained |
 
@@ -166,7 +166,7 @@ Aggregate results (averaged across all perturbation seeds, with bootstrap confid
 
 | Metric | Definition |
 |---|---|
-| **Success Rate (SR)** | Fraction of SWE-bench instances resolved successfully (averaged across seeds) |
+| **Success Rate (SR)** | Fraction of GAIA instances resolved successfully (averaged across seeds) |
 | **95% CI** | Bootstrap confidence interval (1,000 samples) around the mean SR |
 | **Worst-Seed SR** | Minimum success rate across all perturbation seeds — measures tail risk |
 | **CVaR Failure** | Conditional Value-at-Risk of failure rate in the bottom 20% of seeds. Formally: $\text{CVaR}_\alpha = \mathbb{E}[\text{failure} \mid \text{failure} \geq F^{-1}(1-\alpha)]$ |
@@ -206,7 +206,7 @@ Aggregate results (averaged across all perturbation seeds, with bootstrap confid
 
 **Observations:**
 - Completely deterministic across perturbation seeds (no routing involved).
-- The SLM policy resolves 13.45% of SWE-bench instances without any LLM assistance.
+- The SLM policy resolves 13.45% of GAIA instances without any LLM assistance.
 - The identical SR across seeds confirms the SLM policy is deterministic at temperature 0 (greedy decoding during inference) and perturbations only affect the evaluation environment, not the SLM's inherent capability.
 
 ### 4.3 LLM-Only (Oracle Upper Bound)
@@ -219,8 +219,8 @@ Aggregate results (averaged across all perturbation seeds, with bootstrap confid
 | 3 | 1.0000 | [1.000, 1.000] | 56.28 | 100.00% |
 
 **Observations:**
-- The teacher LLM (GPT-4o) achieves **perfect 100% success rate** across all seeds.
-- This serves as the oracle upper bound: it establishes that all SWE-bench tasks in the evaluation set are solvable by the teacher.
+- The teacher LLM (Gemini 3 Flash) achieves **perfect 100% success rate** across all seeds.
+- This serves as the oracle upper bound: it establishes that all GAIA tasks in the evaluation set are solvable by the teacher.
 - Cost per episode: $56.28 (every step is an LLM call at $50.0 each).
 
 ### 4.4 Entropy Router Baseline
@@ -381,7 +381,7 @@ The trained R2V router, despite being a 13-feature MLP trained with a sophistica
 |---|---|
 | **Entropy dominance** | Policy token entropy may be the single most informative routing feature, and all other features are either redundant or noisy. The MLP learns to ignore weak features. |
 | **Poor verifier calibration** | With ECE = 0.535, the verifier score feature may be adding noise rather than signal, causing the MLP to downweight it to zero. |
-| **Insufficient training data** | With only 300 teacher trajectories and 20 perturbation seeds, the router may not have enough signal to learn the relationship between non-entropy features and routing quality. |
+| **Insufficient training data** | With only 500 teacher trajectories and 20 perturbation seeds, the router may not have enough signal to learn the relationship between non-entropy features and routing quality. |
 | **CVaR α too aggressive** | α = 0.2 (bottom 20% of seeds) with ε = 0.3 may be poorly tuned — the constraint might be too loose or the Lagrangian learning rate (0.01) too small to enforce it. |
 | **Feature engineering gap** | The 13-dim feature vector may not capture the information needed for the router to outperform entropy-only routing. |
 
@@ -500,7 +500,7 @@ Based on the findings, the following ablations are recommended:
 
 | Limitation | Details |
 |---|---|
-| **Single benchmark** | Only SWE-bench noisy condition was evaluated; generalization to WebArena or clean conditions is unknown |
+| **Single benchmark** | Only GAIA noisy condition was evaluated; generalization to WebArena or clean conditions is unknown |
 | **Small seed count** | 4 perturbation seeds (0–3) for per-seed analysis; 20 base seeds for aggregate. The 4-seed breakdown has high variance. |
 | **Simulated costs** | Cost model uses fixed $1.0 (SLM) and $50.0 (LLM) per step; real API costs vary with token count |
 | **No latency measurement** | Avg_latency is null across all results — inference latency was not measured |
@@ -564,18 +564,18 @@ All evaluation artifacts are stored in the repository at the following paths:
 
 | Artifact | Path |
 |---|---|
-| Main results CSV | `results/swebench_noisy/structured_results/main_table.csv` |
-| Statistical comparisons | `results/swebench_noisy/structured_results/comparisons.csv` |
-| Full evaluation JSON | `results/swebench_noisy/structured_results/eval_swebench_noisy_2026-03-06.json` |
-| LLM summary | `results/swebench_noisy/structured_results/llm_summary.json` |
-| LaTeX table | `results/swebench_noisy/structured_results/main_table.tex` |
-| Evaluation log | `results/swebench_noisy/evaluation_log.jsonl` |
-| Evaluation config | `results/swebench_noisy/config.yaml` |
-| Policy training log | `outputs/policy/swebench_noisy/training_log.jsonl` |
-| Verifier training log | `outputs/verifier/swebench_noisy/training_log.jsonl` |
-| Router training log | `outputs/router/swebench_noisy/training_log.jsonl` |
-| SWE-bench noisy config | `configs/swebench/noisy.yaml` |
+| Main results CSV | `results/gaia_noisy/structured_results/main_table.csv` |
+| Statistical comparisons | `results/gaia_noisy/structured_results/comparisons.csv` |
+| Full evaluation JSON | `results/gaia_noisy/structured_results/eval_gaia_noisy_2026-03-06.json` |
+| LLM summary | `results/gaia_noisy/structured_results/llm_summary.json` |
+| LaTeX table | `results/gaia_noisy/structured_results/main_table.tex` |
+| Evaluation log | `results/gaia_noisy/evaluation_log.jsonl` |
+| Evaluation config | `results/gaia_noisy/config.yaml` |
+| Policy training log | `outputs/policy/gaia_noisy/training_log.jsonl` |
+| Verifier training log | `outputs/verifier/gaia_noisy/training_log.jsonl` |
+| Router training log | `outputs/router/gaia_noisy/training_log.jsonl` |
+| GAIA noisy config | `configs/gaia/noisy.yaml` |
 
 ---
 
-*Generated from evaluation data at `results/swebench_noisy/structured_results/eval_swebench_noisy_2026-03-06.json`.*
+*Generated from evaluation data at `results/gaia_noisy/structured_results/eval_gaia_noisy_2026-03-06.json`.*

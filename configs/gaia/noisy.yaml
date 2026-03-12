@@ -1,0 +1,43 @@
+# GAIA Noisy Configuration
+defaults:
+  - ../base
+
+benchmark: gaia
+
+gaia:
+  dataset:
+    name: gaia-benchmark/GAIA
+    split: validation        # 165 questions with answers
+    levels: null             # null = all levels (1, 2, 3)
+    max_instances: null
+
+  cmd_timeout: 30
+
+data:
+  num_teacher_trajectories: 165
+  num_perturbation_seeds: 20
+  max_episode_steps: 15
+
+# GAIA-specific perturbations
+perturbations:
+  tool_flakiness:
+    enabled: true
+    failure_prob: 0.10       # web_search / python failures
+    timeout_prob: 0.05
+
+  partial_observability:
+    enabled: true
+    log_truncation_prob: 0.20    # truncated search results
+    log_line_drop_prob: 0.15     # dropped lines from tool output
+
+  prompt_injection:
+    enabled: true
+    direct_injection_prob: 0.15  # injected text in search results
+    indirect_injection_prob: 0.10
+    misleading_error_prob: 0.10
+
+  distractors:
+    enabled: true
+    semantic_distractor_prob: 0.20   # irrelevant search results
+    red_herring_prob: 0.15           # plausible-but-wrong info
+    plausible_wrong_answer_prob: 0.10

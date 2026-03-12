@@ -68,7 +68,7 @@ The critical insight is that the observation function $O_z$ introduces stochasti
 | Symbol | Description |
 |--------|-------------|
 | $\pi_\theta$ | SLM policy parameterized by $\theta$ (Llama-3.1-8B + LoRA) |
-| $\pi_T$ | Teacher LLM policy (GPT-4o) |
+| $\pi_T$ | Teacher LLM policy (Gemini 3 Flash) |
 | $V_\phi$ | Verifier parameterized by $\phi$ |
 | $r_\psi$ | Router parameterized by $\psi$ |
 | $x_t$ | Observation context at step $t$ |
@@ -114,7 +114,7 @@ The router outputs a continuous probability $p_t = r_\psi(f_t) \in [0, 1]$ which
 │                           ▼                          ▼  │
 │                    ┌────────────┐          ┌──────────┐ │
 │                    │ Teacher π_T │          │Use SLM a_t│ │
-│                    │  (GPT-4o)  │          │ directly  │ │
+│                    │  (Gemini)  │          │ directly  │ │
 │                    └────────────┘          └──────────┘ │
 │                                                          │
 │                    Self-Correction Loop (up to 2 iters)  │
@@ -172,8 +172,8 @@ Gradient checkpointing is enabled via `model.gradient_checkpointing_enable()` to
 
 ### Configuration
 
-- **Model**: GPT-4o (via OpenAI API)
-- **Provider**: OpenAI (also supports Anthropic Claude, Google Gemini, DeepSeek)
+- **Model**: Gemini 3 Flash (`gemini-3-flash-preview`, via Google API)
+- **Provider**: Google (also supports OpenAI GPT-4o, Anthropic Claude, DeepSeek)
 - **Max sequence length**: 8,192 tokens
 - **Max output tokens**: 4,096 tokens
 - **Temperature**: 0.7
@@ -486,10 +486,10 @@ Note: In practice, BC is trained first to convergence, then DPO + consistency ar
 
 ### 9.1 Teacher Trajectory Collection
 
-1. **Dataset**: SWE-bench (princeton-nlp/SWE-bench, test split)
-2. **Agent**: GPT-4o teacher solves tasks in Docker containers
+1. **Dataset**: GAIA (princeton-nlp/GAIA_Verified, test split — 500 human-validated instances)
+2. **Agent**: Gemini 3 Flash teacher solves tasks in Docker containers
 3. **Dockerized execution**: Each task runs in an isolated container (timeout: 600s, 8GB memory, 4 CPUs)
-4. **Output**: 300 teacher trajectories stored as JSONL (each trajectory is a sequence of steps with observations, actions, and metadata)
+4. **Output**: 500 teacher trajectories stored as JSONL (each trajectory is a sequence of steps with observations, actions, and metadata)
 5. **Filtering**: Only successful trajectories (where the teacher's patch resolves the issue) are retained for BC training
 
 ### 9.2 Perturbation Generation
@@ -555,7 +555,7 @@ Simulates plausible but incorrect information:
 
 The labeling pipeline (`r2v/data/labeling.py`) assigns ground-truth quality labels:
 
-**SWE-bench Labeler** checks:
+**GAIA Labeler** checks:
 - Whether the action correctly identifies and modifies the gold files
 - Whether tests pass after the action
 - Pattern matching for common fix strategies
@@ -601,7 +601,7 @@ All datasets use dynamic-padding collation functions for efficient batching (2-3
 The full training pipeline consists of **9 sequential stages**, managed by the `JointTrainer` class (`r2v/training/joint_trainer.py`). The pipeline is **checkpoint-based and resumable** — each stage writes a completion marker, and re-runs skip completed stages.
 
 ```
-Stage 1: collect_trajectories      → Teacher GPT-4o solves tasks
+Stage 1: collect_trajectories      → Teacher Gemini 3 Flash solves tasks
 Stage 2: generate_perturbations    → Apply 20 perturbation seeds
 Stage 3: label_steps               → Assign quality labels
 Stage 4: train_bc                  → SLM behavioral cloning
@@ -615,8 +615,8 @@ Stage 9: train_router              → CVaR-constrained Lagrangian training
 ### Stage-by-Stage Details
 
 **Stage 1 – Collect Trajectories**:
-- GPT-4o teacher solves SWE-bench tasks
-- 300 trajectories collected, max 20 steps each
+- Gemini 3 Flash teacher solves GAIA tasks
+- 500 trajectories collected, max 20 steps each
 - Stored as JSONL with full observation/action/metadata
 
 **Stage 2 – Generate Perturbations**:
@@ -625,7 +625,7 @@ Stage 9: train_router              → CVaR-constrained Lagrangian training
 - Produces perturbed observations while preserving ground-truth actions
 
 **Stage 3 – Label Steps**:
-- SWE-bench labeler assigns step-level and episode-level quality scores
+- GAIA labeler assigns step-level and episode-level quality scores
 - Uses gold file matching, test execution detection, and LLM-judge fallback
 
 **Stage 4 – Train BC**:
@@ -778,9 +778,9 @@ Three baseline agents are implemented for comparison:
 | Inference Budget | `r2v/agent/budget.py` → `InferenceBudget` |
 | Data Structures | `r2v/data/trajectory.py` → `Episode`, `Step`, `Observation`, `Action` |
 | All Datasets | `r2v/data/datasets.py` → `BCDataset`, `PreferenceDataset`, etc. |
-| Labeling | `r2v/data/labeling.py` → `SWEBenchLabeler`, `WebArenaLabeler` |
+| Labeling | `r2v/data/labeling.py` → `GAIALabeler`, `WebArenaLabeler` |
 | Evaluation Metrics | `r2v/evaluation/metrics.py` → `R2VEvaluator` |
 | Robustness Metrics | `r2v/evaluation/robustness.py` → `compute_cvar_failure`, etc. |
 | Calibration | `r2v/evaluation/calibration.py` → `compute_ece`, `compute_brier` |
 | Statistical Tests | `r2v/evaluation/statistical.py` → `bootstrap_ci`, `paired_mcnemar_test` |
-| Noisy Config | `configs/swebench/noisy.yaml` |
+| Noisy Config | `configs/gaia/noisy.yaml` |

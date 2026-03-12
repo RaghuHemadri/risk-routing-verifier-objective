@@ -4,21 +4,21 @@ Generate router training features from collected trajectories.
 
 Single-GPU usage:
     python scripts/generate_router_features.py \
-        --config configs/swebench/noisy.yaml \
-        --policy-path outputs/policy/swebench_noisy/final \
-        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-        --output data/router_features/swebench.jsonl
+        --config configs/gaia/noisy.yaml \
+        --policy-path outputs/policy/gaia_noisy/final \
+        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+        --output data/router_features/gaia.jsonl
 
 Multi-GPU usage (via launch script — shards episodes across GPUs):
     bash scripts/launch_router_features.sh 4 \
-        --config configs/swebench/noisy.yaml \
-        --policy-path outputs/policy/swebench_noisy/final \
-        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-        --output data/router_features/swebench.jsonl
+        --config configs/gaia/noisy.yaml \
+        --policy-path outputs/policy/gaia_noisy/final \
+        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+        --output data/router_features/gaia.jsonl
 
 Merge shards after all GPUs finish:
     python scripts/generate_router_features.py --merge \
-        --output data/router_features/swebench.jsonl
+        --output data/router_features/gaia.jsonl
 
 Resume after a crash (re-run the same command — skips completed steps):
     # Same command; already-written episode_ids are detected automatically.

@@ -1,0 +1,33 @@
+# HumanEval+ Clean Configuration
+defaults:
+  - ../base
+
+benchmark: humaneval
+
+teacher:
+  provider: google
+  model_name: gemini-3-flash-preview
+
+humaneval:
+  dataset:
+    name: evalplus/humanevalplus
+    split: test
+    max_instances: null
+
+  use_plus_tests: true       # Use augmented EvalPlus test suites
+  cmd_timeout: 30            # per code execution
+  test_timeout: 60           # per full test suite
+
+data:
+  num_teacher_trajectories: 164   # HumanEval has 164 problems
+  max_episode_steps: 30
+
+perturbations:
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false

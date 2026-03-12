@@ -23,7 +23,13 @@ r2v-agent/
 │   ├── webarena/               # WebArena-specific
 │   │   ├── clean.yaml
 │   │   └── noisy.yaml
-│   └── swebench/               # SWE-bench-specific
+│   ├── gaia/                   # GAIA (General AI Assistants)
+│   │   ├── clean.yaml
+│   │   └── noisy.yaml
+│   ├── alfworld/               # ALFWorld (embodied text agents)
+│   │   ├── clean.yaml
+│   │   └── noisy.yaml
+│   └── humaneval/              # HumanEval+ (code generation)
 │       ├── clean.yaml
 │       └── noisy.yaml
 ├── r2v/                         # Core library
@@ -70,14 +76,12 @@ r2v-agent/
 │   ├── train_router.py
 │   ├── evaluate.py
 │   ├── run_ablations.py
-│   └── slurm/                  # SLURM job scripts
-│       ├── run_all.sh          # Full pipeline launcher
-│       ├── mrp.sh              # Minimal Reproducible Prototype
-│       └── 01-09_*.sh          # Individual stage jobs
+│   ├── launch_candidates.sh    # Multi-GPU candidate generation
+│   └── launch_router_features.sh  # Multi-GPU router features
+├── run_pipeline.sh              # Full pipeline script (--from/--only/--dry-run)
+├── RUN.md                       # Pipeline instructions (local execution)
 ├── pyproject.toml
 ├── requirements.txt
-├── RUNNING_INSTRUCTIONS.md      # Detailed SLURM instructions
-├── EXPERIMENT_TRACKER.md        # Experiment tracking guide
 └── proposal.md                  # Research proposal
 ```
 
@@ -89,11 +93,44 @@ git clone <this-repo>
 cd risk-routing-verifier-objective
 pip install -e ".[dev]"
 
-# Run Minimal Reproducible Prototype (1 GPU, ~4-6 hours)
-sbatch scripts/slurm/mrp.sh
+# Set API key + HuggingFace token
+export GOOGLE_API_KEY=<your-key>
+source exports.sh
 
-# Or run full pipeline
-bash scripts/slurm/run_all.sh webarena
+# Run full pipeline on a specific benchmark
+BENCHMARK=gaia      bash run_pipeline.sh   # GAIA benchmark (default)
+BENCHMARK=alfworld  bash run_pipeline.sh   # ALFWorld benchmark
+BENCHMARK=humaneval bash run_pipeline.sh   # HumanEval+ benchmark
+
+# Or resume / run a single stage
+bash run_pipeline.sh --benchmark gaia --from 5
+bash run_pipeline.sh --only 3
+bash run_pipeline.sh --dry-run
+```
+
+See [RUN.md](RUN.md) for detailed per-stage instructions.
+
+## Benchmarks
+
+| Benchmark | Domain | Tasks | Docker-Free | Key Evaluation |
+|-----------|--------|-------|-------------|----------------|
+| **GAIA** | General AI assistant | 165 | ✅ | Exact/fuzzy answer match |
+| **ALFWorld** | Embodied text agent | 134 | ✅ | Task completion (env reward) |
+| **HumanEval+** | Code generation | 164 | ✅ | Extended test suite (EvalPlus) |
+
+All benchmarks support the full perturbation framework (tool flakiness, partial observability, prompt injection, distractors) since perturbations operate on the generic `Observation` representation.
+
+### Benchmark-specific dependencies
+
+```bash
+# GAIA: uses `datasets` (already in base) + optional web search API key
+export SERPER_API_KEY=<your-key>   # or SERPAPI_KEY
+
+# ALFWorld
+pip install "alfworld[full]" textworld
+
+# HumanEval+
+pip install evalplus
 ```
 
 ## Key Features

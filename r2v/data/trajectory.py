@@ -97,9 +97,9 @@ class EpisodeMetadata:
     task_id: str
     template_id: Optional[str] = None
     goal: str = ""
-    benchmark: str = ""  # "webarena" or "swebench"
+    benchmark: str = ""  # e.g. "webarena", "gaia", "humaneval", "alfworld"
     site: Optional[str] = None  # WebArena site
-    repo: Optional[str] = None  # SWE-bench repo
+    repo: Optional[str] = None  # repository (if applicable)
     difficulty: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
 

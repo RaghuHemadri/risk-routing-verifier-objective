@@ -3,20 +3,20 @@
 
 Usage (single GPU):
     python scripts/generate_candidates.py \
-        --config configs/swebench/noisy.yaml \
-        --policy-path outputs/policy/swebench_noisy/final \
-        --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-        --output data/candidates/swebench_noisy.jsonl \
+        --config configs/gaia/noisy.yaml \
+        --policy-path outputs/policy/gaia_noisy/final \
+        --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
+        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+        --output data/candidates/gaia_noisy.jsonl \
         --K 5
 
 Usage (multi-GPU via launch_candidates.sh — 4 GPUs):
     bash scripts/launch_candidates.sh 4 \
-        --config configs/swebench/noisy.yaml \
-        --policy-path outputs/policy/swebench_noisy/final \
-        --verifier-path outputs/verifier/swebench_noisy/final/verifier.pt \
-        --trajectories data/trajectories/swebench_noisy/trajectories.jsonl \
-        --output data/candidates/swebench_noisy.jsonl \
+        --config configs/gaia/noisy.yaml \
+        --policy-path outputs/policy/gaia_noisy/final \
+        --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
+        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
+        --output data/candidates/gaia_noisy.jsonl \
         --K 5
 
 Resume after a crash (just re-run the same command — skips completed episodes):
@@ -24,7 +24,7 @@ Resume after a crash (just re-run the same command — skips completed episodes)
 
 Merge shards after all finish:
     python scripts/generate_candidates.py --merge \
-        --output data/candidates/swebench_noisy.jsonl
+        --output data/candidates/gaia_noisy.jsonl
 
 For each step in teacher trajectories, samples K candidates from the
 SLM policy and scores them with the verifier to create preference pairs.
@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import queue
 import sys
 import threading
 import time
@@ -49,6 +50,8 @@ from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
 from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
+
+import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +130,66 @@ def completed_episode_ids(output_file: Path) -> set[str]:
 # CLI
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Prefetch iterator: tokenises the next batch on a CPU thread while the
+# GPU processes the current batch.  Mirrors the pattern used in
+# generate_router_features.py for maximum GPU utilisation.
+# ---------------------------------------------------------------------------
+
+class _PrefetchIter:
+    """Yields ``(batch_items, gen_tokens)`` with one batch pre-tokenised
+    on a daemon thread ahead of consumption.
+
+    gen_tokens are **left-padded** so that ``model.generate()`` appends
+    new tokens on the right for every sequence in the batch.
+
+    The background thread only touches the *tokenizer* (CPU-only);
+    all GPU work stays on the main thread, so there is no device
+    contention.
+    """
+
+    def __init__(self, items, batch_size, tokenizer, max_seq_len, max_new_tokens):
+        self._items = items
+        self._bs = batch_size
+        self._tok = tokenizer
+        self._max_seq = max_seq_len
+        self._max_new = max_new_tokens
+        self._q: queue.Queue = queue.Queue(maxsize=2)
+        self._thread = threading.Thread(target=self._produce, daemon=True)
+        self._thread.start()
+
+    def _produce(self):
+        for start in range(0, len(self._items), self._bs):
+            batch = self._items[start : start + self._bs]
+            prompts = [f"{it['context']}\nAction:" for it in batch]
+
+            # Left-padding for generation (new tokens appended on the right)
+            orig_side = self._tok.padding_side
+            self._tok.padding_side = "left"
+            gen_tok = self._tok(
+                prompts,
+                return_tensors="pt",
+                truncation=True,
+                max_length=self._max_seq - self._max_new,
+                padding=True,
+            )
+            self._tok.padding_side = orig_side
+
+            self._q.put((batch, gen_tok))
+        self._q.put(None)  # sentinel
+
+    def __iter__(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                break
+            yield item
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate candidate actions")
     parser.add_argument("--config", type=str, default=None)
@@ -136,6 +199,8 @@ def parse_args():
     parser.add_argument("--trajectories", type=str, default=None)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--K", type=int, default=5, help="Number of candidates per step")
+    parser.add_argument("--batch-size", type=int, default=8,
+                        help="Number of steps to batch together for GPU inference")
     parser.add_argument("--max-new-tokens", type=int, default=None,
                         help="Override max tokens to generate (default: config or 128)")
     # Multi-GPU sharding
@@ -274,82 +339,160 @@ def main():
     else:
         gen_max_tokens = int(inf_cfg.get("max_tokens", 256)) if inf_cfg else 256
 
+    # --------------- Pre-collect all step items ---------------
+    logger.info("Pre-collecting step items...")
+    all_items: list[dict] = []
+    for episode in episodes:
+        goal = episode.metadata.goal if episode.metadata else ""
+        context = ""
+        for step_idx, step in enumerate(episode.steps):
+            context += step.observation.raw_text + "\n"
+            all_items.append({
+                "context": context,
+                "step_idx": step_idx,
+                "goal": goal,
+                "episode_id": episode.episode_id,
+            })
+            context += step.action.raw_text + "\n"
+
+    batch_size = args.batch_size
+    total_batches = (len(all_items) + batch_size - 1) // batch_size
     logger.info(
-        f"Processing {len(episodes)} episodes (skipped {len(done_eids)} done), "
-        f"K={args.K}, max_new_tokens={gen_max_tokens}, temp={gen_temperature}"
+        f"Processing {len(all_items)} steps from {len(episodes)} episodes "
+        f"(skipped {len(done_eids)} done), "
+        f"K={args.K}, batch_size={batch_size}, "
+        f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}"
     )
 
-    # --------------- Main loop ---------------
+    # --------------- Prefetch iterator ---------------
+    prefetcher = _PrefetchIter(
+        all_items, batch_size,
+        policy.tokenizer, policy.max_seq_len, gen_max_tokens,
+    )
+
+    # --------------- Batched main loop ---------------
     total_pairs = 0
-    total_steps = 0
     t0 = time.time()
+    device = policy.model.device
+    pad_id = policy.tokenizer.pad_token_id
+
     with open(shard_output, file_mode) as f:
-        for ep_idx, episode in enumerate(episodes):
-            ep_t0 = time.time()
-            num_steps = len(episode.steps)
-            goal = episode.metadata.goal if episode.metadata else ""
-            context = ""
+        for batch_idx, (batch, gen_tok) in enumerate(prefetcher):
+            batch_t0 = time.time()
+            B = len(batch)
 
-            for step_idx, step in enumerate(episode.steps):
-                context += step.observation.raw_text + "\n"
+            # ---------- 1. Batched candidate generation ---------------
+            try:
+                gen_ids = gen_tok["input_ids"].to(device)
+                gen_mask = gen_tok["attention_mask"].to(device)
+                with _torch.no_grad():
+                    gen_out = policy.model.generate(
+                        input_ids=gen_ids,
+                        attention_mask=gen_mask,
+                        max_new_tokens=gen_max_tokens,
+                        num_return_sequences=args.K,
+                        temperature=gen_temperature,
+                        top_p=0.95,
+                        do_sample=True,
+                        pad_token_id=pad_id,
+                        return_dict_in_generate=True,
+                        output_scores=True,
+                    )
+                prompt_len = gen_ids.shape[1]
+                all_candidates: list[list[dict]] = []
+                for b in range(B):
+                    cands = []
+                    for k in range(args.K):
+                        idx = b * args.K + k
+                        gen_tokens = gen_out.sequences[idx, prompt_len:]
+                        gen_tokens = gen_tokens[gen_tokens != pad_id]
+                        text = policy.tokenizer.decode(
+                            gen_tokens, skip_special_tokens=True
+                        ).strip()
 
-                # Generate K candidates (batched: one forward pass)
-                candidates = policy.generate_candidates(
-                    context=context,
-                    num_candidates=args.K,
-                    temperature=gen_temperature,
-                    max_new_tokens=gen_max_tokens,
-                )
+                        lp = 0.0
+                        if gen_out.scores:
+                            for t, sc in enumerate(gen_out.scores):
+                                if t >= len(gen_tokens):
+                                    break
+                                lp += F.log_softmax(
+                                    sc[idx], dim=-1
+                                )[gen_tokens[t]].item()
 
-                # Score all candidates in one batched verifier call
-                cand_texts = [c["text"] for c in candidates]
-                scores = verifier.score_candidates(
-                    context=context,
-                    candidates=cand_texts,
-                    goal=goal,
-                )
+                        cands.append({
+                            "text": text,
+                            "log_prob": lp,
+                            "num_tokens": len(gen_tokens),
+                        })
+                    all_candidates.append(cands)
+            except Exception as exc:
+                logger.warning(f"Generation failed for batch {batch_idx}: {exc}")
+                all_candidates = [
+                    [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * args.K
+                ] * B
 
+            # ---------- 2. Batched verifier scoring -------------------
+            flat_ctx, flat_cand, flat_goal = [], [], []
+            for b in range(B):
+                for c in all_candidates[b]:
+                    flat_ctx.append(batch[b]["context"])
+                    flat_cand.append(c["text"])
+                    flat_goal.append(batch[b]["goal"])
+
+            try:
+                flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+            except Exception:
+                flat_scores = [0.5] * len(flat_ctx)
+
+            all_scores = [
+                flat_scores[b * args.K : (b + 1) * args.K] for b in range(B)
+            ]
+
+            # ---------- 3. Create preference pairs & write ------------
+            for i, item in enumerate(batch):
                 scored = [
                     {
-                        "action": cand["text"],
-                        "log_prob": cand["log_prob"],
+                        "action": c["text"],
+                        "log_prob": c["log_prob"],
                         "verifier_score": sc,
                     }
-                    for cand, sc in zip(candidates, scores)
+                    for c, sc in zip(all_candidates[i], all_scores[i])
                 ]
-
-                # Sort by verifier score → create preference pairs
                 scored.sort(key=lambda x: x["verifier_score"], reverse=True)
 
                 if len(scored) >= 2:
                     pair = {
-                        "context": context,
+                        "context": item["context"],
                         "chosen": scored[0]["action"],
                         "rejected": scored[-1]["action"],
                         "chosen_score": scored[0]["verifier_score"],
                         "rejected_score": scored[-1]["verifier_score"],
-                        "episode_id": episode.episode_id,
-                        "step_idx": step_idx,
+                        "episode_id": item["episode_id"],
+                        "step_idx": item["step_idx"],
                         "all_candidates": scored,
                     }
                     f.write(json.dumps(pair) + "\n")
-                    f.flush()
                     total_pairs += 1
 
-                context += step.action.raw_text + "\n"
-                total_steps += 1
-
-            # Per-episode log
-            ep_elapsed = time.time() - ep_t0
+            # ---------- 4. Progress logging ---------------------------
+            batch_elapsed = time.time() - batch_t0
             elapsed = time.time() - t0
-            rate = (ep_idx + 1) / elapsed
-            remaining = len(episodes) - (ep_idx + 1)
-            eta = remaining / rate if rate > 0 else float('inf')
+            steps_done = min((batch_idx + 1) * batch_size, len(all_items))
+            rate = steps_done / elapsed if elapsed > 0 else 0
+            remaining = len(all_items) - steps_done
+            eta = remaining / rate if rate > 0 else float("inf")
+            pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
+
             logger.info(
-                f"[shard {args.shard_id}] Ep {ep_idx+1}/{len(episodes)} "
-                f"(id={episode.episode_id}, {num_steps}st, {ep_elapsed:.1f}s) | "
-                f"{total_pairs} pairs | {rate:.2f} ep/s, ETA {eta/60:.0f}min"
+                f"[shard {args.shard_id}] "
+                f"Batch {batch_idx + 1}/{total_batches} "
+                f"({pct:5.1f}%)  |  "
+                f"{total_pairs} pairs  |  "
+                f"{rate:.1f} steps/s  |  "
+                f"batch {batch_elapsed:.2f}s  |  "
+                f"ETA {eta / 60:.1f}min"
             )
+            f.flush()
 
     # --------------- Cleanup ---------------
     if _torch.cuda.is_available():
@@ -358,7 +501,8 @@ def main():
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "
-        f"{len(episodes)} episodes in {elapsed / 60:.1f}min → {shard_output}"
+        f"{len(episodes)} episodes ({len(all_items)} steps) in {elapsed / 60:.1f}min "
+        f"({len(all_items) / max(elapsed, 1e-6):.1f} steps/s) → {shard_output}"
     )
     jsonl_log.log("summary", {
         "shard_id": args.shard_id,
@@ -366,6 +510,7 @@ def main():
         "total_pairs": total_pairs,
         "num_episodes": len(episodes),
         "K": args.K,
+        "batch_size": batch_size,
         "elapsed_seconds": elapsed,
     })
 

@@ -1,0 +1,39 @@
+# ALFWorld Noisy Configuration
+defaults:
+  - ../base
+
+benchmark: alfworld
+
+alfworld:
+  split: eval_out_of_distribution
+  max_instances: null
+  task_types: null
+
+data:
+  num_teacher_trajectories: 134
+  num_perturbation_seeds: 20
+  max_episode_steps: 30
+
+# ALFWorld-specific perturbations
+perturbations:
+  tool_flakiness:
+    enabled: true
+    failure_prob: 0.10        # actions randomly fail
+    timeout_prob: 0.05
+
+  partial_observability:
+    enabled: true
+    log_truncation_prob: 0.20     # truncated room descriptions
+    log_line_drop_prob: 0.15      # missing objects in observations
+    info_masking_prob: 0.10       # masked receptacle contents
+
+  prompt_injection:
+    enabled: true
+    direct_injection_prob: 0.10   # misleading hints in observations
+    goal_hijacking_prob: 0.05
+
+  distractors:
+    enabled: true
+    semantic_distractor_prob: 0.20   # irrelevant objects mentioned
+    red_herring_prob: 0.15           # plausible but wrong locations
+    decoy_element_prob: 0.10         # fake receptacles

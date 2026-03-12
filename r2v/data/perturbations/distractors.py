@@ -5,7 +5,7 @@ Models real-world noise sources:
 - Semantically similar but irrelevant search results
 - Red herring error messages in logs
 - Decoy UI elements with similar labels
-- Plausible but wrong code suggestions (SWE-bench)
+- Plausible but wrong code suggestions
 - Similar file paths / function names
 
 These perturbations test the agent's ability to focus on task-relevant
@@ -72,7 +72,7 @@ DECOY_ELEMENTS = [
     '[{id}] text "Did you mean: {variant}?"',
 ]
 
-SWE_BENCH_DISTRACTORS = {
+CODE_DISTRACTORS = {
     "similar_files": [
         "src/utils/helpers_v2.py",
         "src/core/handler_base.py",
@@ -135,7 +135,7 @@ class DistractorPerturbation(Perturbation):
             meta["perturbations_applied"].append("decoy_element")
             meta["num_distractors_added"] += n_added
 
-        # 4. Plausible but wrong suggestions (SWE-bench style)
+        # 4. Plausible but wrong suggestions
         if rng.random() < self.plausible_wrong_prob:
             text, n_added = self._add_plausible_wrong(text, rng)
             meta["perturbations_applied"].append("plausible_wrong")
@@ -215,8 +215,8 @@ class DistractorPerturbation(Perturbation):
     ) -> tuple[str, int]:
         """Add plausible but incorrect suggestions/fixes.
 
-        Particularly relevant for SWE-bench: suggest wrong fixes that
-        look reasonable but would not resolve the actual issue.
+        Suggest wrong fixes that look reasonable but would not
+        resolve the actual issue.
         """
         lines = text.split("\n")
         num_wrong = rng.randint(1, 3)
@@ -224,7 +224,7 @@ class DistractorPerturbation(Perturbation):
         added = 0
         for _ in range(num_wrong):
             category = rng.choice(["wrong_fixes", "decoy_errors", "similar_files"])
-            items = SWE_BENCH_DISTRACTORS[category]
+            items = CODE_DISTRACTORS[category]
             item = rng.choice(items)
 
             pos = rng.randint(0, len(lines))
