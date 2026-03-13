@@ -34,6 +34,18 @@ from r2v.utils.config import config_to_dict, load_config, save_config
 from r2v.utils.logging import JSONLLogger, init_wandb, setup_logging
 
 
+def is_accelerate_state_checkpoint(path: str) -> bool:
+    """Heuristically detect an Accelerate save_state checkpoint directory."""
+    p = Path(path)
+    if not p.exists() or not p.is_dir():
+        return False
+    state_markers = [
+        "optimizer.bin", "optimizer.pt", "scheduler.bin", "scheduler.pt",
+        "random_states_0.pkl", "pytorch_model.bin", "model.safetensors",
+    ]
+    return any((p / m).exists() for m in state_markers)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train SLM policy")
     parser.add_argument("--config", type=str, required=True)
@@ -74,10 +86,18 @@ def main():
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
 
+    resume_bc_state_path = None
     # Resume if specified
     if args.resume:
-        logger.info(f"Resuming from {args.resume}")
-        policy.load(args.resume)
+        if args.stage in ("bc", "all") and is_accelerate_state_checkpoint(args.resume):
+            resume_bc_state_path = args.resume
+            logger.info(
+                f"Detected Accelerate BC state checkpoint at {args.resume}; "
+                "will restore trainer state during BC training"
+            )
+        else:
+            logger.info(f"Resuming model weights from {args.resume}")
+            policy.load(args.resume)
 
     # ── Stage 1: Behavior Cloning ──
     if args.stage in ("bc", "all"):
@@ -118,6 +138,7 @@ def main():
             config=bc_cfg,
             output_dir=str(output_dir / "bc"),
             collate_fn=BCDataset.collate_fn,
+            resume_state_path=resume_bc_state_path,
         )
 
         bc_trainer.train()

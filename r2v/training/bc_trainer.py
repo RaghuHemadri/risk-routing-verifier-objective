@@ -33,6 +33,7 @@ class BCTrainer:
         config: dict[str, Any] = None,
         output_dir: str = "experiments/checkpoints/bc",
         collate_fn=None,
+        resume_state_path: str | None = None,
     ):
         self.policy = policy
         self.train_dataset = train_dataset
@@ -41,6 +42,7 @@ class BCTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.collate_fn = collate_fn
+        self.resume_state_path = resume_state_path
 
         # Training hyperparameters
         self.epochs = self.config.get("epochs", 3)
@@ -132,6 +134,19 @@ class BCTrainer:
         global_step = 0
         best_eval_loss = float("inf")
         metrics_history = []
+
+        # Resume full trainer state (model + optimizer + scheduler + RNG)
+        if self.resume_state_path:
+            ckpt_path = Path(self.resume_state_path)
+            accelerator.print(f"[BC] Loading accelerate state from {ckpt_path}")
+            accelerator.load_state(str(ckpt_path))
+            name = ckpt_path.name
+            if name.startswith("step_"):
+                try:
+                    global_step = int(name.split("_")[-1])
+                except ValueError:
+                    global_step = 0
+            accelerator.print(f"[BC] Resumed at global_step={global_step}")
 
         for epoch in range(self.epochs):
             model.train()
