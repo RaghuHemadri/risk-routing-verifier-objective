@@ -92,9 +92,10 @@ class BCTrainer:
 
         eval_loader = None
         if self.eval_dataset:
+            eval_batch_size = self.config.get("eval_batch_size", self.batch_size)
             eval_loader = DataLoader(
                 self.eval_dataset,
-                batch_size=self.batch_size * 2,
+                batch_size=eval_batch_size,
                 shuffle=False,
                 num_workers=_use_workers,
                 pin_memory=True,
@@ -204,9 +205,14 @@ class BCTrainer:
                     # Evaluation
                     if eval_loader and global_step % self.eval_interval == 0:
                         eval_loss = self._evaluate(model, eval_loader, accelerator)
-                        accelerator.print(f"[BC] Eval Loss={eval_loss:.4f}")
+                        if eval_loss is None:
+                            accelerator.print(
+                                "[BC] Eval skipped due to OOM; continuing training"
+                            )
+                        else:
+                            accelerator.print(f"[BC] Eval Loss={eval_loss:.4f}")
 
-                        if eval_loss < best_eval_loss:
+                        if eval_loss is not None and eval_loss < best_eval_loss:
                             best_eval_loss = eval_loss
                             if accelerator.is_main_process:
                                 self._save_checkpoint(
@@ -242,21 +248,27 @@ class BCTrainer:
         }
 
     @torch.no_grad()
-    def _evaluate(self, model, eval_loader, accelerator) -> float:
+    def _evaluate(self, model, eval_loader, accelerator) -> float | None:
         """Run evaluation and return average loss."""
         model.eval()
         total_loss = 0.0
         num_batches = 0
 
         for batch in eval_loader:
-            outputs = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                labels=batch["labels"],
-            )
-            loss = outputs.loss if hasattr(outputs, 'loss') else outputs["loss"]
-            total_loss += loss.item()
-            num_batches += 1
+            try:
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    labels=batch["labels"],
+                )
+                loss = outputs.loss if hasattr(outputs, 'loss') else outputs["loss"]
+                total_loss += loss.item()
+                num_batches += 1
+            except torch.OutOfMemoryError:
+                # Eval is optional; recover instead of killing the full run.
+                torch.cuda.empty_cache()
+                model.train()
+                return None
 
         model.train()
         return total_loss / max(num_batches, 1)
