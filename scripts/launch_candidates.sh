@@ -28,21 +28,57 @@ shift
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GEN_SCRIPT="${SCRIPT_DIR}/generate_candidates.py"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+if [[ -z "${PYTHON_BIN}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v python3)"
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v python)"
+    else
+        echo "ERROR: Could not find python3/python in PATH"
+        exit 1
+    fi
+fi
+
+# Throughput-oriented defaults. Override in shell if needed.
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
+export CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}"
+export TOKENIZERS_PARALLELISM="${TOKENIZERS_PARALLELISM:-false}"
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-12}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-12}"
+export TORCH_NCCL_ASYNC_ERROR_HANDLING="${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}"
+
+START_STAGGER_SECS="${START_STAGGER_SECS:-2}"
 
 echo "=== Launching ${NUM_GPUS} candidate-generation workers ==="
+echo "Python: ${PYTHON_BIN}"
 echo "Args: $@"
 echo ""
 
 PIDS=()
+
+cleanup_children() {
+    if [ ${#PIDS[@]} -gt 0 ]; then
+        echo "[launcher] Terminating child workers: ${PIDS[*]}"
+        kill "${PIDS[@]}" 2>/dev/null || true
+    fi
+}
+
+trap cleanup_children INT TERM
+
 for ((i=0; i<NUM_GPUS; i++)); do
     echo "[GPU ${i}] Starting shard ${i}/${NUM_GPUS}..."
-    CUDA_VISIBLE_DEVICES=${i} python "${GEN_SCRIPT}" \
+    CUDA_VISIBLE_DEVICES=${i} "${PYTHON_BIN}" "${GEN_SCRIPT}" \
         --shard-id ${i} \
         --num-shards ${NUM_GPUS} \
         "$@" \
         > "generate_candidates_shard${i}.log" 2>&1 &
     PIDS+=($!)
     echo "[GPU ${i}] PID=${PIDS[-1]}, log=generate_candidates_shard${i}.log"
+    if (( i + 1 < NUM_GPUS )) && (( START_STAGGER_SECS > 0 )); then
+        sleep "${START_STAGGER_SECS}"
+    fi
 done
 
 echo ""
@@ -82,7 +118,7 @@ for ((i=0; i<${#ARGS[@]}; i++)); do
 done
 
 if [ -n "${OUTPUT}" ]; then
-    python "${GEN_SCRIPT}" --merge --output "${OUTPUT}"
+    "${PYTHON_BIN}" "${GEN_SCRIPT}" --merge --output "${OUTPUT}"
     echo "=== Done! Final output: ${OUTPUT} ==="
 else
     echo "Could not find --output arg; merge manually:"
