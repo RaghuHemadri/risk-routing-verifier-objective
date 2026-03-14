@@ -1,0 +1,89 @@
+python scripts/train_policy.py \
+    --config configs/humaneval/noisy.yaml \
+    --output outputs/policy/humaneval_noisy \
+    --stage bc \
+    --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+    --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled
+
+accelerate launch --num_processes=4 --multi_gpu scripts/train_policy.py \
+  --config configs/humaneval/noisy.yaml \
+  --output outputs/policy/humaneval_noisy \
+  --stage bc \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --overrides training.bc.learning_rate=1e-5 logging.wandb_mode=disabled
+
+accelerate launch --num_processes=4 --multi_gpu \
+  scripts/train_policy.py \
+  --config configs/humaneval/noisy.yaml \
+  --output outputs/policy/humaneval_noisy \
+  --stage bc \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --overrides \
+    policy.quantization.load_in_4bit=false \
+    training.bc.batch_size=8 \
+    training.bc.gradient_accumulation_steps=4 \
+    training.bc.learning_rate=1e-5 \
+    training.bc.num_workers=8 \
+    logging.wandb_mode=disabled
+
+# BC run summary (2026-03-13)
+# Best checkpoint: outputs/policy/humaneval_noisy/bc/best (saved at step 1000)
+# Final BC checkpoint: outputs/policy/humaneval_noisy/bc/final (step 1180)
+# Final policy export: outputs/policy/humaneval_noisy/final
+
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes=4 --multi_gpu \
+  scripts/train_verifier.py \
+  --config configs/humaneval/noisy.yaml \
+  --output outputs/verifier/humaneval_noisy \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --overrides \
+    verifier.mode=trained \
+    training.verifier.epochs=3 \
+    training.verifier.batch_size=32 \
+    training.verifier.gradient_accumulation_steps=4 \
+    policy.max_seq_len=2048 \
+    logging.wandb_mode=disabled
+
+python scripts/train_verifier.py \
+  --config configs/humaneval/noisy.yaml \
+  --output outputs/verifier/humaneval_noisy \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --overrides \
+    verifier.mode=trained \
+    data.benchmark=humaneval \
+    training.verifier.epochs=3 \
+    training.verifier.batch_size=8 \
+    training.verifier.gradient_accumulation_steps=8 \
+    policy.max_seq_len=2048 \
+    logging.wandb_mode=disabled
+
+bash scripts/launch_candidates.sh 4 \
+  --config configs/humaneval/noisy.yaml \
+  --policy-path outputs/policy/humaneval_noisy/final \
+  --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --output data/candidates/humaneval_noisy.jsonl \
+  --K 5 \
+  --batch-size 8 \
+  --overrides \
+    policy.quantization.load_in_4bit=false \
+    verifier.mode=trained \
+    logging.wandb_mode=disabled
+
+bash scripts/launch_candidates.sh 4 \
+  --config configs/humaneval/noisy.yaml \
+  --policy-path outputs/policy/humaneval_noisy/final \
+  --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --output data/candidates/humaneval_noisy.jsonl \
+  --K 5 \
+  --batch-size 32 \
+  --max-new-tokens 128 \
+  --write-queue-size 50000 \
+  --write-flush-every 512 \
+  --overrides \
+    policy.quantization.load_in_4bit=false \
+    verifier.mode=trained \
+    logging.wandb_mode=disabled
