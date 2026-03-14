@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import queue
 import sys
 import threading
@@ -48,6 +49,7 @@ from omegaconf import OmegaConf
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
+from r2v.utils.async_writer import AsyncJSONLWriter
 from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
@@ -148,8 +150,8 @@ class _PrefetchIter:
     contention.
     """
 
-    def __init__(self, items, batch_size, tokenizer, max_seq_len, max_new_tokens):
-        self._items = items
+    def __init__(self, item_iter, batch_size, tokenizer, max_seq_len, max_new_tokens):
+        self._item_iter = item_iter
         self._bs = batch_size
         self._tok = tokenizer
         self._max_seq = max_seq_len
@@ -159,31 +161,62 @@ class _PrefetchIter:
         self._thread.start()
 
     def _produce(self):
-        for start in range(0, len(self._items), self._bs):
-            batch = self._items[start : start + self._bs]
-            prompts = [f"{it['context']}\nAction:" for it in batch]
+        try:
+            batch = []
+            for item in self._item_iter:
+                batch.append(item)
+                if len(batch) < self._bs:
+                    continue
+                self._q.put((batch, self._tokenize_batch(batch)))
+                batch = []
 
-            # Left-padding for generation (new tokens appended on the right)
-            orig_side = self._tok.padding_side
-            self._tok.padding_side = "left"
-            gen_tok = self._tok(
-                prompts,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self._max_seq - self._max_new,
-                padding=True,
-            )
-            self._tok.padding_side = orig_side
+            if batch:
+                self._q.put((batch, self._tokenize_batch(batch)))
 
-            self._q.put((batch, gen_tok))
-        self._q.put(None)  # sentinel
+            self._q.put(None)  # sentinel
+        except Exception as exc:  # pragma: no cover
+            self._q.put(exc)
+
+    def _tokenize_batch(self, batch):
+        prompts = [f"{it['context']}\nAction:" for it in batch]
+
+        # Left-padding for generation (new tokens appended on the right)
+        orig_side = self._tok.padding_side
+        self._tok.padding_side = "left"
+        gen_tok = self._tok(
+            prompts,
+            return_tensors="pt",
+            truncation=True,
+            max_length=self._max_seq - self._max_new,
+            padding=True,
+        )
+        self._tok.padding_side = orig_side
+        return gen_tok
 
     def __iter__(self):
         while True:
             item = self._q.get()
+            if isinstance(item, Exception):
+                raise item
             if item is None:
                 break
             yield item
+
+
+def iter_step_items(episodes):
+    """Yield step items lazily to avoid large pre-collection stalls/memory."""
+    for episode in episodes:
+        goal = episode.metadata.goal if episode.metadata else ""
+        context = ""
+        for step_idx, step in enumerate(episode.steps):
+            context += step.observation.raw_text + "\n"
+            yield {
+                "context": context,
+                "step_idx": step_idx,
+                "goal": goal,
+                "episode_id": episode.episode_id,
+            }
+            context += step.action.raw_text + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +236,19 @@ def parse_args():
                         help="Number of steps to batch together for GPU inference")
     parser.add_argument("--max-new-tokens", type=int, default=None,
                         help="Override max tokens to generate (default: config or 128)")
+    parser.add_argument(
+        "--store-all-candidates",
+        action="store_true",
+        help=(
+            "Store full sorted candidate list in output JSONL. "
+            "Disabled by default for faster generation and smaller files."
+        ),
+    )
+    parser.add_argument(
+        "--compute-logprobs",
+        action="store_true",
+        help="Compute candidate log-probabilities (slower; not needed for DPO pairs)",
+    )
     # Multi-GPU sharding
     parser.add_argument("--shard-id", type=int, default=0,
                         help="This worker's shard index (0-based)")
@@ -212,6 +258,18 @@ def parse_args():
                         help="Merge shard outputs instead of generating")
     parser.add_argument("--no-resume", action="store_true",
                         help="Do not resume; overwrite existing output")
+    parser.add_argument(
+        "--write-queue-size",
+        type=int,
+        default=20000,
+        help="Max pending JSON records buffered by async writer (0 = unbounded)",
+    )
+    parser.add_argument(
+        "--write-flush-every",
+        type=int,
+        default=256,
+        help="Async writer flush interval in records",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -339,34 +397,21 @@ def main():
     else:
         gen_max_tokens = int(inf_cfg.get("max_tokens", 256)) if inf_cfg else 256
 
-    # --------------- Pre-collect all step items ---------------
-    logger.info("Pre-collecting step items...")
-    all_items: list[dict] = []
-    for episode in episodes:
-        goal = episode.metadata.goal if episode.metadata else ""
-        context = ""
-        for step_idx, step in enumerate(episode.steps):
-            context += step.observation.raw_text + "\n"
-            all_items.append({
-                "context": context,
-                "step_idx": step_idx,
-                "goal": goal,
-                "episode_id": episode.episode_id,
-            })
-            context += step.action.raw_text + "\n"
-
+    # --------------- Stream step items (no giant pre-collect stall) ---------------
     batch_size = args.batch_size
-    total_batches = (len(all_items) + batch_size - 1) // batch_size
+    total_steps = sum(len(ep.steps) for ep in episodes)
+    total_batches = math.ceil(total_steps / batch_size) if total_steps else 0
     logger.info(
-        f"Processing {len(all_items)} steps from {len(episodes)} episodes "
+        f"Processing {total_steps} steps from {len(episodes)} episodes "
         f"(skipped {len(done_eids)} done), "
         f"K={args.K}, batch_size={batch_size}, "
-        f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}"
+        f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}, "
+        f"compute_logprobs={args.compute_logprobs}"
     )
 
     # --------------- Prefetch iterator ---------------
     prefetcher = _PrefetchIter(
-        all_items, batch_size,
+        iter_step_items(episodes), batch_size,
         policy.tokenizer, policy.max_seq_len, gen_max_tokens,
     )
 
@@ -376,7 +421,14 @@ def main():
     device = policy.model.device
     pad_id = policy.tokenizer.pad_token_id
 
-    with open(shard_output, file_mode) as f:
+    writer = AsyncJSONLWriter(
+        shard_output,
+        mode=file_mode,
+        maxsize=max(0, args.write_queue_size),
+        flush_every=max(1, args.write_flush_every),
+    ).start()
+
+    try:
         for batch_idx, (batch, gen_tok) in enumerate(prefetcher):
             batch_t0 = time.time()
             B = len(batch)
@@ -411,7 +463,7 @@ def main():
                         ).strip()
 
                         lp = 0.0
-                        if gen_out.scores:
+                        if args.compute_logprobs and gen_out.scores:
                             for t, sc in enumerate(gen_out.scores):
                                 if t >= len(gen_tokens):
                                     break
@@ -458,30 +510,35 @@ def main():
                     }
                     for c, sc in zip(all_candidates[i], all_scores[i])
                 ]
-                scored.sort(key=lambda x: x["verifier_score"], reverse=True)
 
                 if len(scored) >= 2:
+                    # Fast path: avoid full sort when we only need best/worst.
+                    best = max(scored, key=lambda x: x["verifier_score"])
+                    worst = min(scored, key=lambda x: x["verifier_score"])
                     pair = {
                         "context": item["context"],
-                        "chosen": scored[0]["action"],
-                        "rejected": scored[-1]["action"],
-                        "chosen_score": scored[0]["verifier_score"],
-                        "rejected_score": scored[-1]["verifier_score"],
+                        "chosen": best["action"],
+                        "rejected": worst["action"],
+                        "chosen_score": best["verifier_score"],
+                        "rejected_score": worst["verifier_score"],
                         "episode_id": item["episode_id"],
                         "step_idx": item["step_idx"],
-                        "all_candidates": scored,
                     }
-                    f.write(json.dumps(pair) + "\n")
+                    if args.store_all_candidates:
+                        pair["all_candidates"] = sorted(
+                            scored, key=lambda x: x["verifier_score"], reverse=True
+                        )
+                    writer.write(pair)
                     total_pairs += 1
 
             # ---------- 4. Progress logging ---------------------------
             batch_elapsed = time.time() - batch_t0
             elapsed = time.time() - t0
-            steps_done = min((batch_idx + 1) * batch_size, len(all_items))
+            steps_done = min((batch_idx + 1) * batch_size, total_steps)
             rate = steps_done / elapsed if elapsed > 0 else 0
-            remaining = len(all_items) - steps_done
+            remaining = total_steps - steps_done
             eta = remaining / rate if rate > 0 else float("inf")
-            pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
+            pct = 100.0 * steps_done / total_steps if total_steps else 100.0
 
             logger.info(
                 f"[shard {args.shard_id}] "
@@ -490,9 +547,12 @@ def main():
                 f"{total_pairs} pairs  |  "
                 f"{rate:.1f} steps/s  |  "
                 f"batch {batch_elapsed:.2f}s  |  "
+                f"write_q={writer.pending}  |  "
                 f"ETA {eta / 60:.1f}min"
             )
-            f.flush()
+    finally:
+        # Ensure pending writes are fully persisted before process exit.
+        writer.close()
 
     # --------------- Cleanup ---------------
     if _torch.cuda.is_available():
@@ -501,8 +561,8 @@ def main():
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "
-        f"{len(episodes)} episodes ({len(all_items)} steps) in {elapsed / 60:.1f}min "
-        f"({len(all_items) / max(elapsed, 1e-6):.1f} steps/s) → {shard_output}"
+        f"{len(episodes)} episodes ({total_steps} steps) in {elapsed / 60:.1f}min "
+        f"({total_steps / max(elapsed, 1e-6):.1f} steps/s) → {shard_output}"
     )
     jsonl_log.log("summary", {
         "shard_id": args.shard_id,
