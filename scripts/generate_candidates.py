@@ -33,6 +33,8 @@ SLM policy and scores them with the verifier to create preference pairs.
 from __future__ import annotations
 
 import argparse
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
 import glob
 import json
 import math
@@ -53,62 +55,12 @@ from r2v.utils.async_writer import AsyncJSONLWriter
 from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
-import torch
 import torch.nn.functional as F
-
-
-# ---------------------------------------------------------------------------
-# GPU keepalive: periodic small forward passes to prevent HPC from killing
-# the job due to low GPU utilization during CPU-bound bookkeeping.
-# ---------------------------------------------------------------------------
-
-_keepalive_stop = threading.Event()
-
-
-def _gpu_keepalive(device, interval: float = 2.0):
-    """Background thread: run a tiny CUDA op every `interval` seconds."""
-    # Small matmul keeps GPU non-idle with minimal interference.
-    x = torch.randn((128, 128), device=device, dtype=torch.bfloat16)
-    while not _keepalive_stop.is_set():
-        try:
-            _ = x @ x
-        except Exception:
-            pass
-        _keepalive_stop.wait(interval)
-
-
-def start_keepalive(device, interval: float = 2.0):
-    _keepalive_stop.clear()
-    t = threading.Thread(
-        target=_gpu_keepalive, args=(device, interval),
-        daemon=True,
-    )
-    t.start()
-    return t
-
-
-def stop_keepalive():
-    _keepalive_stop.set()
 
 
 # ---------------------------------------------------------------------------
 # Resume helpers
 # ---------------------------------------------------------------------------
-
-def load_completed_episodes(output_file: Path) -> set[str]:
-    """Read already-written JSONL and return set of (episode_id, step_idx)."""
-    done: set[str] = set()
-    if not output_file.exists():
-        return done
-    with open(output_file) as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-                done.add(f"{rec['episode_id']}_{rec['step_idx']}")
-            except (json.JSONDecodeError, KeyError):
-                continue
-    return done
-
 
 def completed_episode_ids(output_file: Path) -> set[str]:
     """Return set of episode_ids that have ALL their steps already done."""
@@ -157,6 +109,7 @@ class _PrefetchIter:
         tokenizer,
         max_seq_len,
         max_new_tokens,
+        tokenize_cache_size=256,
         prefetch_depth=2,
     ):
         self._item_iter = item_iter
@@ -164,6 +117,8 @@ class _PrefetchIter:
         self._tok = tokenizer
         self._max_seq = max_seq_len
         self._max_new = max_new_tokens
+        self._cache_size = max(0, tokenize_cache_size)
+        self._tok_cache: OrderedDict[tuple[str, ...], dict] = OrderedDict()
         self._q: queue.Queue = queue.Queue(maxsize=max(1, prefetch_depth))
         self._thread = threading.Thread(target=self._produce, daemon=True)
         self._thread.start()
@@ -187,6 +142,13 @@ class _PrefetchIter:
 
     def _tokenize_batch(self, batch):
         prompts = [f"{it['context']}\nAction:" for it in batch]
+        cache_key = tuple(prompts)
+
+        if self._cache_size > 0:
+            cached = self._tok_cache.get(cache_key)
+            if cached is not None:
+                self._tok_cache.move_to_end(cache_key)
+                return cached
 
         # Left-padding for generation (new tokens appended on the right)
         orig_side = self._tok.padding_side
@@ -199,6 +161,12 @@ class _PrefetchIter:
             padding=True,
         )
         self._tok.padding_side = orig_side
+
+        if self._cache_size > 0:
+            self._tok_cache[cache_key] = gen_tok
+            while len(self._tok_cache) > self._cache_size:
+                self._tok_cache.popitem(last=False)
+
         return gen_tok
 
     def __iter__(self):
@@ -245,25 +213,16 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=None,
                         help="Override max tokens to generate (default: config or 128)")
     parser.add_argument(
+        "--tokenize-cache-size",
+        type=int,
+        default=256,
+        help="Number of tokenized prompt batches to cache in prefetch thread",
+    )
+    parser.add_argument(
         "--prefetch-depth",
         type=int,
-        default=4,
-        help="Number of tokenized batches to keep prefetched on CPU",
-    )
-    parser.add_argument(
-        "--verifier-batch-size",
-        type=int,
-        default=0,
-        help=(
-            "Chunk size for verifier.score_batch over flattened candidates "
-            "(0 means score full flattened batch at once)"
-        ),
-    )
-    parser.add_argument(
-        "--keepalive-interval",
-        type=float,
-        default=2.0,
-        help="Seconds between tiny CUDA keepalive ops (set <=0 to disable)",
+        default=2,
+        help="Number of prefetched tokenized batches kept on CPU",
     )
     parser.add_argument(
         "--store-all-candidates",
@@ -290,13 +249,13 @@ def parse_args():
     parser.add_argument(
         "--write-queue-size",
         type=int,
-        default=20000,
+        default=50000,
         help="Max pending JSON records buffered by async writer (0 = unbounded)",
     )
     parser.add_argument(
         "--write-flush-every",
         type=int,
-        default=256,
+        default=1024,
         help="Async writer flush interval in records",
     )
     parser.add_argument("--overrides", nargs="*", default=[])
@@ -325,27 +284,66 @@ def merge_shards(output_path: str, logger):
     logger.info(f"Merged {len(shard_files)} shards → {output} ({total} pairs)")
 
 
-def _score_with_optional_chunks(
+def _score_and_write_batch(
     verifier,
-    flat_ctx: list[str],
-    flat_cand: list[str],
-    flat_goal: list[str],
-    verifier_batch_size: int,
-) -> list[float]:
-    if verifier_batch_size <= 0:
-        return verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+    writer: AsyncJSONLWriter,
+    batch: list[dict],
+    all_candidates: list[list[dict]],
+    store_all_candidates: bool,
+) -> int:
+    """Score one generated batch and enqueue preference pairs for async JSON write."""
+    B = len(batch)
+    K = len(all_candidates[0]) if B > 0 and all_candidates[0] else 0
 
-    out: list[float] = []
-    for start in range(0, len(flat_ctx), verifier_batch_size):
-        end = start + verifier_batch_size
-        out.extend(
-            verifier.score_batch(
-                flat_ctx[start:end],
-                flat_cand[start:end],
-                flat_goal[start:end],
-            )
-        )
-    return out
+    flat_ctx: list[str] = []
+    flat_cand: list[str] = []
+    flat_goal: list[str] = []
+    for b in range(B):
+        for c in all_candidates[b]:
+            flat_ctx.append(batch[b]["context"])
+            flat_cand.append(c["text"])
+            flat_goal.append(batch[b]["goal"])
+
+    try:
+        flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+    except Exception:
+        flat_scores = [0.5] * len(flat_ctx)
+
+    all_scores = [
+        flat_scores[b * K : (b + 1) * K] for b in range(B)
+    ]
+
+    written = 0
+    for i, item in enumerate(batch):
+        scored = [
+            {
+                "action": c["text"],
+                "log_prob": c["log_prob"],
+                "verifier_score": sc,
+            }
+            for c, sc in zip(all_candidates[i], all_scores[i])
+        ]
+
+        if len(scored) >= 2:
+            best = max(scored, key=lambda x: x["verifier_score"])
+            worst = min(scored, key=lambda x: x["verifier_score"])
+            pair = {
+                "context": item["context"],
+                "chosen": best["action"],
+                "rejected": worst["action"],
+                "chosen_score": best["verifier_score"],
+                "rejected_score": worst["verifier_score"],
+                "episode_id": item["episode_id"],
+                "step_idx": item["step_idx"],
+            }
+            if store_all_candidates:
+                pair["all_candidates"] = sorted(
+                    scored, key=lambda x: x["verifier_score"], reverse=True
+                )
+            writer.write(pair)
+            written += 1
+
+    return written
 
 
 def main():
@@ -396,14 +394,6 @@ def main():
     policy.load(args.policy_path)
     policy.model.eval()
 
-    # Disable gradient checkpointing for inference — it forces use_cache=False,
-    # meaning generate() recomputes the full prefix at every decoding step.
-    # Re-enabling KV cache gives a major speedup.
-    if hasattr(policy.model, "gradient_checkpointing_disable"):
-        policy.model.gradient_checkpointing_disable()
-    policy.model.config.use_cache = True
-    logger.info("KV cache enabled (gradient checkpointing disabled for inference)")
-
     # Load verifier — force mode=trained when --verifier-path is given
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
@@ -419,18 +409,18 @@ def main():
         logger.info(f"Loaded trained verifier weights from {args.verifier_path}")
 
     # Move verifier to GPU if available
-    if hasattr(verifier, 'to') and torch.cuda.is_available():
-        verifier = verifier.to("cuda")
+    import torch as _torch
+    if hasattr(verifier, 'to') and _torch.cuda.is_available():
+        try:
+            verifier = verifier.to(device="cuda", dtype=_torch.float16)
+            logger.info("Verifier moved to CUDA fp16 for inference")
+        except TypeError:
+            verifier = verifier.to("cuda")
+            if hasattr(verifier, "half"):
+                verifier = verifier.half()
+                logger.info("Verifier moved to CUDA and cast to fp16")
     if hasattr(verifier, 'eval'):
         verifier.eval()
-
-    # --------------- Start GPU keepalive ---------------
-    if torch.cuda.is_available() and args.keepalive_interval > 0:
-        start_keepalive(policy.model.device, interval=args.keepalive_interval)
-        logger.info(
-            "GPU keepalive thread started "
-            f"({args.keepalive_interval:.2f}s interval)"
-        )
 
     # --------------- Load & shard trajectories ---------------
     store = TrajectoryStore(args.trajectories)
@@ -458,16 +448,15 @@ def main():
         f"(skipped {len(done_eids)} done), "
         f"K={args.K}, batch_size={batch_size}, "
         f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}, "
-        f"compute_logprobs={args.compute_logprobs}, "
-        f"prefetch_depth={max(1, args.prefetch_depth)}, "
-        f"verifier_batch_size={args.verifier_batch_size or (batch_size * args.K)}"
+        f"compute_logprobs={args.compute_logprobs}"
     )
 
     # --------------- Prefetch iterator ---------------
     prefetcher = _PrefetchIter(
         iter_step_items(episodes), batch_size,
         policy.tokenizer, policy.max_seq_len, gen_max_tokens,
-        prefetch_depth=max(1, args.prefetch_depth),
+        tokenize_cache_size=args.tokenize_cache_size,
+        prefetch_depth=args.prefetch_depth,
     )
 
     # --------------- Batched main loop ---------------
@@ -483,6 +472,9 @@ def main():
         flush_every=max(1, args.write_flush_every),
     ).start()
 
+    executor = ThreadPoolExecutor(max_workers=1)
+    pending_score_future: Future[int] | None = None
+
     try:
         for batch_idx, (batch, gen_tok) in enumerate(prefetcher):
             batch_t0 = time.time()
@@ -492,7 +484,7 @@ def main():
             try:
                 gen_ids = gen_tok["input_ids"].to(device)
                 gen_mask = gen_tok["attention_mask"].to(device)
-                with torch.inference_mode():
+                with _torch.no_grad():
                     gen_out = policy.model.generate(
                         input_ids=gen_ids,
                         attention_mask=gen_mask,
@@ -506,19 +498,31 @@ def main():
                         output_scores=True,
                     )
                 prompt_len = gen_ids.shape[1]
+                gen_only = gen_out.sequences[:, prompt_len:]
+
+                decoded_texts = [
+                    t.strip()
+                    for t in policy.tokenizer.batch_decode(
+                        gen_only, skip_special_tokens=True
+                    )
+                ]
+                if pad_id is None:
+                    token_lens = [int(x.numel()) for x in gen_only]
+                else:
+                    token_lens = (gen_only != pad_id).sum(dim=1).tolist()
+
                 all_candidates: list[list[dict]] = []
                 for b in range(B):
                     cands = []
                     for k in range(args.K):
                         idx = b * args.K + k
-                        gen_tokens = gen_out.sequences[idx, prompt_len:]
-                        gen_tokens = gen_tokens[gen_tokens != pad_id]
-                        text = policy.tokenizer.decode(
-                            gen_tokens, skip_special_tokens=True
-                        ).strip()
+                        gen_tokens = gen_only[idx]
+                        text = decoded_texts[idx]
 
                         lp = 0.0
                         if args.compute_logprobs and gen_out.scores:
+                            if pad_id is not None:
+                                gen_tokens = gen_tokens[gen_tokens != pad_id]
                             for t, sc in enumerate(gen_out.scores):
                                 if t >= len(gen_tokens):
                                     break
@@ -529,7 +533,7 @@ def main():
                         cands.append({
                             "text": text,
                             "log_prob": lp,
-                            "num_tokens": len(gen_tokens),
+                            "num_tokens": token_lens[idx],
                         })
                     all_candidates.append(cands)
             except Exception as exc:
@@ -538,59 +542,18 @@ def main():
                     [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * args.K
                 ] * B
 
-            # ---------- 2. Batched verifier scoring -------------------
-            flat_ctx, flat_cand, flat_goal = [], [], []
-            for b in range(B):
-                for c in all_candidates[b]:
-                    flat_ctx.append(batch[b]["context"])
-                    flat_cand.append(c["text"])
-                    flat_goal.append(batch[b]["goal"])
+            # ---------- 2. Pipeline verifier scoring + write ----------
+            if pending_score_future is not None:
+                total_pairs += pending_score_future.result()
 
-            try:
-                flat_scores = _score_with_optional_chunks(
-                    verifier,
-                    flat_ctx,
-                    flat_cand,
-                    flat_goal,
-                    args.verifier_batch_size,
-                )
-            except Exception:
-                flat_scores = [0.5] * len(flat_ctx)
-
-            all_scores = [
-                flat_scores[b * args.K : (b + 1) * args.K] for b in range(B)
-            ]
-
-            # ---------- 3. Create preference pairs & write ------------
-            for i, item in enumerate(batch):
-                scored = [
-                    {
-                        "action": c["text"],
-                        "log_prob": c["log_prob"],
-                        "verifier_score": sc,
-                    }
-                    for c, sc in zip(all_candidates[i], all_scores[i])
-                ]
-
-                if len(scored) >= 2:
-                    # Fast path: avoid full sort when we only need best/worst.
-                    best = max(scored, key=lambda x: x["verifier_score"])
-                    worst = min(scored, key=lambda x: x["verifier_score"])
-                    pair = {
-                        "context": item["context"],
-                        "chosen": best["action"],
-                        "rejected": worst["action"],
-                        "chosen_score": best["verifier_score"],
-                        "rejected_score": worst["verifier_score"],
-                        "episode_id": item["episode_id"],
-                        "step_idx": item["step_idx"],
-                    }
-                    if args.store_all_candidates:
-                        pair["all_candidates"] = sorted(
-                            scored, key=lambda x: x["verifier_score"], reverse=True
-                        )
-                    writer.write(pair)
-                    total_pairs += 1
+            pending_score_future = executor.submit(
+                _score_and_write_batch,
+                verifier,
+                writer,
+                batch,
+                all_candidates,
+                args.store_all_candidates,
+            )
 
             # ---------- 4. Progress logging ---------------------------
             batch_elapsed = time.time() - batch_t0
@@ -611,14 +574,15 @@ def main():
                 f"write_q={writer.pending}  |  "
                 f"ETA {eta / 60:.1f}min"
             )
+
+        if pending_score_future is not None:
+            total_pairs += pending_score_future.result()
     finally:
+        executor.shutdown(wait=False)
         # Ensure pending writes are fully persisted before process exit.
         writer.close()
 
     # --------------- Cleanup ---------------
-    if torch.cuda.is_available() and args.keepalive_interval > 0:
-        stop_keepalive()
-
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "

@@ -59,9 +59,10 @@ python scripts/train_verifier.py \
     policy.max_seq_len=2048 \
     logging.wandb_mode=disabled
 
+unset TOKENIZERS_PARALLELISM
 export PYTORCH_ALLOC_CONF=expandable_segments:True
-export TOKENIZERS_PARALLELISM=true
 export OMP_NUM_THREADS=12
+export MKL_NUM_THREADS=12
 
 bash scripts/launch_candidates.sh 4 \
   --config configs/humaneval/noisy.yaml \
@@ -72,6 +73,9 @@ bash scripts/launch_candidates.sh 4 \
   --K 5 \
   --batch-size 16 \
   --max-new-tokens 128 \
+  --prefetch-depth 6 \
+  --verifier-batch-size 64 \
+  --keepalive-interval 1.5 \
   --write-queue-size 10000 \
   --write-flush-every 256 \
   --overrides \
