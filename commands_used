@@ -59,18 +59,9 @@ python scripts/train_verifier.py \
     policy.max_seq_len=2048 \
     logging.wandb_mode=disabled
 
-bash scripts/launch_candidates.sh 4 \
-  --config configs/humaneval/noisy.yaml \
-  --policy-path outputs/policy/humaneval_noisy/final \
-  --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
-  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
-  --output data/candidates/humaneval_noisy.jsonl \
-  --K 5 \
-  --batch-size 8 \
-  --overrides \
-    policy.quantization.load_in_4bit=false \
-    verifier.mode=trained \
-    logging.wandb_mode=disabled
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+export TOKENIZERS_PARALLELISM=true
+export OMP_NUM_THREADS=12
 
 bash scripts/launch_candidates.sh 4 \
   --config configs/humaneval/noisy.yaml \
@@ -79,10 +70,10 @@ bash scripts/launch_candidates.sh 4 \
   --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
   --output data/candidates/humaneval_noisy.jsonl \
   --K 5 \
-  --batch-size 32 \
+  --batch-size 16 \
   --max-new-tokens 128 \
-  --write-queue-size 50000 \
-  --write-flush-every 512 \
+  --write-queue-size 10000 \
+  --write-flush-every 256 \
   --overrides \
     policy.quantization.load_in_4bit=false \
     verifier.mode=trained \

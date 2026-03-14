@@ -53,6 +53,7 @@ from r2v.utils.async_writer import AsyncJSONLWriter
 from r2v.utils.config import load_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 
+import torch
 import torch.nn.functional as F
 
 
@@ -64,23 +65,22 @@ import torch.nn.functional as F
 _keepalive_stop = threading.Event()
 
 
-def _gpu_keepalive(model, tokenizer, device, interval: float = 8.0):
-    """Background thread: run a tiny forward pass every `interval` seconds."""
-    import torch
-    dummy_ids = tokenizer("keepalive", return_tensors="pt")["input_ids"].to(device)
+def _gpu_keepalive(device, interval: float = 2.0):
+    """Background thread: run a tiny CUDA op every `interval` seconds."""
+    # Small matmul keeps GPU non-idle with minimal interference.
+    x = torch.randn((128, 128), device=device, dtype=torch.bfloat16)
     while not _keepalive_stop.is_set():
         try:
-            with torch.no_grad():
-                model(dummy_ids)
+            _ = x @ x
         except Exception:
             pass
         _keepalive_stop.wait(interval)
 
 
-def start_keepalive(model, tokenizer, device, interval: float = 8.0):
+def start_keepalive(device, interval: float = 2.0):
     _keepalive_stop.clear()
     t = threading.Thread(
-        target=_gpu_keepalive, args=(model, tokenizer, device, interval),
+        target=_gpu_keepalive, args=(device, interval),
         daemon=True,
     )
     t.start()
@@ -150,13 +150,21 @@ class _PrefetchIter:
     contention.
     """
 
-    def __init__(self, item_iter, batch_size, tokenizer, max_seq_len, max_new_tokens):
+    def __init__(
+        self,
+        item_iter,
+        batch_size,
+        tokenizer,
+        max_seq_len,
+        max_new_tokens,
+        prefetch_depth=2,
+    ):
         self._item_iter = item_iter
         self._bs = batch_size
         self._tok = tokenizer
         self._max_seq = max_seq_len
         self._max_new = max_new_tokens
-        self._q: queue.Queue = queue.Queue(maxsize=2)
+        self._q: queue.Queue = queue.Queue(maxsize=max(1, prefetch_depth))
         self._thread = threading.Thread(target=self._produce, daemon=True)
         self._thread.start()
 
@@ -237,6 +245,27 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=None,
                         help="Override max tokens to generate (default: config or 128)")
     parser.add_argument(
+        "--prefetch-depth",
+        type=int,
+        default=4,
+        help="Number of tokenized batches to keep prefetched on CPU",
+    )
+    parser.add_argument(
+        "--verifier-batch-size",
+        type=int,
+        default=0,
+        help=(
+            "Chunk size for verifier.score_batch over flattened candidates "
+            "(0 means score full flattened batch at once)"
+        ),
+    )
+    parser.add_argument(
+        "--keepalive-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between tiny CUDA keepalive ops (set <=0 to disable)",
+    )
+    parser.add_argument(
         "--store-all-candidates",
         action="store_true",
         help=(
@@ -294,6 +323,29 @@ def merge_shards(output_path: str, logger):
             logger.info(f"  Merged {sf}")
 
     logger.info(f"Merged {len(shard_files)} shards → {output} ({total} pairs)")
+
+
+def _score_with_optional_chunks(
+    verifier,
+    flat_ctx: list[str],
+    flat_cand: list[str],
+    flat_goal: list[str],
+    verifier_batch_size: int,
+) -> list[float]:
+    if verifier_batch_size <= 0:
+        return verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+
+    out: list[float] = []
+    for start in range(0, len(flat_ctx), verifier_batch_size):
+        end = start + verifier_batch_size
+        out.extend(
+            verifier.score_batch(
+                flat_ctx[start:end],
+                flat_cand[start:end],
+                flat_goal[start:end],
+            )
+        )
+    return out
 
 
 def main():
@@ -367,18 +419,18 @@ def main():
         logger.info(f"Loaded trained verifier weights from {args.verifier_path}")
 
     # Move verifier to GPU if available
-    import torch as _torch
-    if hasattr(verifier, 'to') and _torch.cuda.is_available():
+    if hasattr(verifier, 'to') and torch.cuda.is_available():
         verifier = verifier.to("cuda")
     if hasattr(verifier, 'eval'):
         verifier.eval()
 
     # --------------- Start GPU keepalive ---------------
-    if _torch.cuda.is_available():
-        keepalive_thread = start_keepalive(
-            policy.model, policy.tokenizer, policy.model.device, interval=8.0,
+    if torch.cuda.is_available() and args.keepalive_interval > 0:
+        start_keepalive(policy.model.device, interval=args.keepalive_interval)
+        logger.info(
+            "GPU keepalive thread started "
+            f"({args.keepalive_interval:.2f}s interval)"
         )
-        logger.info("GPU keepalive thread started (8s interval)")
 
     # --------------- Load & shard trajectories ---------------
     store = TrajectoryStore(args.trajectories)
@@ -406,13 +458,16 @@ def main():
         f"(skipped {len(done_eids)} done), "
         f"K={args.K}, batch_size={batch_size}, "
         f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}, "
-        f"compute_logprobs={args.compute_logprobs}"
+        f"compute_logprobs={args.compute_logprobs}, "
+        f"prefetch_depth={max(1, args.prefetch_depth)}, "
+        f"verifier_batch_size={args.verifier_batch_size or (batch_size * args.K)}"
     )
 
     # --------------- Prefetch iterator ---------------
     prefetcher = _PrefetchIter(
         iter_step_items(episodes), batch_size,
         policy.tokenizer, policy.max_seq_len, gen_max_tokens,
+        prefetch_depth=max(1, args.prefetch_depth),
     )
 
     # --------------- Batched main loop ---------------
@@ -437,7 +492,7 @@ def main():
             try:
                 gen_ids = gen_tok["input_ids"].to(device)
                 gen_mask = gen_tok["attention_mask"].to(device)
-                with _torch.no_grad():
+                with torch.inference_mode():
                     gen_out = policy.model.generate(
                         input_ids=gen_ids,
                         attention_mask=gen_mask,
@@ -492,7 +547,13 @@ def main():
                     flat_goal.append(batch[b]["goal"])
 
             try:
-                flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+                flat_scores = _score_with_optional_chunks(
+                    verifier,
+                    flat_ctx,
+                    flat_cand,
+                    flat_goal,
+                    args.verifier_batch_size,
+                )
             except Exception:
                 flat_scores = [0.5] * len(flat_ctx)
 
@@ -555,7 +616,7 @@ def main():
         writer.close()
 
     # --------------- Cleanup ---------------
-    if _torch.cuda.is_available():
+    if torch.cuda.is_available() and args.keepalive_interval > 0:
         stop_keepalive()
 
     elapsed = time.time() - t0
