@@ -347,6 +347,15 @@ def parse_args():
         help="Max number of in-flight scorer/write batches (must be >=1)",
     )
     parser.add_argument(
+        "--gen-micro-batch-size",
+        type=int,
+        default=0,
+        help=(
+            "Generation micro-batch size per shard batch (0 = auto/full). "
+            "Lower values reduce CUDA OOM risk."
+        ),
+    )
+    parser.add_argument(
         "--store-all-candidates",
         action="store_true",
         help=(
@@ -478,6 +487,129 @@ def _score_and_write_batch(
             written += 1
 
     return written
+
+
+def _is_cuda_oom(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "cuda out of memory" in msg or "out of memory" in msg
+
+
+def _generate_candidates_adaptive(
+    policy,
+    gen_ids,
+    gen_mask,
+    *,
+    K: int,
+    gen_max_tokens: int,
+    gen_temperature: float,
+    pad_id,
+    compute_logprobs: bool,
+    logger,
+    shard_id: int,
+    initial_micro_batch_size: int = 0,
+):
+    """Generate candidates with adaptive micro-batching on CUDA OOM.
+
+    Returns
+    -------
+    all_candidates : list[list[dict]]
+        Per-item candidate lists, length B x K.
+    """
+    import torch as _torch
+
+    B = gen_ids.shape[0]
+    all_candidates: list[list[dict]] = []
+
+    if initial_micro_batch_size <= 0:
+        micro_bs = B
+    else:
+        micro_bs = max(1, min(initial_micro_batch_size, B))
+
+    start = 0
+    while start < B:
+        cur_bs = min(micro_bs, B - start)
+        chunk_done = False
+
+        while not chunk_done:
+            try:
+                ids = gen_ids[start : start + cur_bs]
+                mask = gen_mask[start : start + cur_bs]
+                with _torch.inference_mode():
+                    gen_out = policy.model.generate(
+                        input_ids=ids,
+                        attention_mask=mask,
+                        max_new_tokens=gen_max_tokens,
+                        num_return_sequences=K,
+                        temperature=gen_temperature,
+                        top_p=0.95,
+                        do_sample=True,
+                        pad_token_id=pad_id,
+                        return_dict_in_generate=True,
+                        output_scores=compute_logprobs,
+                    )
+
+                prompt_len = ids.shape[1]
+                gen_only = gen_out.sequences[:, prompt_len:]
+                decoded_texts = [
+                    t.strip()
+                    for t in policy.tokenizer.batch_decode(
+                        gen_only, skip_special_tokens=True
+                    )
+                ]
+                if pad_id is None:
+                    token_lens = [int(x.numel()) for x in gen_only]
+                else:
+                    token_lens = (gen_only != pad_id).sum(dim=1).tolist()
+
+                for b in range(cur_bs):
+                    cands = []
+                    for k in range(K):
+                        idx = b * K + k
+                        gen_tokens = gen_only[idx]
+                        lp = 0.0
+                        if compute_logprobs and gen_out.scores:
+                            if pad_id is not None:
+                                gen_tokens = gen_tokens[gen_tokens != pad_id]
+                            for t, sc in enumerate(gen_out.scores):
+                                if t >= len(gen_tokens):
+                                    break
+                                lp += F.log_softmax(sc[idx], dim=-1)[gen_tokens[t]].item()
+
+                        cands.append(
+                            {
+                                "text": decoded_texts[idx],
+                                "log_prob": lp,
+                                "num_tokens": token_lens[idx],
+                            }
+                        )
+                    all_candidates.append(cands)
+
+                start += cur_bs
+                chunk_done = True
+            except Exception as exc:
+                if not _is_cuda_oom(exc):
+                    raise
+
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+
+                if cur_bs == 1:
+                    logger.warning(
+                        f"[shard {shard_id}] OOM at micro-batch=1; using empty candidates for one item"
+                    )
+                    all_candidates.append(
+                        [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
+                    )
+                    start += 1
+                    chunk_done = True
+                else:
+                    new_bs = max(1, cur_bs // 2)
+                    logger.warning(
+                        f"[shard {shard_id}] CUDA OOM at micro-batch={cur_bs}; retrying with {new_bs}"
+                    )
+                    cur_bs = new_bs
+
+    return all_candidates
 
 
 def main():
@@ -642,58 +774,19 @@ def main():
             try:
                 gen_ids = gen_tok["input_ids"].to(device)
                 gen_mask = gen_tok["attention_mask"].to(device)
-                with _torch.inference_mode():
-                    gen_out = policy.model.generate(
-                        input_ids=gen_ids,
-                        attention_mask=gen_mask,
-                        max_new_tokens=gen_max_tokens,
-                        num_return_sequences=args.K,
-                        temperature=gen_temperature,
-                        top_p=0.95,
-                        do_sample=True,
-                        pad_token_id=pad_id,
-                        return_dict_in_generate=True,
-                        output_scores=args.compute_logprobs,
-                    )
-                prompt_len = gen_ids.shape[1]
-                gen_only = gen_out.sequences[:, prompt_len:]
-
-                decoded_texts = [
-                    t.strip()
-                    for t in policy.tokenizer.batch_decode(
-                        gen_only, skip_special_tokens=True
-                    )
-                ]
-                if pad_id is None:
-                    token_lens = [int(x.numel()) for x in gen_only]
-                else:
-                    token_lens = (gen_only != pad_id).sum(dim=1).tolist()
-
-                all_candidates: list[list[dict]] = []
-                for b in range(B):
-                    cands = []
-                    for k in range(args.K):
-                        idx = b * args.K + k
-                        gen_tokens = gen_only[idx]
-                        text = decoded_texts[idx]
-
-                        lp = 0.0
-                        if args.compute_logprobs and gen_out.scores:
-                            if pad_id is not None:
-                                gen_tokens = gen_tokens[gen_tokens != pad_id]
-                            for t, sc in enumerate(gen_out.scores):
-                                if t >= len(gen_tokens):
-                                    break
-                                lp += F.log_softmax(
-                                    sc[idx], dim=-1
-                                )[gen_tokens[t]].item()
-
-                        cands.append({
-                            "text": text,
-                            "log_prob": lp,
-                            "num_tokens": token_lens[idx],
-                        })
-                    all_candidates.append(cands)
+                all_candidates = _generate_candidates_adaptive(
+                    policy,
+                    gen_ids,
+                    gen_mask,
+                    K=args.K,
+                    gen_max_tokens=gen_max_tokens,
+                    gen_temperature=gen_temperature,
+                    pad_id=pad_id,
+                    compute_logprobs=args.compute_logprobs,
+                    logger=logger,
+                    shard_id=args.shard_id,
+                    initial_micro_batch_size=args.gen_micro_batch_size,
+                )
                 gen_elapsed = time.time() - gen_t0
             except Exception as exc:
                 logger.warning(f"Generation failed for batch {batch_idx}: {exc}")
