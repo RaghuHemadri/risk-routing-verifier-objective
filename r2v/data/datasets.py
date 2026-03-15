@@ -167,6 +167,13 @@ class PreferenceDataset(Dataset):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.examples: list[PreferenceExample] = []
+        self.stats = {
+            "total_rows": 0,
+            "kept": 0,
+            "skipped_small_gap": 0,
+            "skipped_same_action": 0,
+            "skipped_invalid_schema": 0,
+        }
 
         # Load candidate action data.
         # Supports two JSONL schemas:
@@ -175,15 +182,24 @@ class PreferenceDataset(Dataset):
         import jsonlines
         with jsonlines.open(candidates_path, mode="r") as reader:
             for obj in reader:
+                self.stats["total_rows"] += 1
                 if "chosen" in obj and "rejected" in obj:
                     # Schema 1: already paired by generate_candidates
                     score_gap = obj.get("chosen_score", 1.0) - obj.get("rejected_score", 0.0)
                     if score_gap < min_score_gap:
+                        self.stats["skipped_small_gap"] += 1
                         continue
+
+                    chosen_action = obj["chosen"]
+                    rejected_action = obj["rejected"]
+                    if chosen_action == rejected_action:
+                        self.stats["skipped_same_action"] += 1
+                        continue
+
                     self.examples.append(PreferenceExample(
                         context=obj["context"],
-                        chosen_action=obj["chosen"],
-                        rejected_action=obj["rejected"],
+                        chosen_action=chosen_action,
+                        rejected_action=rejected_action,
                         chosen_score=obj.get("chosen_score", 1.0),
                         rejected_score=obj.get("rejected_score", 0.0),
                     ))
@@ -195,14 +211,26 @@ class PreferenceDataset(Dataset):
                                     key=lambda i: obj["verifier_scores"][i])
                     score_gap = obj["verifier_scores"][best_idx] - obj["verifier_scores"][worst_idx]
                     if score_gap < min_score_gap:
+                        self.stats["skipped_small_gap"] += 1
                         continue
+
+                    chosen_action = obj["candidates"][best_idx]
+                    rejected_action = obj["candidates"][worst_idx]
+                    if chosen_action == rejected_action:
+                        self.stats["skipped_same_action"] += 1
+                        continue
+
                     self.examples.append(PreferenceExample(
                         context=obj["context"],
-                        chosen_action=obj["candidates"][best_idx],
-                        rejected_action=obj["candidates"][worst_idx],
+                        chosen_action=chosen_action,
+                        rejected_action=rejected_action,
                         chosen_score=obj["verifier_scores"][best_idx],
                         rejected_score=obj["verifier_scores"][worst_idx],
                     ))
+                else:
+                    self.stats["skipped_invalid_schema"] += 1
+
+        self.stats["kept"] = len(self.examples)
 
     def __len__(self) -> int:
         return len(self.examples)
