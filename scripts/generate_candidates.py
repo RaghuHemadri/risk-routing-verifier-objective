@@ -58,6 +58,32 @@ from r2v.utils.logging import JSONLLogger, setup_logging
 import torch.nn.functional as F
 
 
+_keepalive_stop = threading.Event()
+
+
+def _gpu_keepalive(device, interval: float):
+    import torch
+    # Tiny periodic matmul to keep GPU from appearing idle to cluster watchdogs.
+    x = torch.randn((128, 128), device=device, dtype=torch.float16)
+    while not _keepalive_stop.is_set():
+        try:
+            _ = x @ x
+        except Exception:
+            pass
+        _keepalive_stop.wait(interval)
+
+
+def start_gpu_keepalive(device, interval: float):
+    _keepalive_stop.clear()
+    t = threading.Thread(target=_gpu_keepalive, args=(device, interval), daemon=True)
+    t.start()
+    return t
+
+
+def stop_gpu_keepalive():
+    _keepalive_stop.set()
+
+
 # ---------------------------------------------------------------------------
 # Resume helpers
 # ---------------------------------------------------------------------------
@@ -111,12 +137,16 @@ class _PrefetchIter:
         max_new_tokens,
         tokenize_cache_size=256,
         prefetch_depth=2,
+        logger=None,
+        log_every_batches=10,
     ):
         self._item_iter = item_iter
         self._bs = batch_size
         self._tok = tokenizer
         self._max_seq = max_seq_len
         self._max_new = max_new_tokens
+        self._logger = logger
+        self._log_every_batches = max(1, int(log_every_batches))
         self._cache_size = max(0, tokenize_cache_size)
         self._tok_cache: OrderedDict[tuple[str, ...], dict] = OrderedDict()
         self._q: queue.Queue = queue.Queue(maxsize=max(1, prefetch_depth))
@@ -126,17 +156,32 @@ class _PrefetchIter:
     def _produce(self):
         try:
             batch = []
+            produced = 0
             for item in self._item_iter:
                 batch.append(item)
                 if len(batch) < self._bs:
                     continue
                 self._q.put((batch, self._tokenize_batch(batch)))
+                produced += 1
+                if self._logger and (produced == 1 or produced % self._log_every_batches == 0):
+                    self._logger.info(
+                        f"Prefetch prepared {produced} batch(es) "
+                        f"(queue={self._q.qsize()})"
+                    )
                 batch = []
 
             if batch:
                 self._q.put((batch, self._tokenize_batch(batch)))
+                produced += 1
+                if self._logger:
+                    self._logger.info(
+                        f"Prefetch prepared final partial batch "
+                        f"(total={produced}, queue={self._q.qsize()})"
+                    )
 
             self._q.put(None)  # sentinel
+            if self._logger:
+                self._logger.info("Prefetch producer finished")
         except Exception as exc:  # pragma: no cover
             self._q.put(exc)
 
@@ -195,6 +240,71 @@ def iter_step_items(episodes):
             context += step.action.raw_text + "\n"
 
 
+def iter_sharded_episodes(store: TrajectoryStore, shard_id: int, num_shards: int, done_eids: set[str]):
+    """Stream episodes for one shard directly from JSONL to keep RAM bounded."""
+    for idx, ep in enumerate(store.iter_episodes()):
+        if idx % num_shards != shard_id:
+            continue
+        if ep.episode_id in done_eids:
+            continue
+        yield ep
+
+
+def count_sharded_steps(store: TrajectoryStore, shard_id: int, num_shards: int, done_eids: set[str]) -> tuple[int, int]:
+    """Count (steps, episodes) for this shard via a lightweight streaming pass."""
+    total_steps = 0
+    total_eps = 0
+    for idx, ep in enumerate(store.iter_episodes()):
+        if idx % num_shards != shard_id:
+            continue
+        if ep.episode_id in done_eids:
+            continue
+        total_eps += 1
+        total_steps += len(ep.steps)
+    return total_steps, total_eps
+
+
+def count_sharded_steps_with_logging(
+    store: TrajectoryStore,
+    shard_id: int,
+    num_shards: int,
+    done_eids: set[str],
+    logger,
+    log_every_episodes: int = 200,
+) -> tuple[int, int]:
+    """Streaming count with progress logs so long scans don't look stalled."""
+    total_steps = 0
+    total_eps = 0
+    scanned = 0
+    t0 = time.time()
+    every = max(1, log_every_episodes)
+
+    for idx, ep in enumerate(store.iter_episodes()):
+        scanned += 1
+        if idx % num_shards != shard_id:
+            continue
+        if ep.episode_id in done_eids:
+            continue
+        total_eps += 1
+        total_steps += len(ep.steps)
+
+        if total_eps % every == 0:
+            elapsed = max(time.time() - t0, 1e-6)
+            logger.info(
+                f"Shard scan progress: kept={total_eps} episodes, "
+                f"steps={total_steps}, scanned={scanned}, "
+                f"rate={scanned / elapsed:.1f} eps/s"
+            )
+
+    elapsed = max(time.time() - t0, 1e-6)
+    logger.info(
+        f"Shard scan complete: kept={total_eps} episodes, "
+        f"steps={total_steps}, scanned={scanned}, "
+        f"elapsed={elapsed:.1f}s"
+    )
+    return total_steps, total_eps
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -221,8 +331,20 @@ def parse_args():
     parser.add_argument(
         "--prefetch-depth",
         type=int,
-        default=2,
+        default=4,
         help="Number of prefetched tokenized batches kept on CPU",
+    )
+    parser.add_argument(
+        "--gpu-keepalive-interval",
+        type=float,
+        default=1.5,
+        help="Seconds between tiny GPU keepalive kernels (0 to disable)",
+    )
+    parser.add_argument(
+        "--pipeline-depth",
+        type=int,
+        default=3,
+        help="Max number of in-flight scorer/write batches (must be >=1)",
     )
     parser.add_argument(
         "--store-all-candidates",
@@ -259,6 +381,18 @@ def parse_args():
         help="Async writer flush interval in records",
     )
     parser.add_argument("--overrides", nargs="*", default=[])
+    parser.add_argument(
+        "--scan-log-every-episodes",
+        type=int,
+        default=200,
+        help="Log shard-scan progress every N kept episodes",
+    )
+    parser.add_argument(
+        "--prefetch-log-every-batches",
+        type=int,
+        default=10,
+        help="Log tokenization prefetch progress every N batches",
+    )
     return parser.parse_args()
 
 
@@ -392,6 +526,19 @@ def main():
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
     policy.load(args.policy_path)
+    import torch as _torch
+    if _torch.cuda.is_available():
+        try:
+            policy.model = policy.model.to("cuda")
+            logger.info("Policy moved to CUDA for inference")
+        except Exception as exc:
+            logger.warning(f"Could not move policy to CUDA explicitly: {exc}")
+
+    # For inference throughput, ensure KV cache is enabled.
+    if hasattr(policy.model, "gradient_checkpointing_disable"):
+        policy.model.gradient_checkpointing_disable()
+    if hasattr(policy.model, "config"):
+        policy.model.config.use_cache = True
     policy.model.eval()
 
     # Load verifier — force mode=trained when --verifier-path is given
@@ -403,13 +550,11 @@ def main():
 
     # Load trained weights if provided
     if args.verifier_path:
-        import torch as _torch
         state_dict = _torch.load(args.verifier_path, map_location="cpu")
         verifier.load_state_dict(state_dict, strict=False)
         logger.info(f"Loaded trained verifier weights from {args.verifier_path}")
 
     # Move verifier to GPU if available
-    import torch as _torch
     if hasattr(verifier, 'to') and _torch.cuda.is_available():
         try:
             verifier = verifier.to(device="cuda", dtype=_torch.float16)
@@ -422,14 +567,15 @@ def main():
     if hasattr(verifier, 'eval'):
         verifier.eval()
 
-    # --------------- Load & shard trajectories ---------------
-    store = TrajectoryStore(args.trajectories)
-    all_episodes = store.load_episodes()
-    episodes = all_episodes[args.shard_id::args.num_shards]
+    if _torch.cuda.is_available() and args.gpu_keepalive_interval > 0:
+        start_gpu_keepalive(policy.model.device, args.gpu_keepalive_interval)
+        logger.info(
+            "GPU keepalive enabled "
+            f"(interval={args.gpu_keepalive_interval:.2f}s)"
+        )
 
-    # Filter out already-completed episodes
-    if done_eids:
-        episodes = [ep for ep in episodes if ep.episode_id not in done_eids]
+    # --------------- Load & shard trajectories (streamed) ---------------
+    store = TrajectoryStore(args.trajectories)
 
     # Resolve generation hyperparams
     inf_cfg = cfg.get("inference", {})
@@ -441,10 +587,18 @@ def main():
 
     # --------------- Stream step items (no giant pre-collect stall) ---------------
     batch_size = args.batch_size
-    total_steps = sum(len(ep.steps) for ep in episodes)
+    logger.info("Starting shard scan (streaming pass for step/episode counts)...")
+    total_steps, total_episodes = count_sharded_steps_with_logging(
+        store,
+        args.shard_id,
+        args.num_shards,
+        done_eids,
+        logger,
+        log_every_episodes=args.scan_log_every_episodes,
+    )
     total_batches = math.ceil(total_steps / batch_size) if total_steps else 0
     logger.info(
-        f"Processing {total_steps} steps from {len(episodes)} episodes "
+        f"Processing {total_steps} steps from {total_episodes} episodes "
         f"(skipped {len(done_eids)} done), "
         f"K={args.K}, batch_size={batch_size}, "
         f"max_new_tokens={gen_max_tokens}, temp={gen_temperature}, "
@@ -453,10 +607,12 @@ def main():
 
     # --------------- Prefetch iterator ---------------
     prefetcher = _PrefetchIter(
-        iter_step_items(episodes), batch_size,
+        iter_step_items(iter_sharded_episodes(store, args.shard_id, args.num_shards, done_eids)), batch_size,
         policy.tokenizer, policy.max_seq_len, gen_max_tokens,
         tokenize_cache_size=args.tokenize_cache_size,
         prefetch_depth=args.prefetch_depth,
+        logger=logger,
+        log_every_batches=args.prefetch_log_every_batches,
     )
 
     # --------------- Batched main loop ---------------
@@ -472,19 +628,21 @@ def main():
         flush_every=max(1, args.write_flush_every),
     ).start()
 
-    executor = ThreadPoolExecutor(max_workers=1)
-    pending_score_future: Future[int] | None = None
+    pipeline_depth = max(1, args.pipeline_depth)
+    executor = ThreadPoolExecutor(max_workers=pipeline_depth)
+    pending_futures: list[Future[int]] = []
 
     try:
         for batch_idx, (batch, gen_tok) in enumerate(prefetcher):
             batch_t0 = time.time()
+            gen_t0 = time.time()
             B = len(batch)
 
             # ---------- 1. Batched candidate generation ---------------
             try:
                 gen_ids = gen_tok["input_ids"].to(device)
                 gen_mask = gen_tok["attention_mask"].to(device)
-                with _torch.no_grad():
+                with _torch.inference_mode():
                     gen_out = policy.model.generate(
                         input_ids=gen_ids,
                         attention_mask=gen_mask,
@@ -495,7 +653,7 @@ def main():
                         do_sample=True,
                         pad_token_id=pad_id,
                         return_dict_in_generate=True,
-                        output_scores=True,
+                        output_scores=args.compute_logprobs,
                     )
                 prompt_len = gen_ids.shape[1]
                 gen_only = gen_out.sequences[:, prompt_len:]
@@ -536,24 +694,32 @@ def main():
                             "num_tokens": token_lens[idx],
                         })
                     all_candidates.append(cands)
+                gen_elapsed = time.time() - gen_t0
             except Exception as exc:
                 logger.warning(f"Generation failed for batch {batch_idx}: {exc}")
                 all_candidates = [
                     [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * args.K
                 ] * B
+                gen_elapsed = time.time() - gen_t0
 
             # ---------- 2. Pipeline verifier scoring + write ----------
-            if pending_score_future is not None:
-                total_pairs += pending_score_future.result()
-
-            pending_score_future = executor.submit(
+            score_submit_t0 = time.time()
+            pending_futures.append(executor.submit(
                 _score_and_write_batch,
                 verifier,
                 writer,
                 batch,
                 all_candidates,
                 args.store_all_candidates,
-            )
+            ))
+            submit_elapsed = time.time() - score_submit_t0
+
+            if len(pending_futures) >= pipeline_depth:
+                wait_t0 = time.time()
+                total_pairs += pending_futures.pop(0).result()
+                wait_elapsed = time.time() - wait_t0
+            else:
+                wait_elapsed = 0.0
 
             # ---------- 4. Progress logging ---------------------------
             batch_elapsed = time.time() - batch_t0
@@ -570,14 +736,18 @@ def main():
                 f"({pct:5.1f}%)  |  "
                 f"{total_pairs} pairs  |  "
                 f"{rate:.1f} steps/s  |  "
+                f"gen {gen_elapsed:.2f}s  |  "
+                f"submit {submit_elapsed:.3f}s  |  "
+                f"wait {wait_elapsed:.2f}s  |  "
                 f"batch {batch_elapsed:.2f}s  |  "
                 f"write_q={writer.pending}  |  "
                 f"ETA {eta / 60:.1f}min"
             )
 
-        if pending_score_future is not None:
-            total_pairs += pending_score_future.result()
+        for fut in pending_futures:
+            total_pairs += fut.result()
     finally:
+        stop_gpu_keepalive()
         executor.shutdown(wait=False)
         # Ensure pending writes are fully persisted before process exit.
         writer.close()
@@ -586,14 +756,14 @@ def main():
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_pairs} pairs from "
-        f"{len(episodes)} episodes ({total_steps} steps) in {elapsed / 60:.1f}min "
+        f"{total_episodes} episodes ({total_steps} steps) in {elapsed / 60:.1f}min "
         f"({total_steps / max(elapsed, 1e-6):.1f} steps/s) → {shard_output}"
     )
     jsonl_log.log("summary", {
         "shard_id": args.shard_id,
         "num_shards": args.num_shards,
         "total_pairs": total_pairs,
-        "num_episodes": len(episodes),
+        "num_episodes": total_episodes,
         "K": args.K,
         "batch_size": batch_size,
         "elapsed_seconds": elapsed,
