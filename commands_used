@@ -63,6 +63,7 @@ unset TOKENIZERS_PARALLELISM
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 export OMP_NUM_THREADS=12
 export MKL_NUM_THREADS=12
+export PYTHONUNBUFFERED=1
 
 bash scripts/launch_candidates.sh 4 \
   --config configs/humaneval/noisy.yaml \
@@ -71,13 +72,14 @@ bash scripts/launch_candidates.sh 4 \
   --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
   --output data/candidates/humaneval_noisy.jsonl \
   --K 5 \
-  --batch-size 16 \
+  --batch-size 8 \
   --max-new-tokens 128 \
-  --prefetch-depth 6 \
-  --verifier-batch-size 64 \
-  --keepalive-interval 1.5 \
-  --write-queue-size 10000 \
-  --write-flush-every 256 \
+  --tokenize-cache-size 0 \
+  --prefetch-depth 2 \
+  --pipeline-depth 3 \
+  --gpu-keepalive-interval 1.0 \
+  --write-queue-size 2000 \
+  --write-flush-every 128 \
   --overrides \
     policy.quantization.load_in_4bit=false \
     verifier.mode=trained \
