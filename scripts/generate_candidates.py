@@ -433,6 +433,7 @@ def _score_and_write_batch(
     batch: list[dict],
     all_candidates: list[list[dict]],
     store_all_candidates: bool,
+    logger=None,
 ) -> int:
     """Score one generated batch and enqueue preference pairs for async JSON write."""
     B = len(batch)
@@ -449,7 +450,9 @@ def _score_and_write_batch(
 
     try:
         flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
-    except Exception:
+    except Exception as exc:
+        if logger is not None:
+            logger.warning(f"Verifier scoring failed for a batch; using 0.5 fallback. Error: {exc}")
         flat_scores = [0.5] * len(flat_ctx)
 
     all_scores = [
@@ -468,8 +471,23 @@ def _score_and_write_batch(
         ]
 
         if len(scored) >= 2:
+            # Pick best normally.
             best = max(scored, key=lambda x: x["verifier_score"])
-            worst = min(scored, key=lambda x: x["verifier_score"])
+
+            # For rejected, prefer the lowest-scored candidate with an action text
+            # different from chosen. This avoids degenerate chosen==rejected pairs
+            # when scores tie or verifier falls back to constant values.
+            ranked_worst_first = sorted(scored, key=lambda x: x["verifier_score"])
+            worst = None
+            for cand in ranked_worst_first:
+                if cand["action"] != best["action"]:
+                    worst = cand
+                    break
+
+            # If all candidate texts are identical, skip this step pair.
+            if worst is None:
+                continue
+
             pair = {
                 "context": item["context"],
                 "chosen": best["action"],
@@ -804,6 +822,7 @@ def main():
                 batch,
                 all_candidates,
                 args.store_all_candidates,
+                logger,
             ))
             submit_elapsed = time.time() - score_submit_t0
 

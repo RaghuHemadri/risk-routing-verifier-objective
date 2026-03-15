@@ -153,12 +153,30 @@ def main():
             logger.info("=== Stage 2: DPO Preference Training ===")
 
             max_seq_len = cfg.policy.get("max_seq_len", 4096)
+            pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
+            min_score_gap = float(pref_cfg.get("min_score_gap", 0.1))
             pref_dataset = PreferenceDataset(
-                pref_path, policy.tokenizer, max_seq_len=max_seq_len,
+                pref_path,
+                policy.tokenizer,
+                max_seq_len=max_seq_len,
+                min_score_gap=min_score_gap,
             )
             logger.info(f"PreferenceDataset: {len(pref_dataset)} pairs")
+            if hasattr(pref_dataset, "stats"):
+                logger.info(f"PreferenceDataset stats: {pref_dataset.stats}")
 
-            pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
+            if len(pref_dataset) == 0:
+                logger.error(
+                    "No usable preference pairs loaded. "
+                    "Likely causes: chosen==rejected for most rows, or score-gap filter too strict. "
+                    f"Current min_score_gap={min_score_gap}."
+                )
+                logger.error(
+                    "Try either regenerating candidates with distinct chosen/rejected pairs, "
+                    "or temporarily lowering training.preference.min_score_gap (e.g., 0.0)."
+                )
+                sys.exit(1)
+
             pref_trainer = PreferenceTrainer(
                 policy=policy,
                 train_dataset=pref_dataset,
