@@ -34,7 +34,7 @@ class PreferenceTrainer:
         policy,
         train_dataset,
         eval_dataset=None,
-        config: dict[str, Any] = None,
+        config: dict[str, Any] | None = None,
         output_dir: str = "experiments/checkpoints/preference",
         collate_fn=None,
     ):
@@ -53,6 +53,8 @@ class PreferenceTrainer:
         self.grad_accum_steps = self.config.get("gradient_accumulation_steps", 16)
         self.lr = self.config.get("learning_rate", 5e-6)
         self.max_grad_norm = self.config.get("max_grad_norm", 1.0)
+        # Memory-safe by default: separate chosen/rejected passes.
+        self.concat_pairs = self.config.get("concat_pairs", False)
 
         # Reference model: frozen copy for DPO
         self.use_reference = self.config.get("use_reference_model", True)
@@ -163,44 +165,72 @@ class PreferenceTrainer:
 
         for epoch in range(self.epochs):
             model.train()
-            epoch_metrics = {"dpo_loss": 0, "accuracy": 0, "reward_margin": 0}
+            epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0}
             num_batches = 0
 
             for batch in train_loader:
                 with accelerator.accumulate(model):
-                    # ── Concatenate chosen + rejected for a single forward pass ──
-                    # Instead of 4 separate passes (policy×2 + ref×2), we do 2
-                    # passes with 2× batch size.  The collate_fn already pads
-                    # chosen and rejected to the same length, so shapes match.
-                    concat_ids = torch.cat(
-                        [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
-                    )
-                    concat_mask = torch.cat(
-                        [batch["chosen_attention_mask"], batch["rejected_attention_mask"]], dim=0
-                    )
-                    concat_labels = torch.cat(
-                        [batch["chosen_labels"], batch["rejected_labels"]], dim=0
-                    )
-                    bs = batch["chosen_input_ids"].size(0)
+                    if self.concat_pairs:
+                        # Faster path, but uses higher peak memory.
+                        concat_ids = torch.cat(
+                            [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
+                        )
+                        concat_mask = torch.cat(
+                            [batch["chosen_attention_mask"], batch["rejected_attention_mask"]], dim=0
+                        )
+                        concat_labels = torch.cat(
+                            [batch["chosen_labels"], batch["rejected_labels"]], dim=0
+                        )
+                        bs = batch["chosen_input_ids"].size(0)
 
-                    # Policy forward (one pass for both chosen + rejected)
-                    policy_logps = self._compute_logps(
-                        model, concat_ids, concat_mask, concat_labels
-                    )
-                    policy_chosen_logps = policy_logps[:bs]
-                    policy_rejected_logps = policy_logps[bs:]
+                        policy_logps = self._compute_logps(
+                            model, concat_ids, concat_mask, concat_labels
+                        )
+                        policy_chosen_logps = policy_logps[:bs]
+                        policy_rejected_logps = policy_logps[bs:]
 
-                    # Reference forward (one pass for both chosen + rejected)
-                    if ref_model is not None:
-                        with torch.no_grad():
-                            ref_logps = self._compute_logps(
-                                ref_model, concat_ids, concat_mask, concat_labels
-                            )
-                            ref_chosen_logps = ref_logps[:bs]
-                            ref_rejected_logps = ref_logps[bs:]
+                        if ref_model is not None:
+                            with torch.no_grad():
+                                ref_logps = self._compute_logps(
+                                    ref_model, concat_ids, concat_mask, concat_labels
+                                )
+                                ref_chosen_logps = ref_logps[:bs]
+                                ref_rejected_logps = ref_logps[bs:]
+                        else:
+                            ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
+                            ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
                     else:
-                        ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
-                        ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+                        # Memory-safe path: separate chosen/rejected passes.
+                        policy_chosen_logps = self._compute_logps(
+                            model,
+                            batch["chosen_input_ids"],
+                            batch["chosen_attention_mask"],
+                            batch["chosen_labels"],
+                        )
+                        policy_rejected_logps = self._compute_logps(
+                            model,
+                            batch["rejected_input_ids"],
+                            batch["rejected_attention_mask"],
+                            batch["rejected_labels"],
+                        )
+
+                        if ref_model is not None:
+                            with torch.no_grad():
+                                ref_chosen_logps = self._compute_logps(
+                                    ref_model,
+                                    batch["chosen_input_ids"],
+                                    batch["chosen_attention_mask"],
+                                    batch["chosen_labels"],
+                                )
+                                ref_rejected_logps = self._compute_logps(
+                                    ref_model,
+                                    batch["rejected_input_ids"],
+                                    batch["rejected_attention_mask"],
+                                    batch["rejected_labels"],
+                                )
+                        else:
+                            ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
+                            ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
 
                     loss, metrics = self.compute_dpo_loss(
                         policy_chosen_logps, policy_rejected_logps,
@@ -251,10 +281,13 @@ class PreferenceTrainer:
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = labels[:, 1:].contiguous()
 
-        log_probs = F.log_softmax(shift_logits, dim=-1)
-        token_log_probs = log_probs.gather(
+        # Memory-efficient token log-prob computation:
+        # log p(y_t) = z_{y_t} - logsumexp(z)
+        target_logits = shift_logits.gather(
             dim=-1, index=shift_labels.clamp(min=0).unsqueeze(-1)
         ).squeeze(-1)
+        normalizer = torch.logsumexp(shift_logits, dim=-1)
+        token_log_probs = target_logits - normalizer
 
         mask = (shift_labels != -100).float()
         return (token_log_probs * mask).sum(dim=-1)
