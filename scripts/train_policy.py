@@ -151,6 +151,12 @@ def main():
             logger.warning("No preference data found, skipping DPO stage")
         else:
             logger.info("=== Stage 2: DPO Preference Training ===")
+            if args.stage == "all":
+                logger.info("DPO initialization: using in-memory policy state after Stage 1 BC")
+            elif args.resume:
+                logger.info(f"DPO initialization: using weights loaded from --resume ({args.resume})")
+            else:
+                logger.info("DPO initialization: using base model weights (no BC checkpoint loaded)")
 
             max_seq_len = cfg.policy.get("max_seq_len", 4096)
             pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
