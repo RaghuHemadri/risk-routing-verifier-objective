@@ -285,7 +285,17 @@ class PolicyModel(nn.Module):
         if hasattr(self.model, 'peft_config'):
             # Load LoRA weights
             self.model = PeftModel.from_pretrained(
-                self.model.base_model.model, path
+                self.model.base_model.model, path, is_trainable=True
             )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(path)
+
+        # Preference training (stage=preference) expects trainable params.
+        # If the loaded model has all params frozen, unfreeze as a safe fallback.
+        if not any(p.requires_grad for p in self.model.parameters()):
+            for p in self.model.parameters():
+                p.requires_grad = True
+            logger.warning(
+                "Loaded checkpoint had no trainable parameters; "
+                "enabled full-model training as fallback."
+            )
