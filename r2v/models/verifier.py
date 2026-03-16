@@ -395,7 +395,9 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             )
         # Use last hidden state, mean-pooled over non-padding tokens
         hidden = outputs.hidden_states[-1]
-        mask = attention_mask.unsqueeze(-1).float()
+        # Keep pooling math in the same dtype as backbone activations to avoid
+        # fp32/fp16 matmul mismatches in the verifier head.
+        mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
         pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-8)
         return pooled
 
