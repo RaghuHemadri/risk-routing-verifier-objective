@@ -356,6 +356,12 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--verifier-batch-size",
+        type=int,
+        default=4,
+        help="Max verifier scoring chunk size over flattened candidates",
+    )
+    parser.add_argument(
         "--store-all-candidates",
         action="store_true",
         help=(
@@ -433,6 +439,8 @@ def _score_and_write_batch(
     batch: list[dict],
     all_candidates: list[list[dict]],
     store_all_candidates: bool,
+    verifier_batch_size: int,
+    shard_id: int,
     logger=None,
 ) -> int:
     """Score one generated batch and enqueue preference pairs for async JSON write."""
@@ -448,12 +456,52 @@ def _score_and_write_batch(
             flat_cand.append(c["text"])
             flat_goal.append(batch[b]["goal"])
 
-    try:
-        flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
-    except Exception as exc:
-        if logger is not None:
-            logger.warning(f"Verifier scoring failed for a batch; using 0.5 fallback. Error: {exc}")
-        flat_scores = [0.5] * len(flat_ctx)
+    total = len(flat_ctx)
+    flat_scores: list[float] = []
+    chunk = max(1, verifier_batch_size)
+    start = 0
+    while start < total:
+        cur = min(chunk, total - start)
+        while True:
+            try:
+                scores = verifier.score_batch(
+                    flat_ctx[start : start + cur],
+                    flat_cand[start : start + cur],
+                    flat_goal[start : start + cur],
+                )
+                flat_scores.extend(scores)
+                start += cur
+                break
+            except Exception as exc:
+                if not _is_cuda_oom(exc):
+                    if logger is not None:
+                        logger.warning(
+                            "Verifier scoring failed for a chunk; using 0.5 fallback. "
+                            f"Error: {exc}"
+                        )
+                    flat_scores.extend([0.5] * cur)
+                    start += cur
+                    break
+
+                import torch as _torch
+                if _torch.cuda.is_available():
+                    _torch.cuda.empty_cache()
+
+                if cur == 1:
+                    if logger is not None:
+                        logger.warning(
+                            f"[shard {shard_id}] Verifier OOM at chunk=1; using 0.5 fallback for one sample"
+                        )
+                    flat_scores.append(0.5)
+                    start += 1
+                    break
+
+                new_cur = max(1, cur // 2)
+                if logger is not None:
+                    logger.warning(
+                        f"[shard {shard_id}] Verifier OOM at chunk={cur}; retrying with {new_cur}"
+                    )
+                cur = new_cur
 
     all_scores = [
         flat_scores[b * K : (b + 1) * K] for b in range(B)
@@ -822,6 +870,8 @@ def main():
                 batch,
                 all_candidates,
                 args.store_all_candidates,
+                args.verifier_batch_size,
+                args.shard_id,
                 logger,
             ))
             submit_elapsed = time.time() - score_submit_t0
