@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -170,6 +171,7 @@ class PreferenceDataset(Dataset):
         self.stats = {
             "total_rows": 0,
             "kept": 0,
+            "skipped_malformed_json": 0,
             "skipped_small_gap": 0,
             "skipped_same_action": 0,
             "skipped_invalid_schema": 0,
@@ -179,9 +181,24 @@ class PreferenceDataset(Dataset):
         # Supports two JSONL schemas:
         #   1. Pre-paired: {context, chosen, rejected, chosen_score, rejected_score}
         #   2. Raw candidates: {context, candidates, verifier_scores}
-        import jsonlines
-        with jsonlines.open(candidates_path, mode="r") as reader:
-            for obj in reader:
+        import json
+
+        logger = logging.getLogger(__name__)
+        malformed_examples: list[int] = []
+        with open(candidates_path, "rb") as f:
+            for line_no, raw_line in enumerate(f, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                try:
+                    obj = json.loads(line.decode("utf-8"))
+                except Exception:
+                    self.stats["skipped_malformed_json"] += 1
+                    if len(malformed_examples) < 5:
+                        malformed_examples.append(line_no)
+                    continue
+
                 self.stats["total_rows"] += 1
                 if "chosen" in obj and "rejected" in obj:
                     # Schema 1: already paired by generate_candidates
@@ -229,6 +246,14 @@ class PreferenceDataset(Dataset):
                     ))
                 else:
                     self.stats["skipped_invalid_schema"] += 1
+
+        if malformed_examples:
+            logger.warning(
+                "PreferenceDataset skipped %d malformed JSONL rows in %s (first bad lines: %s)",
+                self.stats["skipped_malformed_json"],
+                candidates_path,
+                ", ".join(str(n) for n in malformed_examples),
+            )
 
         self.stats["kept"] = len(self.examples)
 
