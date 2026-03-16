@@ -137,6 +137,12 @@ class PreferenceTrainer:
         trainable_params = [
             p for p in self.policy.model.parameters() if p.requires_grad
         ]
+        if not trainable_params:
+            raise ValueError(
+                "No trainable parameters found for preference training. "
+                "If resuming a LoRA checkpoint, ensure adapters are loaded as trainable "
+                "(e.g., PeftModel.from_pretrained(..., is_trainable=True))."
+            )
         optimizer = torch.optim.AdamW(trainable_params, lr=self.lr)
 
         total_steps = len(train_loader) * self.epochs // self.grad_accum_steps
