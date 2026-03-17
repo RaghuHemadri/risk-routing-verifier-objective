@@ -643,9 +643,16 @@ def main():
     logger.info(f"{'Method':<20} {'SR':>8} {'Worst':>8} {'CVaR-F':>8} "
                 f"{'Cost':>8} {'LLM%':>8}")
     logger.info("-" * 70)
+    seen_methods = set()
     for er in bundle.eval_results:
-        if er.seed != 0:
-            continue  # Only show aggregated results
+        # Print only one (aggregated) row per method.
+        # Per-seed rows can also have seed=0 when metadata is missing,
+        # so use presence of aggregate-only metrics and method dedup.
+        if er.method in seen_methods:
+            continue
+        if er.worst_seed_sr is None and er.cvar_failure is None:
+            continue
+        seen_methods.add(er.method)
         worst = f"{er.worst_seed_sr:.3f}" if er.worst_seed_sr is not None else "—"
         cvar = f"{er.cvar_failure:.3f}" if er.cvar_failure is not None else "—"
         cost = f"{er.avg_cost:.1f}" if er.avg_cost is not None else "—"

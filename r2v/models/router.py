@@ -215,7 +215,10 @@ class RouterLoss(nn.Module):
         Groups samples by perturbation seed, computes per-seed failure rate,
         then takes CVaR (average of worst α-fraction).
         """
-        failure = 1.0 - success
+        # Effective failure after routing decisions.
+        # If the router falls back (d≈1), failure risk should decrease.
+        # If it keeps SLM (d≈0), failure risk remains close to (1-success).
+        failure = (1.0 - success) * (1.0 - fallback_probs)
         unique_seeds = perturbation_seeds.unique()
 
         if len(unique_seeds) <= 1:
@@ -246,7 +249,8 @@ class RouterLoss(nn.Module):
         perturbation_seeds: torch.Tensor,
     ) -> torch.Tensor:
         """Compute max_z (1 - S_z): worst-case failure rate."""
-        failure = 1.0 - success
+        # Use post-routing effective failure, not static episode failure.
+        failure = (1.0 - success) * (1.0 - fallback_probs)
         unique_seeds = perturbation_seeds.unique()
 
         if len(unique_seeds) <= 1:
