@@ -279,8 +279,13 @@ class PolicyModel(nn.Module):
         self.model.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
 
-    def load(self, path: str):
-        """Load model weights from checkpoint."""
+    def load(self, path: str, for_inference: bool = False):
+        """Load model weights from checkpoint.
+
+        Args:
+            path: Checkpoint directory.
+            for_inference: If True, switch to eval mode immediately after load.
+        """
         from peft import PeftModel
         if hasattr(self.model, 'peft_config'):
             # Load LoRA weights
@@ -299,3 +304,6 @@ class PolicyModel(nn.Module):
                 "Loaded checkpoint had no trainable parameters; "
                 "enabled full-model training as fallback."
             )
+
+        if for_inference:
+            self.model.eval()
