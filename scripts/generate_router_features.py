@@ -322,6 +322,9 @@ def main():
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
     policy.load(args.policy_path)
+    if torch.cuda.is_available():
+        policy.model = policy.model.to("cuda")
+        logger.info(f"Policy moved to GPU: {next(policy.model.parameters()).device}")
     policy.model.eval()
 
     if hasattr(policy.model, "gradient_checkpointing_disable"):
@@ -334,8 +337,15 @@ def main():
     verifier = create_verifier(vcfg)
     if hasattr(verifier, "eval"):
         verifier.eval()
-    if torch.cuda.is_available() and hasattr(verifier, "to"):
-        verifier = verifier.to("cuda")
+    if torch.cuda.is_available():
+        if hasattr(verifier, "to"):
+            verifier = verifier.to("cuda")
+            logger.info("Verifier moved to GPU")
+        else:
+            raise RuntimeError(
+                "CUDA is available but verifier has no .to() method; "
+                "cannot guarantee GPU execution for launch_router_features."
+            )
 
     # ---- Start GPU keepalive -----------------------------------------
     if torch.cuda.is_available():
