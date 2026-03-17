@@ -321,7 +321,7 @@ def main():
     logger.info("Loading policy...")
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
-    policy.load(args.policy_path)
+    policy.load(args.policy_path, for_inference=True)
     if torch.cuda.is_available():
         policy.model = policy.model.to("cuda")
         logger.info(f"Policy moved to GPU: {next(policy.model.parameters()).device}")

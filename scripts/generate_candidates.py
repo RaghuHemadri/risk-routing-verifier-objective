@@ -723,7 +723,7 @@ def main():
     logger.info(f"Loading policy from {args.policy_path}")
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
     policy = PolicyModel(policy_cfg)
-    policy.load(args.policy_path)
+    policy.load(args.policy_path, for_inference=True)
     import torch as _torch
     if _torch.cuda.is_available():
         try:
