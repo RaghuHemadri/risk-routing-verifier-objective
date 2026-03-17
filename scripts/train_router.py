@@ -19,14 +19,13 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 from omegaconf import OmegaConf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from r2v.data.datasets import RouterDataset, RouterExample
-from r2v.models.router import Router, TemperatureScaling
+from r2v.models.router import Router
 from r2v.training.router_trainer import RouterTrainer
 from r2v.utils.config import config_to_dict, load_config, save_config
 from r2v.utils.logging import JSONLLogger, init_wandb, setup_logging
@@ -137,27 +136,16 @@ def main():
 
     trainer.train()
 
-    # Post-hoc temperature scaling
-    logger.info("Applying temperature scaling...")
-    temp_scaler = TemperatureScaling()
-
-    router.eval()
-    device = next(router.parameters()).device
-    with torch.no_grad():
-        val_feats = torch.tensor(
-            [ex.features for ex in val_examples], dtype=torch.float32
-        ).to(device)
-        val_labels_np = np.array([ex.success for ex in val_examples])
-        # Router.mlp gives raw logits before temperature/sigmoid
-        val_logits = router.mlp(val_feats).squeeze(-1).cpu().numpy()
-
-    temp_scaler.fit(val_logits, val_labels_np)
-    logger.info(f"Optimal temperature: {temp_scaler.temperature:.3f}")
+    # RouterTrainer already performs post-hoc calibration on eval data.
+    # Re-calibrating here can drift temperature and, if labels are mismatched,
+    # push to boundary values (e.g., T=10.0).
+    calibrated_temperature = float(router.temperature.item())
+    logger.info(f"Using trainer-calibrated temperature: {calibrated_temperature:.3f}")
 
     # Save
     torch.save({
         "router_state_dict": router.state_dict(),
-        "temperature": temp_scaler.temperature,
+        "temperature": calibrated_temperature,
         "input_dim": input_dim,
         "config": config_to_dict(cfg),
     }, output_dir / "router_final.pt")
