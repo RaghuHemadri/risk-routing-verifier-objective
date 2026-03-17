@@ -43,7 +43,7 @@ from omegaconf import OmegaConf
 from r2v.data.trajectory import Episode, TrajectoryStore
 from r2v.evaluation.calibration import compute_calibration_metrics
 from r2v.evaluation.statistical import bootstrap_ci, paired_mcnemar_test
-from r2v.models.router import Router, TemperatureScaling
+from r2v.models.router import Router
 from r2v.utils.config import config_to_dict, load_config, save_config
 from r2v.utils.logging import JSONLLogger, setup_logging
 from r2v.utils.results import (
@@ -73,6 +73,13 @@ def parse_args():
     parser.add_argument("--methods", nargs="+",
                         default=["r2v", "slm_only", "llm_only", "entropy_router"])
     parser.add_argument("--router-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--router-threshold-sweep", type=float, nargs="+", default=None,
+        help=(
+            "Optional sweep for R2V threshold (e.g., 0.2 0.3 0.4 0.5). "
+            "When set, method 'r2v' expands into 'r2v@<threshold>' variants."
+        ),
+    )
     parser.add_argument("--entropy-threshold", type=float, default=2.0,
                         help="Entropy threshold for entropy_router baseline")
     parser.add_argument("--overrides", nargs="*", default=[])
@@ -281,6 +288,35 @@ def evaluate_episode_entropy_router(
     }
 
 
+def _expand_methods(
+    methods: list[str], threshold_sweep: list[float] | None,
+) -> list[str]:
+    """Expand 'r2v' into threshold-specific method names when sweep is enabled."""
+    if not threshold_sweep:
+        return list(methods)
+
+    expanded: list[str] = []
+    for method in methods:
+        if method == "r2v":
+            for thr in threshold_sweep:
+                expanded.append(f"r2v@{thr:g}")
+        else:
+            expanded.append(method)
+    return expanded
+
+
+def _method_to_base_and_threshold(method: str, default_threshold: float) -> tuple[str, float | None]:
+    """Parse method name into base method and optional threshold override."""
+    if method.startswith("r2v@"):
+        try:
+            return "r2v", float(method.split("@", 1)[1])
+        except ValueError:
+            return "r2v", default_threshold
+    if method == "r2v":
+        return "r2v", default_threshold
+    return method, None
+
+
 # ============================================================
 # Main
 # ============================================================
@@ -328,44 +364,59 @@ def main():
         logger.warning("No --trajectories provided; perturbation-seed analysis "
                        "will use seed=0 for all episodes.")
 
+    eval_methods = _expand_methods(args.methods, args.router_threshold_sweep)
+
     # ── Load router (if evaluating R2V) ──
     router, temperature = None, 1.0
-    if "r2v" in args.methods:
+    if any(m == "r2v" or m.startswith("r2v@") for m in eval_methods):
         if args.router_path is None:
             logger.error("--router-path required for R2V evaluation")
             sys.exit(1)
         logger.info(f"Loading router from {args.router_path}...")
         router, temperature = load_router(args.router_path, cfg)
         logger.info(f"  Temperature: {temperature:.4f}")
+        if args.router_threshold_sweep:
+            logger.info(
+                "  Threshold sweep: "
+                + ", ".join(f"{t:g}" for t in args.router_threshold_sweep)
+            )
 
     # ── Evaluate each method ──
     # For robustness analysis, we group episodes by perturbation_seed
     # and evaluate per-seed success rates.
     all_method_results = {}  # method → list of per-episode result dicts
 
-    for method in args.methods:
+    for method in eval_methods:
         logger.info(f"=== Evaluating: {method} ===")
         episode_results = []
+        base_method, method_threshold = _method_to_base_and_threshold(
+            method, args.router_threshold,
+        )
 
         for ep_id, steps in ep_groups.items():
             meta = ep_meta.get(ep_id, {})
             seed = meta.get("perturbation_seed", 0)
 
-            if method == "r2v":
+            if base_method == "r2v":
+                threshold = (
+                    method_threshold
+                    if method_threshold is not None
+                    else args.router_threshold
+                )
                 res = evaluate_episode_r2v(
                     steps, router, temperature,
-                    args.router_threshold, cost_slm, cost_llm,
+                    threshold, cost_slm, cost_llm,
                 )
-            elif method == "slm_only":
+            elif base_method == "slm_only":
                 res = evaluate_episode_slm_only(steps, cost_slm)
-            elif method == "llm_only":
+            elif base_method == "llm_only":
                 res = evaluate_episode_llm_only(steps, cost_llm)
-            elif method == "entropy_router":
+            elif base_method == "entropy_router":
                 res = evaluate_episode_entropy_router(
                     steps, args.entropy_threshold, cost_slm, cost_llm,
                 )
             else:
-                logger.warning(f"Unknown method: {method}, skipping")
+                logger.warning(f"Unknown method: {base_method}, skipping")
                 continue
 
             res["episode_id"] = ep_id
@@ -403,7 +454,10 @@ def main():
 
         # Router calibration (R2V only)
         ece, brier = None, None
-        if method == "r2v":
+        if base_method == "r2v":
+            if router is None:
+                logger.error("Router is not loaded for R2V calibration analysis")
+                sys.exit(1)
             all_probs = []
             all_labels = []
             for r in episode_results:
@@ -463,6 +517,8 @@ def main():
 
         jsonl_log.log_evaluation({
             "method": method,
+            "base_method": base_method,
+            "router_threshold": method_threshold if base_method == "r2v" else None,
             "success_rate": sr,
             "ci": (sr_lo, sr_hi),
             "worst_seed_sr": worst_seed_sr,
@@ -476,7 +532,7 @@ def main():
 
     # ── Per-seed results (for each method, one EvalResult per seed) ──
     logger.info("Computing per-seed results...")
-    for method in args.methods:
+    for method in eval_methods:
         results = all_method_results[method]
         seed_groups = defaultdict(list)
         for r in results:
@@ -500,61 +556,61 @@ def main():
 
     # ── Statistical comparisons ──
     logger.info("Computing statistical comparisons...")
-    if "r2v" in args.methods:
-        r2v_results = all_method_results["r2v"]
-        # Build episode_id → success mapping for R2V
-        r2v_by_ep = {r["episode_id"]: r["success"] for r in r2v_results}
+    r2v_methods = [m for m in eval_methods if m == "r2v" or m.startswith("r2v@")] 
+    if r2v_methods:
+        non_r2v_methods = [m for m in eval_methods if m not in r2v_methods]
 
-        for other in args.methods:
-            if other == "r2v":
-                continue
+        for r2v_method in r2v_methods:
+            r2v_results = all_method_results[r2v_method]
+            r2v_by_ep = {r["episode_id"]: r["success"] for r in r2v_results}
 
-            other_results = all_method_results[other]
-            other_by_ep = {r["episode_id"]: r["success"] for r in other_results}
+            for other in non_r2v_methods:
+                other_results = all_method_results[other]
+                other_by_ep = {r["episode_id"]: r["success"] for r in other_results}
 
-            # Paired comparison on common episodes
-            common_eps = sorted(set(r2v_by_ep.keys()) & set(other_by_ep.keys()))
-            if not common_eps:
-                logger.warning(f"No common episodes for R2V vs {other}")
-                continue
+                # Paired comparison on common episodes
+                common_eps = sorted(set(r2v_by_ep.keys()) & set(other_by_ep.keys()))
+                if not common_eps:
+                    logger.warning(f"No common episodes for {r2v_method} vs {other}")
+                    continue
 
-            r2v_succ = np.array([r2v_by_ep[e] for e in common_eps])
-            other_succ = np.array([other_by_ep[e] for e in common_eps])
+                r2v_succ = np.array([r2v_by_ep[e] for e in common_eps])
+                other_succ = np.array([other_by_ep[e] for e in common_eps])
 
-            # McNemar test
-            stat, p_value = paired_mcnemar_test(r2v_succ, other_succ)
+                # McNemar test
+                stat, p_value = paired_mcnemar_test(r2v_succ, other_succ)
 
-            # Paired bootstrap CI for the difference
-            diff_mean = float(np.mean(r2v_succ) - np.mean(other_succ))
-            diff = r2v_succ - other_succ
-            _, ci_lo, ci_hi = bootstrap_ci(diff)
+                # Paired bootstrap CI for the difference
+                diff_mean = float(np.mean(r2v_succ) - np.mean(other_succ))
+                diff = r2v_succ - other_succ
+                _, ci_lo, ci_hi = bootstrap_ci(diff)
 
-            significance = cfg.get("evaluation", {}).get("mcnemar_significance", 0.05)
+                significance = cfg.get("evaluation", {}).get("mcnemar_significance", 0.05)
 
-            bundle.comparisons.append(ComparisonResult(
-                method_a="r2v",
-                method_b=other,
-                benchmark=benchmark,
-                condition=condition,
-                metric="success_rate",
-                value_a=float(np.mean(r2v_succ)),
-                value_b=float(np.mean(other_succ)),
-                difference=diff_mean,
-                ci_lower=ci_lo,
-                ci_upper=ci_hi,
-                p_value=p_value,
-                significant=p_value < significance,
-            ))
+                bundle.comparisons.append(ComparisonResult(
+                    method_a=r2v_method,
+                    method_b=other,
+                    benchmark=benchmark,
+                    condition=condition,
+                    metric="success_rate",
+                    value_a=float(np.mean(r2v_succ)),
+                    value_b=float(np.mean(other_succ)),
+                    difference=diff_mean,
+                    ci_lower=ci_lo,
+                    ci_upper=ci_hi,
+                    p_value=p_value,
+                    significant=p_value < significance,
+                ))
 
-            logger.info(
-                f"  R2V vs {other}: Δ={diff_mean:+.3f} "
-                f"[{ci_lo:.3f}, {ci_hi:.3f}], p={p_value:.4f}"
-                f"{' *' if p_value < significance else ''}"
-            )
+                logger.info(
+                    f"  {r2v_method} vs {other}: Δ={diff_mean:+.3f} "
+                    f"[{ci_lo:.3f}, {ci_hi:.3f}], p={p_value:.4f}"
+                    f"{' *' if p_value < significance else ''}"
+                )
 
     # ── Per-perturbation-type analysis ──
     logger.info("Computing per-perturbation-type analysis...")
-    for method in args.methods:
+    for method in eval_methods:
         results = all_method_results[method]
         type_groups = defaultdict(list)
         for r in results:
