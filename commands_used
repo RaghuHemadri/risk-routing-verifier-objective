@@ -59,14 +59,10 @@ python scripts/train_verifier.py \
     policy.max_seq_len=2048 \
     logging.wandb_mode=disabled
 
-unset TOKENIZERS_PARALLELISM
-export PYTORCH_ALLOC_CONF=expandable_segments:True
-export OMP_NUM_THREADS=12
-export MKL_NUM_THREADS=12
-export PYTHONUNBUFFERED=1
 
 export PYTHONUNBUFFERED=1
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
+export PYTORCH_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
+export TOKENIZERS_PARALLELISM=false
 
 bash scripts/launch_candidates.sh 4 \
   --config configs/humaneval/noisy.yaml \
@@ -74,22 +70,26 @@ bash scripts/launch_candidates.sh 4 \
   --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
   --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
   --output data/candidates/humaneval_noisy.jsonl \
+  --no-resume \
   --K 5 \
   --batch-size 8 \
   --gen-micro-batch-size 2 \
-  --max-new-tokens 128 \
+  --verifier-batch-size 2 \
+  --max-new-tokens 96 \
   --tokenize-cache-size 0 \
   --prefetch-depth 2 \
   --pipeline-depth 2 \
-  --gpu-keepalive-interval 0.25 \
+  --gpu-keepalive-interval 0.1 \
   --write-queue-size 2000 \
   --write-flush-every 128 \
   --overrides \
+    inference.temperature=0.95 \
     policy.quantization.load_in_4bit=false \
+    policy.max_seq_len=2048 \
     verifier.mode=trained \
     logging.wandb_mode=disabled
 
-export PYTORCH_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True,max_split_size_mb:256
 export TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=12
 
@@ -99,6 +99,42 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes=4 --multi_gpu \
   --output outputs/policy/humaneval_noisy \
   --stage preference \
   --preference-data data/candidates/humaneval_noisy.jsonl \
+  --resume outputs/policy/humaneval_noisy/final \
   --overrides \
     policy.quantization.load_in_4bit=false \
+    policy.max_seq_len=2048 \
+    training.preference.batch_size=2 \
+    training.preference.gradient_accumulation_steps=16 \
+    training.preference.concat_pairs=false \
     logging.wandb_mode=disabled
+
+# 5) Generate router features on 4 GPUs
+bash scripts/launch_router_features.sh 4 \
+  --config configs/humaneval/noisy.yaml \
+  --policy-path outputs/policy/humaneval_noisy/final \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --output data/router_features/humaneval_noisy.jsonl \
+  --K 5 \
+  --batch-size 4 \
+  --overrides \
+    policy.quantization.load_in_4bit=false \
+    verifier.mode=trained \
+    logging.wandb_mode=disabled
+
+python scripts/train_router.py \
+  --config configs/humaneval/noisy.yaml \
+  --features data/router_features/humaneval_noisy.jsonl \
+  --output outputs/router/humaneval_noisy_tuned \
+  --overrides \
+    training.router.cost_llm=20 \
+    training.router.cvar_epsilon=0.1 \
+    logging.wandb_mode=disabled
+
+python scripts/evaluate.py \
+  --config configs/humaneval/noisy.yaml \
+  --features data/router_features/humaneval_noisy.jsonl \
+  --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+  --router-path outputs/router/humaneval_noisy/router_final.pt \
+  --output outputs/eval/humaneval_noisy_threshold_sweep \
+  --methods r2v slm_only llm_only entropy_router \
+  --router-threshold-sweep 0.05 0.1 0.12 0.14 0.16 0.18 0.2 0.25 0.3
