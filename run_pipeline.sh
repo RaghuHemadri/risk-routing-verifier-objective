@@ -177,7 +177,7 @@ if should_run 4; then
             --trajectories "${NOISY_TRAJECTORIES}" \
             --overrides ${QUANT_OVERRIDE} verifier.mode=trained \
                 training.verifier.epochs=3 training.verifier.batch_size=32 \
-                policy.max_seq_len=2048 ${COMMON_OVERRIDES}
+                policy.max_seq_len=2048 data.max_perturbations_per_task=9999 ${COMMON_OVERRIDES}
     echo "✓ Verifier: ${VERIFIER_PATH}"
 fi
 
