@@ -16,6 +16,10 @@ policy:
   quantization:
     load_in_4bit: false
 
+verifier:
+  trained:
+    backbone: Qwen/Qwen2.5-Coder-7B-Instruct
+
 humaneval:
   dataset:
     name: evalplus/humanevalplus

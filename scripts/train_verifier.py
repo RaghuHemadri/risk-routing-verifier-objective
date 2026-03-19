@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from r2v.data.datasets import VerifierDataset
 from r2v.data.labeling import create_labeler
+from r2v.data.splits import load_and_split
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.verifier import create_verifier
 from r2v.training.verifier_trainer import VerifierTrainer
@@ -59,24 +60,32 @@ def main():
         mode=log_cfg.get("wandb_mode", "disabled"),
     )
 
-    # ── Load and label trajectories ──
-    store = TrajectoryStore(args.trajectories)
-    episodes = store.load_episodes()
-    logger.info(f"Loaded {len(episodes)} episodes from {args.trajectories}")
+    # ── Load, split, and label trajectories ──
+    max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+    splits = load_and_split(
+        args.trajectories,
+        max_perturbations_per_task=max_perturbations,
+        seed=int(cfg.get("project", {}).get("seed", 42)),
+    )
+    all_episodes = splits["train"] + splits["val"] + splits["test"]
+    logger.info(
+        f"Task-level split: {len(splits['train'])} train, "
+        f"{len(splits['val'])} val, {len(splits['test'])} test episodes"
+    )
 
     # Apply step-level labeling
     benchmark = cfg.get("data", {}).get("benchmark", "gaia")
     data_cfg = OmegaConf.to_container(cfg.get("data", {}), resolve=True)
     labeler = create_labeler(benchmark, config=data_cfg)
-    for ep in episodes:
+    for ep in all_episodes:
         labeler.label_episode(ep)
     logger.info("Step-level labeling complete")
 
-    # Save labeled episodes to a temp file so VerifierDataset can reload them
+    # Save labeled episodes for reproducibility
     labeled_path = output_dir / "labeled_trajectories.jsonl"
     labeled_store = TrajectoryStore(labeled_path)
-    labeled_store.save_episodes(episodes)
-    logger.info(f"Saved {len(episodes)} labeled episodes to {labeled_path}")
+    labeled_store.save_episodes(all_episodes)
+    logger.info(f"Saved {len(all_episodes)} labeled episodes to {labeled_path}")
 
     # ── Create verifier model ──
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
@@ -86,21 +95,17 @@ def main():
         logger.info("=== Training verifier model ===")
         verifier = create_verifier(vcfg)
 
-        # Build dataset from labeled trajectories
         max_seq_len = cfg.policy.get("max_seq_len", 4096)
-        dataset = VerifierDataset(
-            str(labeled_path), verifier.tokenizer, max_seq_len=max_seq_len,
+        train_ds = VerifierDataset(
+            tokenizer=verifier.tokenizer, max_seq_len=max_seq_len,
+            episodes=splits["train"],
         )
-        logger.info(f"VerifierDataset: {len(dataset)} examples")
+        val_ds = VerifierDataset(
+            tokenizer=verifier.tokenizer, max_seq_len=max_seq_len,
+            episodes=splits["val"],
+        )
+        logger.info(f"VerifierDataset: {len(train_ds)} train, {len(val_ds)} val examples")
 
-        # Train/val split
-        val_frac = 1.0 - cfg.get("data", {}).get("train_ratio", 0.8)
-        val_size = max(1, int(len(dataset) * val_frac))
-        train_size = len(dataset) - val_size
-        train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
-        logger.info(f"Split: {train_size} train, {val_size} val")
-
-        # Train
         v_train_cfg = OmegaConf.to_container(cfg.training.verifier, resolve=True)
         trainer = VerifierTrainer(
             verifier=verifier,

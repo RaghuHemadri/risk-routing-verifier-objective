@@ -227,6 +227,44 @@ class AnthropicClient(BaseLLMClient):
 # ── Google Gemini ────────────────────────────────────────────────
 
 
+def _patch_ssl_for_containers():
+    """Monkey-patch ssl.create_default_context for containers with missing CA bundles.
+
+    Inside Singularity/Apptainer containers the conda Python's compiled-in
+    OpenSSL cert path often doesn't exist, causing ``ssl.create_default_context()``
+    to raise ``FileNotFoundError``.  This wrapper catches that error and retries
+    with well-known CA bundle paths from the host bind-mount.
+    """
+    import ssl as _ssl
+
+    _original_create_default_context = _ssl.create_default_context
+    _CA_CANDIDATES = [
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    _patched = False
+
+    def _create_default_context_patched(purpose=_ssl.Purpose.SERVER_AUTH, *,
+                                        cafile=None, capath=None, cadata=None):
+        try:
+            return _original_create_default_context(
+                purpose, cafile=cafile, capath=capath, cadata=cadata,
+            )
+        except FileNotFoundError:
+            for candidate in _CA_CANDIDATES:
+                if os.path.isfile(candidate):
+                    return _original_create_default_context(
+                        purpose, cafile=candidate, capath=capath, cadata=cadata,
+                    )
+            raise
+
+    if not _patched:
+        _ssl.create_default_context = _create_default_context_patched
+        _patched = True
+
+
 class GeminiClient(BaseLLMClient):
     """Client for Google Gemini API (google.genai SDK)."""
 
@@ -235,6 +273,8 @@ class GeminiClient(BaseLLMClient):
         api_key = os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise ValueError("GOOGLE_API_KEY not found in environment. Add it to your .env file.")
+
+        _patch_ssl_for_containers()
 
         from google import genai
         from google.genai import types as genai_types

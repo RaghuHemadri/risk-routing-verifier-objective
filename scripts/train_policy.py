@@ -17,6 +17,7 @@ This is the main policy training script that combines:
 from __future__ import annotations
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from omegaconf import OmegaConf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from r2v.data.datasets import BCDataset, PreferenceDataset
+from r2v.data.splits import load_and_split
 from r2v.data.trajectory import TrajectoryStore
 from r2v.models.policy import PolicyModel
 from r2v.training.bc_trainer import BCTrainer
@@ -54,6 +56,10 @@ def parse_args():
     parser.add_argument("--trajectories", type=str, help="Path to trajectory JSONL")
     parser.add_argument("--preference-data", type=str, help="Path to preference pairs JSONL")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument(
+        "--data-fraction", type=float, default=1.0,
+        help="Fraction of training episodes to use (0.0–1.0). Useful for BC distillation ablations.",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -108,28 +114,35 @@ def main():
             logger.error("No trajectory file specified. Use --trajectories or config data.trajectory_file")
             sys.exit(1)
 
-        # Verify trajectory file exists
         if not Path(traj_path).exists():
             logger.error(f"Trajectory file not found: {traj_path}")
             sys.exit(1)
 
-        n_episodes = TrajectoryStore(traj_path).count()
-        logger.info(f"Found {n_episodes} episodes in {traj_path}")
+        max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+        splits = load_and_split(
+            traj_path,
+            max_perturbations_per_task=max_perturbations,
+            seed=int(cfg.get("project", {}).get("seed", 42)),
+        )
+        logger.info(
+            f"Task-level split: {len(splits['train'])} train, "
+            f"{len(splits['val'])} val, {len(splits['test'])} test episodes"
+        )
 
-        # BCDataset loads from the JSONL path directly
+        train_episodes = splits["train"]
+        if args.data_fraction < 1.0:
+            rng = random.Random(int(cfg.get("project", {}).get("seed", 42)))
+            n_keep = max(1, int(len(train_episodes) * args.data_fraction))
+            train_episodes = rng.sample(train_episodes, n_keep)
+            logger.info(
+                f"BC data fraction={args.data_fraction}: subsampled {n_keep}/{len(splits['train'])} training episodes"
+            )
+
         max_seq_len = cfg.policy.get("max_seq_len", 4096)
-        bc_dataset = BCDataset(traj_path, policy.tokenizer, max_seq_len=max_seq_len)
-        logger.info(f"BCDataset: {len(bc_dataset)} examples (from successful episodes)")
+        train_ds = BCDataset(tokenizer=policy.tokenizer, max_seq_len=max_seq_len, episodes=train_episodes)
+        val_ds = BCDataset(tokenizer=policy.tokenizer, max_seq_len=max_seq_len, episodes=splits["val"])
+        logger.info(f"BCDataset: {len(train_ds)} train, {len(val_ds)} val examples (from successful episodes)")
 
-        # Train/val split
-        val_frac = cfg.get("data", {}).get("train_ratio", 0.8)
-        val_frac = 1.0 - val_frac  # convert train_ratio to val_fraction
-        val_size = max(1, int(len(bc_dataset) * val_frac))
-        train_size = len(bc_dataset) - val_size
-        train_ds, val_ds = torch.utils.data.random_split(bc_dataset, [train_size, val_size])
-        logger.info(f"Split: {train_size} train, {val_size} val")
-
-        # BCTrainer reads hyperparams from config dict
         bc_cfg = OmegaConf.to_container(cfg.training.bc, resolve=True)
         bc_trainer = BCTrainer(
             policy=policy,
@@ -158,20 +171,48 @@ def main():
             else:
                 logger.info("DPO initialization: using base model weights (no BC checkpoint loaded)")
 
+            # Build train-split episode_id allowlist from trajectories
+            traj_path = args.trajectories or cfg.get("data", {}).get("trajectory_file", "")
+            train_episode_ids: set[str] | None = None
+            val_episode_ids: set[str] | None = None
+            if traj_path and Path(traj_path).exists():
+                max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+                pref_splits = load_and_split(
+                    traj_path,
+                    max_perturbations_per_task=max_perturbations,
+                    seed=int(cfg.get("project", {}).get("seed", 42)),
+                )
+                train_episode_ids = {ep.episode_id for ep in pref_splits["train"]}
+                val_episode_ids = {ep.episode_id for ep in pref_splits["val"]}
+                logger.info(
+                    f"DPO split filter: {len(train_episode_ids)} train, "
+                    f"{len(val_episode_ids)} val episode IDs"
+                )
+
             max_seq_len = cfg.policy.get("max_seq_len", 4096)
             pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
             min_score_gap = float(pref_cfg.get("min_score_gap", 0.1))
-            pref_dataset = PreferenceDataset(
+            pref_train_dataset = PreferenceDataset(
                 pref_path,
                 policy.tokenizer,
                 max_seq_len=max_seq_len,
                 min_score_gap=min_score_gap,
+                allowed_episode_ids=train_episode_ids,
             )
-            logger.info(f"PreferenceDataset: {len(pref_dataset)} pairs")
-            if hasattr(pref_dataset, "stats"):
-                logger.info(f"PreferenceDataset stats: {pref_dataset.stats}")
+            pref_val_dataset = PreferenceDataset(
+                pref_path,
+                policy.tokenizer,
+                max_seq_len=max_seq_len,
+                min_score_gap=min_score_gap,
+                allowed_episode_ids=val_episode_ids,
+            ) if val_episode_ids else None
+            logger.info(f"PreferenceDataset: {len(pref_train_dataset)} train pairs")
+            if pref_val_dataset is not None:
+                logger.info(f"PreferenceDataset: {len(pref_val_dataset)} val pairs")
+            if hasattr(pref_train_dataset, "stats"):
+                logger.info(f"PreferenceDataset stats: {pref_train_dataset.stats}")
 
-            if len(pref_dataset) == 0:
+            if len(pref_train_dataset) == 0:
                 logger.error(
                     "No usable preference pairs loaded. "
                     "Likely causes: chosen==rejected for most rows, or score-gap filter too strict. "
@@ -185,7 +226,8 @@ def main():
 
             pref_trainer = PreferenceTrainer(
                 policy=policy,
-                train_dataset=pref_dataset,
+                train_dataset=pref_train_dataset,
+                eval_dataset=pref_val_dataset,
                 config=pref_cfg,
                 output_dir=str(output_dir / "preference"),
                 collate_fn=PreferenceDataset.collate_fn,

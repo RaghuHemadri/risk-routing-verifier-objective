@@ -23,7 +23,7 @@ set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────
 # Benchmark name: gaia | alfworld | humaneval
-BENCHMARK=${BENCHMARK:-gaia}
+BENCHMARK=${BENCHMARK:-humaneval}
 
 CONFIG_CLEAN="configs/${BENCHMARK}/clean.yaml"
 CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
@@ -145,13 +145,26 @@ fi
 
 # ── Stage 3: Train BC policy ────────────────────────────────
 if should_run 3; then
-    run_cmd "Stage 3: Train policy (behavior cloning)" \
-        python scripts/train_policy.py \
-            --config ${CONFIG_NOISY} \
-            --output outputs/policy/${BENCHMARK}_noisy \
-            --stage bc \
-            --trajectories "${NOISY_TRAJECTORIES}" \
-            --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
+    if [[ ${NUM_GPUS} -gt 1 ]]; then
+        run_cmd "Stage 3: Train policy (behavior cloning, 60% data, ${NUM_GPUS} GPUs)" \
+            accelerate launch --num_processes=${NUM_GPUS} --multi_gpu \
+                scripts/train_policy.py \
+                --config ${CONFIG_NOISY} \
+                --output outputs/policy/${BENCHMARK}_noisy \
+                --stage bc \
+                --trajectories "${NOISY_TRAJECTORIES}" \
+                --data-fraction 0.6 \
+                --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
+    else
+        run_cmd "Stage 3: Train policy (behavior cloning, 60% data)" \
+            python scripts/train_policy.py \
+                --config ${CONFIG_NOISY} \
+                --output outputs/policy/${BENCHMARK}_noisy \
+                --stage bc \
+                --trajectories "${NOISY_TRAJECTORIES}" \
+                --data-fraction 0.6 \
+                --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
+    fi
     echo "✓ BC policy: ${POLICY_PATH}"
 fi
 
