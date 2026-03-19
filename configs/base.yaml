@@ -133,8 +133,9 @@ training:
 data:
   num_teacher_trajectories: 500
   num_perturbation_seeds: 20
-  train_ratio: 0.8
-  num_candidates_per_step: 8  # K for verifier scoring
+  train_ratio: 0.7              # legacy; task-level split uses 70/15/15 by default
+  max_perturbations_per_task: 2  # subsample perturbation variants per task
+  num_candidates_per_step: 8    # K for verifier scoring
   max_episode_steps: 30
 
 # ---------- Perturbations ----------

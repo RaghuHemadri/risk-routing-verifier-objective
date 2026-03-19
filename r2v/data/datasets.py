@@ -59,17 +59,20 @@ class BCDataset(Dataset):
 
     def __init__(
         self,
-        trajectory_path: str,
-        tokenizer,
+        trajectory_path: str | None = None,
+        tokenizer=None,
         max_seq_len: int = 4096,
         max_episodes: int | None = None,
+        *,
+        episodes: list | None = None,
     ):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.examples: list[BCExample] = []
 
-        store = TrajectoryStore(trajectory_path)
-        episodes = store.load_episodes(max_count=max_episodes)
+        if episodes is None:
+            store = TrajectoryStore(trajectory_path)
+            episodes = store.load_episodes(max_count=max_episodes)
 
         for ep in episodes:
             if not ep.success:
@@ -164,6 +167,7 @@ class PreferenceDataset(Dataset):
         tokenizer,
         max_seq_len: int = 4096,
         min_score_gap: float = 0.1,
+        allowed_episode_ids: set[str] | None = None,
     ):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
@@ -175,6 +179,7 @@ class PreferenceDataset(Dataset):
             "skipped_small_gap": 0,
             "skipped_same_action": 0,
             "skipped_invalid_schema": 0,
+            "skipped_wrong_split": 0,
         }
 
         # Load candidate action data.
@@ -200,6 +205,11 @@ class PreferenceDataset(Dataset):
                     continue
 
                 self.stats["total_rows"] += 1
+                if allowed_episode_ids is not None:
+                    eid = obj.get("episode_id")
+                    if eid is not None and eid not in allowed_episode_ids:
+                        self.stats["skipped_wrong_split"] += 1
+                        continue
                 if "chosen" in obj and "rejected" in obj:
                     # Schema 1: already paired by generate_candidates
                     score_gap = obj.get("chosen_score", 1.0) - obj.get("rejected_score", 0.0)
@@ -338,18 +348,21 @@ class VerifierDataset(Dataset):
 
     def __init__(
         self,
-        trajectory_path: str,
-        tokenizer,
+        trajectory_path: str | None = None,
+        tokenizer=None,
         max_seq_len: int = 4096,
         use_step_labels: bool = True,
         max_episodes: int | None = None,
+        *,
+        episodes: list | None = None,
     ):
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.examples: list[dict] = []
 
-        store = TrajectoryStore(trajectory_path)
-        episodes = store.load_episodes(max_count=max_episodes)
+        if episodes is None:
+            store = TrajectoryStore(trajectory_path)
+            episodes = store.load_episodes(max_count=max_episodes)
 
         for ep in episodes:
             for i, step in enumerate(ep.steps):

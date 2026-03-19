@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from omegaconf import OmegaConf
 
+from r2v.data.splits import load_and_split
 from r2v.data.trajectory import Episode, TrajectoryStore
 from r2v.evaluation.calibration import compute_calibration_metrics
 from r2v.evaluation.statistical import bootstrap_ci, paired_mcnemar_test
@@ -346,23 +347,40 @@ def main():
         config=config_to_dict(cfg),
     )
 
-    # ── Load data ──
+    # ── Load data (test split only) ──
     logger.info(f"Loading router features from {args.features}...")
     records = load_features(args.features)
-    logger.info(f"  {len(records)} step-level records")
+    logger.info(f"  {len(records)} step-level records (before split filter)")
 
-    ep_groups = group_by_episode(records)
-    logger.info(f"  {len(ep_groups)} episodes")
-
-    # Load episode metadata for perturbation seeds (if trajectories are provided)
+    # Build test-split episode_id allowlist from trajectories
+    test_eids: set[str] | None = None
     ep_meta = {}
     if args.trajectories:
         logger.info(f"Loading trajectory metadata from {args.trajectories}...")
+        splits = load_and_split(
+            args.trajectories,
+            max_perturbations_per_task=int(
+                cfg.get("data", {}).get("max_perturbations_per_task", 2)
+            ),
+            seed=int(cfg.get("project", {}).get("seed", 42)),
+        )
+        test_eids = {ep.episode_id for ep in splits["test"]}
+        logger.info(
+            f"  Using test split: {len(test_eids)} episode IDs "
+            f"(train={len(splits['train'])}, val={len(splits['val'])})"
+        )
         ep_meta = load_episode_metadata(args.trajectories)
         logger.info(f"  {len(ep_meta)} episodes with metadata")
     else:
-        logger.warning("No --trajectories provided; perturbation-seed analysis "
-                       "will use seed=0 for all episodes.")
+        logger.warning("No --trajectories provided; evaluating ALL episodes "
+                       "(no test-split filter).")
+
+    if test_eids is not None:
+        records = [r for r in records if r.get("episode_id") in test_eids]
+        logger.info(f"  {len(records)} step-level records after test-split filter")
+
+    ep_groups = group_by_episode(records)
+    logger.info(f"  {len(ep_groups)} episodes")
 
     eval_methods = _expand_methods(args.methods, args.router_threshold_sweep)
 

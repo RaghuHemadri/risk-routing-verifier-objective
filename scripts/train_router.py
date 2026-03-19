@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from omegaconf import OmegaConf
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from r2v.data.datasets import RouterDataset, RouterExample
+from r2v.data.splits import load_and_split
 from r2v.models.router import Router
 from r2v.training.router_trainer import RouterTrainer
 from r2v.utils.config import config_to_dict, load_config, save_config
@@ -36,35 +38,48 @@ def parse_args():
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--features", type=str, required=True, help="Router features JSONL")
+    parser.add_argument("--trajectories", type=str, default=None,
+                        help="Trajectory JSONL for task-level split (episode_id → task_id)")
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
 
-def load_router_features(path: str) -> list[RouterExample]:
+def load_router_features(
+    path: str,
+    allowed_episode_ids: set[str] | None = None,
+) -> list[RouterExample]:
     """Load router training features from JSONL into RouterExample objects.
 
     Each line: {"features": [...], "slm_success": 0/1, "cost": 1.0,
                 "episode_id": ..., "step_idx": ...}
 
-    The router needs:
-    - features: 13-dim feature vector
-    - label: routing decision (1.0 = should fallback to LLM = SLM failed)
-    - success: episode-level SLM success indicator (for CVaR)
-    - perturbation_seed: for per-seed CVaR (default 0 if not present)
-    - cost: step cost
+    Parameters
+    ----------
+    path
+        JSONL file with per-step router features.
+    allowed_episode_ids
+        If provided, only include records whose episode_id is in this set.
     """
     examples = []
+    skipped = 0
     with open(path) as f:
         for line in f:
             record = json.loads(line)
+            if allowed_episode_ids is not None:
+                eid = record.get("episode_id")
+                if eid is not None and eid not in allowed_episode_ids:
+                    skipped += 1
+                    continue
             slm_success = float(record.get("slm_success", 0))
             examples.append(RouterExample(
                 features=record["features"],
-                label=1.0 - slm_success,  # label=1 means "should have used LLM"
+                label=1.0 - slm_success,
                 success=slm_success,
                 perturbation_seed=record.get("perturbation_seed", 0),
                 cost=record.get("cost", 1.0),
             ))
+    if skipped:
+        logging.getLogger(__name__).info(f"Skipped {skipped} records outside split")
     return examples
 
 
@@ -87,20 +102,31 @@ def main():
         mode=cfg.get("logging", {}).get("wandb_mode", "online"),
     )
 
-    # Load features into RouterExample objects (dict-style __getitem__)
-    examples = load_router_features(args.features)
-    logger.info(f"Loaded {len(examples)} router training samples")
+    # Build task-level split from trajectories (if provided)
+    train_eids: set[str] | None = None
+    val_eids: set[str] | None = None
+    if args.trajectories and Path(args.trajectories).exists():
+        max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+        splits = load_and_split(
+            args.trajectories,
+            max_perturbations_per_task=max_perturbations,
+            seed=int(cfg.get("project", {}).get("seed", 42)),
+        )
+        train_eids = {ep.episode_id for ep in splits["train"]}
+        val_eids = {ep.episode_id for ep in splits["val"]}
+        logger.info(
+            f"Task-level split: {len(train_eids)} train, "
+            f"{len(val_eids)} val, {len(splits['test'])} test episode IDs"
+        )
 
-    successes = [ex.success for ex in examples]
+    train_examples = load_router_features(args.features, allowed_episode_ids=train_eids)
+    val_examples = load_router_features(args.features, allowed_episode_ids=val_eids)
+    logger.info(f"Router features: {len(train_examples)} train, {len(val_examples)} val samples")
+
+    all_examples = train_examples + val_examples
+    successes = [ex.success for ex in all_examples]
     logger.info(f"  SLM success rate: {sum(successes) / len(successes):.3f}")
-    logger.info(f"  Mean cost: {sum(ex.cost for ex in examples) / len(examples):.3f}")
-
-    # Split into train/val
-    n = len(examples)
-    val_size = max(1, int(n * 0.15))
-    perm = torch.randperm(n).tolist()
-    train_examples = [examples[i] for i in perm[val_size:]]
-    val_examples = [examples[i] for i in perm[:val_size]]
+    logger.info(f"  Mean cost: {sum(ex.cost for ex in all_examples) / len(all_examples):.3f}")
 
     train_dataset = RouterDataset(train_examples)
     val_dataset = RouterDataset(val_examples)
@@ -108,7 +134,7 @@ def main():
     # Create router — Router takes a config dict, not keyword args.
     # Override input_features to match actual feature dimensionality from data.
     rcfg = OmegaConf.to_container(cfg.get("router", {}), resolve=True)
-    input_dim = len(examples[0].features)
+    input_dim = len(all_examples[0].features)
 
     # Build a config that tells Router the exact input dim
     router_config = dict(rcfg)
