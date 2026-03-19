@@ -67,3 +67,5 @@ config_files
 exports.sh
 
 R2V_Agent/**
+
+proofs/**
