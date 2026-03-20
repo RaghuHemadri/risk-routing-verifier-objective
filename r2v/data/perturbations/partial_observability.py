@@ -31,12 +31,15 @@ class PartialObservabilityPerturbation(Perturbation):
 
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
+        self.benchmark = str(config.get("benchmark", "")).lower()
         self.dom_hide_prob = config.get("dom_hide_prob", 0.15)
         self.dom_reorder_prob = config.get("dom_reorder_prob", 0.10)
         self.attribute_strip_prob = config.get("attribute_strip_prob", 0.10)
         self.log_truncation_prob = config.get("log_truncation_prob", 0.20)
         self.log_line_drop_prob = config.get("log_line_drop_prob", 0.10)
         self.info_mask_prob = config.get("info_mask_prob", 0.05)
+        self.traceback_frame_drop_prob = config.get("traceback_frame_drop_prob", 0.0)
+        self.evidence_drop_prob = config.get("evidence_drop_prob", 0.0)
 
     def perturb_observation(
         self, obs: Observation, rng: random.Random
@@ -45,22 +48,23 @@ class PartialObservabilityPerturbation(Perturbation):
         meta: dict[str, Any] = {"perturbations_applied": []}
 
         text = new_obs.raw_text
+        is_target_benchmark = self.benchmark in {"humaneval", "gaia"}
 
         # Apply perturbations in order of severity (least → most destructive)
 
         # 1. DOM reordering: shuffle sibling elements
-        if rng.random() < self.dom_reorder_prob:
+        if (not is_target_benchmark) and rng.random() < self.dom_reorder_prob:
             text = self._reorder_elements(text, rng)
             meta["perturbations_applied"].append("dom_reorder")
 
         # 2. Attribute stripping: remove identifying attributes
-        if rng.random() < self.attribute_strip_prob:
+        if (not is_target_benchmark) and rng.random() < self.attribute_strip_prob:
             text, num_stripped = self._strip_attributes(text, rng)
             meta["perturbations_applied"].append("attribute_strip")
             meta["num_attributes_stripped"] = num_stripped
 
         # 3. DOM element hiding: remove random elements
-        if rng.random() < self.dom_hide_prob:
+        if (not is_target_benchmark) and rng.random() < self.dom_hide_prob:
             text, num_hidden = self._hide_elements(text, rng)
             meta["perturbations_applied"].append("dom_hide")
             meta["num_elements_hidden"] = num_hidden
@@ -81,6 +85,19 @@ class PartialObservabilityPerturbation(Perturbation):
             text, num_masked = self._mask_information(text, rng)
             meta["perturbations_applied"].append("info_mask")
             meta["num_values_masked"] = num_masked
+
+        # 7. Benchmark-specific observability failures
+        if self.benchmark == "humaneval" and rng.random() < self.traceback_frame_drop_prob:
+            text, n_dropped = self._drop_traceback_frames(text, rng)
+            if n_dropped > 0:
+                meta["perturbations_applied"].append("traceback_frame_drop")
+                meta["num_traceback_frames_dropped"] = n_dropped
+
+        if self.benchmark == "gaia" and rng.random() < self.evidence_drop_prob:
+            text, n_dropped = self._drop_evidence_lines(text, rng)
+            if n_dropped > 0:
+                meta["perturbations_applied"].append("evidence_drop")
+                meta["num_evidence_lines_dropped"] = n_dropped
 
         new_obs.raw_text = text
         return new_obs, meta
@@ -268,3 +285,35 @@ class PartialObservabilityPerturbation(Perturbation):
                         count += n
 
         return "\n".join(lines), count
+
+    def _drop_traceback_frames(self, text: str, rng: random.Random) -> tuple[str, int]:
+        """Drop some traceback frame lines to simulate incomplete test logs."""
+        lines = text.split("\n")
+        frame_idxs = [
+            i for i, line in enumerate(lines)
+            if re.match(r'\s*File\s+\".*\",\s+line\s+\d+', line)
+        ]
+        if not frame_idxs:
+            return text, 0
+
+        max_drop = max(1, len(frame_idxs) // 2)
+        drop_count = rng.randint(1, max_drop)
+        to_drop = set(rng.sample(frame_idxs, min(drop_count, len(frame_idxs))))
+        kept = [line for i, line in enumerate(lines) if i not in to_drop]
+        return "\n".join(kept), len(to_drop)
+
+    def _drop_evidence_lines(self, text: str, rng: random.Random) -> tuple[str, int]:
+        """Drop citation/evidence-like lines in retrieval-heavy observations."""
+        lines = text.split("\n")
+        evidence_idxs = [
+            i for i, line in enumerate(lines)
+            if ("http://" in line or "https://" in line or "source" in line.lower())
+        ]
+        if not evidence_idxs:
+            return text, 0
+
+        max_drop = max(1, len(evidence_idxs) // 2)
+        drop_count = rng.randint(1, max_drop)
+        to_drop = set(rng.sample(evidence_idxs, min(drop_count, len(evidence_idxs))))
+        kept = [line for i, line in enumerate(lines) if i not in to_drop]
+        return "\n".join(kept), len(to_drop)

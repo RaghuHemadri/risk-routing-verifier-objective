@@ -42,13 +42,14 @@ from r2v.utils.logging import JSONLLogger, setup_logging
 
 def build_pipeline(cfg) -> PerturbationPipeline:
     """Build perturbation pipeline from config using PerturbationRegistry."""
+    benchmark = cfg.get("benchmark")
     pcfg = cfg.get("perturbations", {})
     # OmegaConf DictConfig is not isinstance(dict), so convert to plain dict
     # before passing to PerturbationRegistry.create_pipeline which checks
     # isinstance(sub_config, dict).
     if hasattr(pcfg, "items") and not isinstance(pcfg, dict):
         pcfg = OmegaConf.to_container(pcfg, resolve=True)
-    return PerturbationRegistry.create_pipeline(pcfg)
+    return PerturbationRegistry.create_pipeline(pcfg, benchmark=benchmark)
 
 
 def parse_args():

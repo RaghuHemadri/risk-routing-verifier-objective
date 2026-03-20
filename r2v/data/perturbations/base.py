@@ -11,8 +11,8 @@ Design principles:
 from __future__ import annotations
 
 import random
-from abc import ABC, abstractmethod
 from copy import deepcopy
+from abc import ABC, abstractmethod
 from typing import Any, Optional
 
 from r2v.data.trajectory import Observation, Step, Episode, PerturbationType
@@ -138,6 +138,7 @@ class PerturbationRegistry:
     """Registry for config-driven perturbation instantiation."""
 
     _registry: dict[str, type[Perturbation]] = {}
+    _supported_benchmarks = {"humaneval", "gaia"}
 
     @classmethod
     def register(cls, name: str, perturbation_cls: type[Perturbation]):
@@ -153,10 +154,79 @@ class PerturbationRegistry:
         return cls._registry[name](config)
 
     @classmethod
-    def create_pipeline(cls, config: dict[str, Any]) -> PerturbationPipeline:
-        """Create a pipeline from a config dict with perturbation sections."""
+    def _merge_perturbation_sections(
+        cls,
+        sections: list[dict[str, Any]],
+        benchmark: Optional[str],
+    ) -> dict[str, Any]:
+        """Merge perturbation sections, with later sections overriding earlier ones."""
+        merged: dict[str, Any] = {}
+
+        for section in sections:
+            for name, sub_config in section.items():
+                if not isinstance(sub_config, dict):
+                    continue
+
+                current = merged.get(name, {})
+                if not isinstance(current, dict):
+                    current = {}
+
+                updated = deepcopy(current)
+                updated.update(deepcopy(sub_config))
+                if benchmark and "benchmark" not in updated:
+                    updated["benchmark"] = benchmark
+                merged[name] = updated
+
+        return merged
+
+    @classmethod
+    def create_pipeline(
+        cls,
+        config: dict[str, Any],
+        benchmark: Optional[str] = None,
+    ) -> PerturbationPipeline:
+        """Create a pipeline from a config dict.
+
+        Supports two schemas:
+        1) Flat (legacy): perturbations: {tool_flakiness: {...}, ...}
+        2) Structured:
+           perturbations:
+             common: {...}
+             benchmark_specific:
+               humaneval: {...}
+               gaia: {...}
+        """
+        if benchmark and benchmark not in cls._supported_benchmarks:
+            return PerturbationPipeline([])
+
+        sections: list[dict[str, Any]] = []
+
+        common_cfg = config.get("common")
+        benchmark_cfg = config.get("benchmark_specific")
+        if isinstance(common_cfg, dict):
+            sections.append(common_cfg)
+
+        if isinstance(benchmark_cfg, dict) and benchmark:
+            selected = benchmark_cfg.get(benchmark)
+            if isinstance(selected, dict):
+                sections.append(selected)
+
+        legacy_flat = {
+            name: sub_config
+            for name, sub_config in config.items()
+            if name not in {"common", "benchmark_specific"}
+        }
+        if legacy_flat:
+            sections.append(legacy_flat)
+
+        # Backward compatibility: flat dict with perturbation names.
+        if not sections:
+            sections = [config]
+
+        merged_config = cls._merge_perturbation_sections(sections, benchmark)
+
         perturbations = []
-        for name, sub_config in config.items():
+        for name, sub_config in merged_config.items():
             if isinstance(sub_config, dict) and sub_config.get("enabled", False):
                 try:
                     perturbations.append(cls.create(name, sub_config))

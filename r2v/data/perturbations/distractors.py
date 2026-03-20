@@ -37,6 +37,10 @@ SEMANTIC_DISTRACTOR_TEMPLATES = {
         "Frequently Bought Together",
         "Popular in Your Area",
         "Trending Now",
+        "People Also Ask",
+        "Top Picks This Week",
+        "Quick Summary",
+        "Popular Explanation",
     ],
     "search_descriptions": [
         "Free shipping on orders over $25. Limited time offer!",
@@ -45,6 +49,9 @@ SEMANTIC_DISTRACTOR_TEMPLATES = {
         "New arrival - Just launched this season.",
         "Editor's choice - Featured in our latest collection.",
         "Sale ends today - Save up to 60% off retail price.",
+        "Analyst summary with simplified conclusions for non-experts.",
+        "Crowd-ranked answer with limited source verification.",
+        "Short explanation generated from secondary sources.",
     ],
 }
 
@@ -59,6 +66,9 @@ RED_HERRING_ERRORS = [
     "INFO: Database connection established (latency: 12ms)",
     "Warning: Memory usage at 78% - consider increasing heap size",
     "DEBUG: Rendering template 'base.html' with 3 context variables",
+    "INFO: Secondary reranker selected lower-latency candidate path",
+    "Warning: Metrics cache out-of-date by 2 epochs",
+    "DEBUG: fallback parser recovered partial object graph",
 ]
 
 DECOY_ELEMENTS = [
@@ -96,6 +106,54 @@ CODE_DISTRACTORS = {
     ],
 }
 
+HUMANEVAL_CODE_DISTRACTORS = {
+    "wrong_fixes": [
+        "# Quick fix: return the input unchanged for all branches",
+        "# Optimization: remove recursion base-case checks to reduce branching",
+        "# Patch: cast all values to int before comparison",
+        "# Workaround: return precomputed outputs for known visible tests",
+        "# Stability fix: swallow all exceptions and return default",
+        "# Simplify: remove branch handling for negative values",
+    ],
+    "decoy_errors": [
+        "AssertionError: expected [1, 2, 3] but got [1, 3, 2]",
+        "IndexError: list index out of range in hidden test case",
+        "RecursionError: maximum recursion depth exceeded",
+        "AssertionError: hidden test expected stable ordering",
+        "TypeError: unsupported comparison between tuple and int",
+    ],
+    "similar_files": [
+        "solutions/reference_fast.py",
+        "tests/hidden_regression_cases.py",
+        "utils/legacy_eval_adapter.py",
+    ],
+}
+
+GAIA_DISTRACTOR_TITLES = [
+    "Sponsored Answer Summary",
+    "Trending Topic (Unverified)",
+    "Community Guess (Low Confidence)",
+    "Auto-Generated Digest (Unverified)",
+    "Opinionated Summary (No Primary Sources)",
+    "Forum Consensus Snapshot",
+]
+
+GAIA_RED_HERRINGS = [
+    "Source confidence warning: this excerpt is user-generated and not authoritative.",
+    "Snippet conflict: two sources disagree; choosing the shorter summary by default.",
+    "Citation parser note: URL metadata incomplete, relevance score fallback applied.",
+    "Source merge warning: inconsistent publication dates across snippets.",
+    "Evidence ranking note: social engagement weighted above authority.",
+    "Attribution warning: quoted passage may be from secondary reporting.",
+]
+
+GAIA_FAKE_CITATION_TEMPLATES = [
+    "Source: https://news.example.org/analysis/{slug} (confidence: {score})",
+    "Reference: arXiv:{arxiv_id} (summary only, not peer reviewed)",
+    "Citation: DOI 10.{doi_prefix}/{doi_suffix} (context unavailable)",
+    "Source: https://forum.example.com/thread/{slug} (community-voted answer)",
+]
+
 
 class DistractorPerturbation(Perturbation):
     """Add plausible but irrelevant content to observations."""
@@ -104,6 +162,7 @@ class DistractorPerturbation(Perturbation):
 
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
+        self.benchmark = str(config.get("benchmark", "")).lower()
         self.semantic_distractor_prob = config.get("semantic_distractor_prob", 0.20)
         self.red_herring_prob = config.get("red_herring_prob", 0.15)
         self.decoy_element_prob = config.get("decoy_element_prob", 0.10)
@@ -155,7 +214,10 @@ class DistractorPerturbation(Perturbation):
         for i in range(num_distractors):
             # Generate a plausible-looking search result
             fake_id = rng.randint(100, 999)
-            title = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_titles"])
+            if self.benchmark == "gaia":
+                title = rng.choice(GAIA_DISTRACTOR_TITLES)
+            else:
+                title = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_titles"])
             desc = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_descriptions"])
             url = f"https://example.com/item/{rng.randint(1000, 9999)}"
 
@@ -163,6 +225,8 @@ class DistractorPerturbation(Perturbation):
             result = template.format(
                 id=fake_id, title=title, url=url, description=desc
             )
+            if self.benchmark == "gaia" and rng.random() < 0.5:
+                result += "\n    " + self._make_fake_citation(rng)
             distractor_lines.append(result)
 
         # Insert distractors among existing content
@@ -181,7 +245,11 @@ class DistractorPerturbation(Perturbation):
         lines = text.split("\n")
         num_herrings = rng.randint(2, 4)
 
-        selected = rng.sample(RED_HERRING_ERRORS, min(num_herrings, len(RED_HERRING_ERRORS)))
+        pool = list(RED_HERRING_ERRORS)
+        if self.benchmark == "gaia":
+            pool.extend(GAIA_RED_HERRINGS)
+
+        selected = rng.sample(pool, min(num_herrings, len(pool)))
 
         for herring in selected:
             # Insert at random positions
@@ -225,6 +293,14 @@ class DistractorPerturbation(Perturbation):
         for _ in range(num_wrong):
             category = rng.choice(["wrong_fixes", "decoy_errors", "similar_files"])
             items = CODE_DISTRACTORS[category]
+            if self.benchmark == "humaneval" and category in HUMANEVAL_CODE_DISTRACTORS:
+                items = list(items) + HUMANEVAL_CODE_DISTRACTORS[category]
+            if self.benchmark == "gaia" and category == "similar_files":
+                items = list(items) + [
+                    "evidence/summary_ranker_cache.json",
+                    "reports/quick_take_without_sources.md",
+                    "tmp/low_confidence_snippets.txt",
+                ]
             item = rng.choice(items)
 
             pos = rng.randint(0, len(lines))
@@ -232,3 +308,14 @@ class DistractorPerturbation(Perturbation):
             added += 1
 
         return "\n".join(lines), added
+
+    def _make_fake_citation(self, rng: random.Random) -> str:
+        slug = "".join(rng.choice("abcdefghijklmnopqrstuvwxyz") for _ in range(8))
+        tmpl = rng.choice(GAIA_FAKE_CITATION_TEMPLATES)
+        return tmpl.format(
+            slug=slug,
+            score=f"{rng.uniform(0.31, 0.79):.2f}",
+            arxiv_id=f"{rng.randint(1801, 2403)}.{rng.randint(10000, 99999)}",
+            doi_prefix=rng.randint(1000, 9999),
+            doi_suffix=f"{rng.randint(100000, 999999)}",
+        )

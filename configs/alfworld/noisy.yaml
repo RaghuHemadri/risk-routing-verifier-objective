@@ -14,26 +14,13 @@ data:
   num_perturbation_seeds: 20
   max_episode_steps: 30
 
-# ALFWorld-specific perturbations
+# Perturbations are scoped to HumanEval and GAIA only.
 perturbations:
   tool_flakiness:
-    enabled: true
-    failure_prob: 0.10        # actions randomly fail
-    timeout_prob: 0.05
-
+    enabled: false
   partial_observability:
-    enabled: true
-    log_truncation_prob: 0.20     # truncated room descriptions
-    log_line_drop_prob: 0.15      # missing objects in observations
-    info_masking_prob: 0.10       # masked receptacle contents
-
+    enabled: false
   prompt_injection:
-    enabled: true
-    direct_injection_prob: 0.10   # misleading hints in observations
-    goal_hijacking_prob: 0.05
-
+    enabled: false
   distractors:
-    enabled: true
-    semantic_distractor_prob: 0.20   # irrelevant objects mentioned
-    red_herring_prob: 0.15           # plausible but wrong locations
-    decoy_element_prob: 0.10         # fake receptacles
+    enabled: false
