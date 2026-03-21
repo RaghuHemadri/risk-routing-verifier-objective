@@ -1,0 +1,25 @@
+# TextWorld Clean Configuration
+defaults:
+  - ../base
+
+benchmark: textworld
+
+textworld:
+  mock: true
+  dataset:
+    path: data/textworld/tasks.jsonl
+    max_instances: 100
+
+data:
+  num_teacher_trajectories: 100
+  max_episode_steps: 20
+
+perturbations:
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false

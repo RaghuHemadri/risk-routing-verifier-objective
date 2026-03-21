@@ -11,7 +11,7 @@ Usage:
   bash scripts/slurm_end_to_end.sh [options]
 
 Core options:
-  --benchmark NAME              Benchmark name (gaia|alfworld|humaneval). Default: humaneval
+  --benchmark NAME              Benchmark name (humaneval|textworld). Default: humaneval
   --slm-model MODEL             SLM model type or HF ID (e.g., QWEN, LLAMA, Qwen/Qwen2.5-7B-Instruct)
   --verifier-model MODEL        Verifier backbone type or HF ID (e.g., LLAMA, QWEN, meta-llama/Llama-3.1-8B-Instruct)
   --run-id ID                   Optional run id; default auto-generated

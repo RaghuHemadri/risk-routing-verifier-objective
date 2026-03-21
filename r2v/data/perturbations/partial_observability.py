@@ -39,7 +39,10 @@ class PartialObservabilityPerturbation(Perturbation):
         self.log_line_drop_prob = config.get("log_line_drop_prob", 0.10)
         self.info_mask_prob = config.get("info_mask_prob", 0.05)
         self.traceback_frame_drop_prob = config.get("traceback_frame_drop_prob", 0.0)
-        self.evidence_drop_prob = config.get("evidence_drop_prob", 0.0)
+        self.textworld_goal_redaction_prob = config.get("textworld_goal_redaction_prob", 0.0)
+        self.textworld_action_mask_prob = config.get("textworld_action_mask_prob", 0.0)
+        self.textworld_exit_hide_prob = config.get("textworld_exit_hide_prob", 0.0)
+        self.textworld_object_hide_prob = config.get("textworld_object_hide_prob", 0.0)
 
     def perturb_observation(
         self, obs: Observation, rng: random.Random
@@ -48,7 +51,7 @@ class PartialObservabilityPerturbation(Perturbation):
         meta: dict[str, Any] = {"perturbations_applied": []}
 
         text = new_obs.raw_text
-        is_target_benchmark = self.benchmark in {"humaneval", "gaia"}
+        is_target_benchmark = self.benchmark in {"humaneval", "textworld"}
 
         # Apply perturbations in order of severity (least → most destructive)
 
@@ -93,11 +96,10 @@ class PartialObservabilityPerturbation(Perturbation):
                 meta["perturbations_applied"].append("traceback_frame_drop")
                 meta["num_traceback_frames_dropped"] = n_dropped
 
-        if self.benchmark == "gaia" and rng.random() < self.evidence_drop_prob:
-            text, n_dropped = self._drop_evidence_lines(text, rng)
-            if n_dropped > 0:
-                meta["perturbations_applied"].append("evidence_drop")
-                meta["num_evidence_lines_dropped"] = n_dropped
+        if self.benchmark == "textworld":
+            text, tw_meta = self._apply_textworld_occlusion(text, rng)
+            if tw_meta:
+                meta["perturbations_applied"].extend(tw_meta)
 
         new_obs.raw_text = text
         return new_obs, meta
@@ -317,3 +319,68 @@ class PartialObservabilityPerturbation(Perturbation):
         to_drop = set(rng.sample(evidence_idxs, min(drop_count, len(evidence_idxs))))
         kept = [line for i, line in enumerate(lines) if i not in to_drop]
         return "\n".join(kept), len(to_drop)
+
+    def _apply_textworld_occlusion(self, text: str, rng: random.Random) -> tuple[str, list[str]]:
+        """Apply TextWorld-specific occlusions to goals, exits, objects, and action hints."""
+        applied: list[str] = []
+        out = text
+
+        if rng.random() < self.textworld_goal_redaction_prob:
+            new_out, n = re.subn(
+                r"^Goal:\s*(.+)$",
+                "Goal: [partially redacted objective]",
+                out,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if n > 0:
+                out = new_out
+                applied.append("textworld_goal_redaction")
+
+        if rng.random() < self.textworld_action_mask_prob:
+            new_out, n = re.subn(
+                r"^Available actions:.*$",
+                "Available actions: look, inventory, ... [truncated action list]",
+                out,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if n > 0:
+                out = new_out
+                applied.append("textworld_action_mask")
+
+        if rng.random() < self.textworld_exit_hide_prob:
+            patterns = [
+                r"\b(exit leads|exits lead|path leads)\s+(north|south|east|west)\b",
+                r"\b(north|south|east|west)\s+exit\b",
+            ]
+            changed = False
+            for pat in patterns:
+                newer, n = re.subn(pat, "an exit leads somewhere", out, flags=re.IGNORECASE)
+                if n > 0:
+                    out = newer
+                    changed = True
+            if changed:
+                applied.append("textworld_exit_hide")
+
+        if rng.random() < self.textworld_object_hide_prob:
+            patterns = [
+                r"\b(you see|there is|there are)\s+([^.]+)\.",
+                r"\b(on the table|on a desk|in the room)\s+you see\s+([^.]+)\.",
+            ]
+            changed = False
+            for pat in patterns:
+                newer, n = re.subn(
+                    pat,
+                    "you notice something indistinct.",
+                    out,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+                if n > 0:
+                    out = newer
+                    changed = True
+            if changed:
+                applied.append("textworld_object_hide")
+
+        return out, applied

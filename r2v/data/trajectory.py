@@ -97,7 +97,7 @@ class EpisodeMetadata:
     task_id: str
     template_id: Optional[str] = None
     goal: str = ""
-    benchmark: str = ""  # e.g. "webarena", "gaia", "humaneval", "alfworld"
+    benchmark: str = ""  # e.g. "humaneval", "textworld"
     site: Optional[str] = None  # WebArena site
     repo: Optional[str] = None  # repository (if applicable)
     difficulty: Optional[str] = None
@@ -106,7 +106,7 @@ class EpisodeMetadata:
     # ── Data versioning ──────────────────────────────────────────
     # Set by collect_trajectories.py; used by DataRegistry to group and
     # query episodes across multi-model collection runs.
-    run_id: str = ""                # e.g. "webarena_openai_gpt-4o_20260218T210012"
+    run_id: str = ""                # e.g. "humaneval_openai_gpt-4o_20260218T210012"
     teacher_model: str = ""         # e.g. "gpt-4o", "claude-3-5-sonnet-20241022"
     teacher_provider: str = ""      # e.g. "openai", "anthropic", "google"
 

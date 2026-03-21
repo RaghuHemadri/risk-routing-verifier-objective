@@ -101,6 +101,7 @@ source exports.sh
 BENCHMARK=gaia      bash run_pipeline.sh   # GAIA benchmark (default)
 BENCHMARK=alfworld  bash run_pipeline.sh   # ALFWorld benchmark
 BENCHMARK=humaneval bash run_pipeline.sh   # HumanEval+ benchmark
+BENCHMARK=textworld bash run_pipeline.sh   # TextWorld benchmark
 
 # Or resume / run a single stage
 bash run_pipeline.sh --benchmark gaia --from 5
@@ -117,6 +118,7 @@ See [RUN.md](RUN.md) for detailed per-stage instructions.
 | **GAIA** | General AI assistant | 165 | ✅ | Exact/fuzzy answer match |
 | **ALFWorld** | Embodied text agent | 134 | ✅ | Task completion (env reward) |
 | **HumanEval+** | Code generation | 164 | ✅ | Extended test suite (EvalPlus) |
+| **TextWorld** | Text adventure | configurable | ✅ | Quest completion (env score) |
 
 All benchmarks support the full perturbation framework (tool flakiness, partial observability, prompt injection, distractors) since perturbations operate on the generic `Observation` representation.
 
@@ -128,6 +130,9 @@ export SERPER_API_KEY=<your-key>   # or SERPAPI_KEY
 
 # ALFWorld
 pip install "alfworld[full]" textworld
+
+# TextWorld (standalone)
+pip install textworld
 
 # HumanEval+
 pip install evalplus

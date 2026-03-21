@@ -8,14 +8,14 @@ and collection dates without hardcoding paths.
 
 Run ID format:
     {benchmark}_{provider}_{model_slug}_{YYYYMMDDTHHMMSS}
-    e.g. webarena_openai_gpt-4o_20260218T210012
-         gaia_anthropic_claude-3-5-sonnet_20260219T083045
+    e.g. humaneval_openai_gpt-4o_20260218T210012
+         textworld_anthropic_claude-3-5-sonnet_20260219T083045
 
 Directory layout (relative to project root):
     data/
       registry.json                          ← central index (written by registry)
       runs/
-        webarena_openai_gpt-4o_20260218T210012/
+                humaneval_openai_gpt-4o_20260218T210012/
           run_manifest.json                  ← config snapshot + final counts
           trajectories.jsonl                 ← episodes (each has run_id embedded)
           collection_log.jsonl               ← per-event logs
@@ -24,7 +24,7 @@ Usage:
     from r2v.data.registry import DataRegistry, make_run_id
 
     # During collection — create a run
-    run_id = make_run_id("gaia", "openai", "gpt-4o")
+    run_id = make_run_id("humaneval", "openai", "gpt-4o")
     registry = DataRegistry()
     registry.begin_run(run_id, cfg=cfg_dict, output_dir=Path("data/runs") / run_id)
 
@@ -34,7 +34,7 @@ Usage:
 
     # Downstream — query
     registry = DataRegistry()
-    runs = registry.query(benchmark="gaia", model="gpt-4o")
+    runs = registry.query(benchmark="humaneval", model="gpt-4o")
     store = registry.merge_runs([r.run_id for r in runs])
     episodes = store.load_episodes()
 """
@@ -75,15 +75,15 @@ def make_run_id(
     """Generate a unique, human-readable run ID.
 
     Args:
-        benchmark:  "webarena" | "gaia" | "humaneval" | "alfworld"
+        benchmark:  "humaneval" | "textworld"
         provider:   "openai" | "anthropic" | "google" | "deepseek"
         model_name: e.g. "gpt-4o", "claude-3-5-sonnet-20241022"
         timestamp:  Defaults to UTC now.
         extra:      Optional tag appended to the ID (e.g. "noisy", "ablation").
 
     Returns:
-        e.g. "webarena_openai_gpt-4o_20260218T210012"
-             "gaia_anthropic_claude-3-5-sonnet_20260219T083045_noisy"
+           e.g. "humaneval_openai_gpt-4o_20260218T210012"
+               "textworld_anthropic_claude-3-5-sonnet_20260219T083045_noisy"
     """
     ts = (timestamp or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S")
     parts = [benchmark, provider, _slugify(model_name), ts]
@@ -186,10 +186,10 @@ class DataRegistry:
     -------------
     # In collect_trajectories.py:
     registry = DataRegistry()
-    run_id = make_run_id("gaia", "openai", "gpt-4o")
+    run_id = make_run_id("humaneval", "openai", "gpt-4o")
     registry.begin_run(run_id, cfg=cfg_dict,
                        output_dir=output_dir / run_id,
-                       benchmark="gaia",
+                       benchmark="humaneval",
                        provider="openai",
                        model_name="gpt-4o")
     # ... collect ...
@@ -198,7 +198,7 @@ class DataRegistry:
 
     # In train_policy.py:
     registry = DataRegistry()
-    manifests = registry.query(benchmark="gaia", status="done")
+    manifests = registry.query(benchmark="humaneval", status="done")
     store = registry.merge_runs([m.run_id for m in manifests])
     episodes = list(store.iter_episodes())
     """
@@ -338,7 +338,7 @@ class DataRegistry:
         """Filter runs by one or more criteria (all are optional).
 
         Args:
-            benchmark: "webarena" | "gaia" | "humaneval" | "alfworld"
+            benchmark: "humaneval" | "textworld"
             provider:  "openai" | "anthropic" | "google" | "deepseek"
             model:     Substring match on model_name (e.g. "gpt-4o" matches
                        "gpt-4o-mini" and "gpt-4o").

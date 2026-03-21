@@ -4,9 +4,9 @@ Train the verifier model (LLM-judge distillation or direct training).
 
 Usage:
     python scripts/train_verifier.py \
-        --config configs/gaia/clean.yaml \
-        --output outputs/verifier/gaia \
-        --trajectories data/trajectories/gaia_clean/trajectories.jsonl
+        --config configs/humaneval/clean.yaml \
+        --output outputs/verifier/humaneval \
+        --trajectories data/trajectories/humaneval_clean/trajectories.jsonl
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def main():
     logger.info(f"Loaded {len(episodes)} episodes from {args.trajectories}")
 
     # Apply step-level labeling
-    benchmark = cfg.get("data", {}).get("benchmark", "gaia")
+    benchmark = cfg.get("benchmark", "humaneval")
     data_cfg = OmegaConf.to_container(cfg.get("data", {}), resolve=True)
     labeler = create_labeler(benchmark, config=data_cfg)
     for ep in episodes:

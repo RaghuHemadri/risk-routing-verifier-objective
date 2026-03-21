@@ -4,10 +4,9 @@
 # ══════════════════════════════════════════════════════════════
 #
 # Usage:
-#   BENCHMARK=gaia      bash run_pipeline.sh          # GAIA benchmark (default)
-#   BENCHMARK=alfworld  bash run_pipeline.sh          # ALFWorld benchmark
-#   BENCHMARK=humaneval bash run_pipeline.sh          # HumanEval+ benchmark
-#   bash run_pipeline.sh --benchmark gaia --from 3    # Resume from stage 3
+#   BENCHMARK=humaneval bash run_pipeline.sh          # HumanEval+ benchmark (default)
+#   BENCHMARK=textworld bash run_pipeline.sh          # TextWorld benchmark
+#   bash run_pipeline.sh --benchmark textworld --from 3  # Resume from stage 3
 #   bash run_pipeline.sh --only 5                     # Run only stage 5
 #   bash run_pipeline.sh --dry-run                    # Print commands without executing
 #
@@ -22,8 +21,8 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────
-# Benchmark name: gaia | alfworld | humaneval
-BENCHMARK=${BENCHMARK:-gaia}
+# Benchmark name: humaneval | textworld
+BENCHMARK=${BENCHMARK:-humaneval}
 
 CONFIG_CLEAN="configs/${BENCHMARK}/clean.yaml"
 CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
@@ -64,6 +63,11 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [[ "${BENCHMARK}" != "humaneval" && "${BENCHMARK}" != "textworld" ]]; then
+    echo "ERROR: Unsupported benchmark '${BENCHMARK}'. Supported: humaneval | textworld"
+    exit 1
+fi
 
 should_run() {
     local stage=$1
@@ -129,7 +133,7 @@ fi
 
 # ── Stage 2: Generate perturbations ─────────────────────────
 if should_run 2; then
-    if [[ -z "${CLEAN_TRAJECTORIES}" ]]; then
+    if [[ -z "${CLEAN_TRAJECTORIES}" && ${DRY_RUN} == false ]]; then
         echo "ERROR: No clean trajectories found. Run Stage 1 first."
         exit 1
     fi

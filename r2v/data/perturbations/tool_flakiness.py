@@ -58,15 +58,13 @@ HUMANEVAL_RUNTIME_ERRORS = [
     "UnicodeDecodeError: 'utf-8' codec can't decode byte 0x{hex_byte} in position {line}",
 ]
 
-GAIA_TOOL_ERRORS = [
-    "web_search error: HTTP 429 Too Many Requests. Retry after {delay}s.",
-    "python tool error: Kernel died unexpectedly during execution.",
-    "browser tool error: navigation timeout while loading external source.",
-    "tool_router warning: stale retrieval cache served for query id {qid}.",
-    "retriever warning: top-k index temporarily unavailable, falling back to lexical search.",
-    "web_search error: captcha challenge triggered for upstream provider.",
-    "browser tool error: blocked by robots policy for requested page.",
-    "parser error: extracted snippet encoding unsupported (windows-1252).",
+TEXTWORLD_TOOL_ERRORS = [
+    "ParserError: command queue desynchronized; retry the previous action.",
+    "WorldStateWarning: room graph failed to update after movement.",
+    "InventoryServiceTimeout: inventory lookup timed out after {timeout}s.",
+    "ActionExecutorError: object reference became stale between turns.",
+    "Text buffer corruption: latest room description may be incomplete.",
+    "EnvironmentWarning: last command may have executed partially.",
 ]
 
 UNIT_TOKENS = ["km", "m", "kg", "g", "ms", "s", "%", "USD", "EUR"]
@@ -88,6 +86,9 @@ class ToolFlakinessPerturbation(Perturbation):
         self.format_corruption_prob = config.get("format_corruption_prob", 0.08)
         self.numeric_drift_prob = config.get("numeric_drift_prob", 0.08)
         self.pagination_cutoff_prob = config.get("pagination_cutoff_prob", 0.06)
+        self.textworld_feedback_corruption_prob = config.get(
+            "textworld_feedback_corruption_prob", 0.0
+        )
         self.result_drop_fraction = config.get("result_drop_fraction", [0.1, 0.5])
 
     def perturb_observation(
@@ -143,6 +144,14 @@ class ToolFlakinessPerturbation(Perturbation):
             text = self._cutoff_results(text, rng)
             meta["perturbations_applied"].append("pagination_cutoff")
 
+        # 9. TextWorld feedback corruption (action acknowledgement ambiguity)
+        if (
+            self.benchmark == "textworld"
+            and rng.random() < self.textworld_feedback_corruption_prob
+        ):
+            text = self._corrupt_textworld_feedback(text, rng)
+            meta["perturbations_applied"].append("textworld_feedback_corruption")
+
         new_obs.raw_text = text
         return new_obs, meta
 
@@ -160,9 +169,9 @@ class ToolFlakinessPerturbation(Perturbation):
                 hex_byte=f"{rng.randint(0, 255):02x}",
             )
 
-        if self.benchmark == "gaia":
-            msg = rng.choice(GAIA_TOOL_ERRORS)
-            return msg.format(delay=rng.randint(5, 45), qid=rng.randint(1000, 9999))
+        if self.benchmark == "textworld":
+            msg = rng.choice(TEXTWORLD_TOOL_ERRORS)
+            return msg.format(timeout=rng.randint(8, 45))
 
         msg = rng.choice(HTTP_ERROR_TEMPLATES)
         return msg.format(timeout=rng.randint(10, 60), delay=rng.randint(1, 30))
@@ -312,3 +321,30 @@ class ToolFlakinessPerturbation(Perturbation):
         # Add truncation indicator
         truncated += "\n... [Response truncated due to connection error]"
         return truncated
+
+    def _corrupt_textworld_feedback(self, text: str, rng: random.Random) -> str:
+        """Inject ambiguity into short text-game feedback lines.
+
+        TextWorld trajectories are dominated by compact feedback strings like
+        "Action succeeded." and "That action did not help..."; perturbing these
+        directly makes uncertainty realistic for routing decisions.
+        """
+        variants = [
+            "Action succeeded... maybe. State synchronization pending.",
+            "Command accepted, but world update may be delayed.",
+            "That action may have had no effect (engine uncertain).",
+            "Feedback channel dropped one event; verify with look/inventory.",
+            "Action result truncated; object state could not be confirmed.",
+        ]
+
+        if "Action succeeded." in text and rng.random() < 0.7:
+            return text.replace("Action succeeded.", rng.choice(variants), 1)
+
+        if "That action did not help." in text and rng.random() < 0.7:
+            return text.replace(
+                "That action did not help. Try a different command.",
+                "That action may have had no visible effect. Try to verify state.",
+                1,
+            )
+
+        return text + "\n[notice] observation channel reported inconsistent command feedback"

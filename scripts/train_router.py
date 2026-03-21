@@ -4,9 +4,9 @@ Train the risk-calibrated router with Lagrangian CVaR objective.
 
 Usage:
     python scripts/train_router.py \
-        --config configs/webarena/noisy.yaml \
-        --output outputs/router/webarena \
-        --features data/router_features/webarena.jsonl
+        --config configs/humaneval/noisy.yaml \
+        --output outputs/router/humaneval \
+        --features data/router_features/humaneval.jsonl
 
 The router decides when to escalate from SLM to teacher LLM
 based on calibrated confidence scores.

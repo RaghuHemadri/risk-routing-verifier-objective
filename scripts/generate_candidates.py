@@ -3,20 +3,20 @@
 
 Usage (single GPU):
     python scripts/generate_candidates.py \
-        --config configs/gaia/noisy.yaml \
-        --policy-path outputs/policy/gaia_noisy/final \
-        --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
-        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-        --output data/candidates/gaia_noisy.jsonl \
+        --config configs/humaneval/noisy.yaml \
+        --policy-path outputs/policy/humaneval_noisy/final \
+        --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
+        --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+        --output data/candidates/humaneval_noisy.jsonl \
         --K 5
 
 Usage (multi-GPU via launch_candidates.sh — 4 GPUs):
     bash scripts/launch_candidates.sh 4 \
-        --config configs/gaia/noisy.yaml \
-        --policy-path outputs/policy/gaia_noisy/final \
-        --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
-        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-        --output data/candidates/gaia_noisy.jsonl \
+        --config configs/humaneval/noisy.yaml \
+        --policy-path outputs/policy/humaneval_noisy/final \
+        --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
+        --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+        --output data/candidates/humaneval_noisy.jsonl \
         --K 5
 
 Resume after a crash (just re-run the same command — skips completed episodes):
@@ -24,7 +24,7 @@ Resume after a crash (just re-run the same command — skips completed episodes)
 
 Merge shards after all finish:
     python scripts/generate_candidates.py --merge \
-        --output data/candidates/gaia_noisy.jsonl
+        --output data/candidates/humaneval_noisy.jsonl
 
 For each step in teacher trajectories, samples K candidates from the
 SLM policy and scores them with the verifier to create preference pairs.

@@ -129,6 +129,21 @@ HUMANEVAL_CODE_DISTRACTORS = {
     ],
 }
 
+TEXTWORLD_DISTRACTOR_LINES = [
+    "A glittering coin lies here. (decorative)",
+    "A painted door to nowhere appears on the wall.",
+    "You hear footsteps from the west, but no path is visible.",
+    "A note reads: 'South is always safe.'",
+    "There is a suspiciously labeled chest: \"Quest Shortcut\".",
+]
+
+TEXTWORLD_WRONG_HINTS = [
+    "Hint: when in doubt, DROP key before opening containers.",
+    "Hint: avoid TAKE commands until you have explored every direction.",
+    "Hint: repeat LOOK three times to unlock hidden progress.",
+    "Hint: inventory should be emptied to maximize score.",
+]
+
 GAIA_DISTRACTOR_TITLES = [
     "Sponsored Answer Summary",
     "Trending Topic (Unverified)",
@@ -208,16 +223,21 @@ class DistractorPerturbation(Perturbation):
     ) -> tuple[str, int]:
         """Add semantically similar but irrelevant search results or items."""
         lines = text.split("\n")
+
+        if self.benchmark == "textworld":
+            count = rng.randint(1, 3)
+            for _ in range(count):
+                insert_at = rng.randint(0, len(lines))
+                lines.insert(insert_at, rng.choice(TEXTWORLD_DISTRACTOR_LINES))
+            return "\n".join(lines), count
+
         num_distractors = rng.randint(2, 5)
 
         distractor_lines = []
         for i in range(num_distractors):
             # Generate a plausible-looking search result
             fake_id = rng.randint(100, 999)
-            if self.benchmark == "gaia":
-                title = rng.choice(GAIA_DISTRACTOR_TITLES)
-            else:
-                title = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_titles"])
+            title = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_titles"])
             desc = rng.choice(SEMANTIC_DISTRACTOR_TEMPLATES["search_descriptions"])
             url = f"https://example.com/item/{rng.randint(1000, 9999)}"
 
@@ -225,8 +245,6 @@ class DistractorPerturbation(Perturbation):
             result = template.format(
                 id=fake_id, title=title, url=url, description=desc
             )
-            if self.benchmark == "gaia" and rng.random() < 0.5:
-                result += "\n    " + self._make_fake_citation(rng)
             distractor_lines.append(result)
 
         # Insert distractors among existing content
@@ -246,8 +264,6 @@ class DistractorPerturbation(Perturbation):
         num_herrings = rng.randint(2, 4)
 
         pool = list(RED_HERRING_ERRORS)
-        if self.benchmark == "gaia":
-            pool.extend(GAIA_RED_HERRINGS)
 
         selected = rng.sample(pool, min(num_herrings, len(pool)))
 
@@ -295,13 +311,10 @@ class DistractorPerturbation(Perturbation):
             items = CODE_DISTRACTORS[category]
             if self.benchmark == "humaneval" and category in HUMANEVAL_CODE_DISTRACTORS:
                 items = list(items) + HUMANEVAL_CODE_DISTRACTORS[category]
-            if self.benchmark == "gaia" and category == "similar_files":
-                items = list(items) + [
-                    "evidence/summary_ranker_cache.json",
-                    "reports/quick_take_without_sources.md",
-                    "tmp/low_confidence_snippets.txt",
-                ]
-            item = rng.choice(items)
+            if self.benchmark == "textworld" and rng.random() < 0.6:
+                item = rng.choice(TEXTWORLD_WRONG_HINTS)
+            else:
+                item = rng.choice(items)
 
             pos = rng.randint(0, len(lines))
             lines.insert(pos, item)

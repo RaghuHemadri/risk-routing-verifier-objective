@@ -320,6 +320,60 @@ class HumanEvalLabeler(StepLabeler):
         return episode
 
 
+class TextWorldLabeler(StepLabeler):
+    """Label TextWorld steps using command-level heuristics."""
+
+    VALID_PREFIXES = {
+        "look", "inventory", "examine", "go", "open", "close", "take",
+        "drop", "put", "insert", "unlock", "eat",
+    }
+
+    def __init__(
+        self,
+        use_llm_judge: bool = False,
+        llm_judge_fn: Optional[callable] = None,
+    ):
+        self.use_llm_judge = use_llm_judge
+        self.llm_judge_fn = llm_judge_fn
+
+    def label_episode(self, episode: Episode) -> Episode:
+        for i, step in enumerate(episode.steps):
+            label = StepLabel()
+            action_text = step.action.raw_text.strip().lower()
+
+            if action_text:
+                prefix = action_text.split()[0]
+                label.is_progress = prefix in self.VALID_PREFIXES
+            else:
+                label.is_progress = False
+
+            if i > 0:
+                prev_action = episode.steps[i - 1].action.raw_text.strip().lower()
+                if action_text == prev_action:
+                    label.is_progress = False
+
+            if step.reward > 0:
+                label.is_progress = True
+                if step.reward >= 1.0:
+                    label.is_correct = True
+
+            if action_text in {"submit", "finish", "stop"}:
+                label.is_correct = episode.success
+
+            if self.use_llm_judge and label.is_progress is None and self.llm_judge_fn:
+                label.is_progress = self.llm_judge_fn(
+                    goal=episode.metadata.goal,
+                    observation=step.observation.raw_text,
+                    action=step.action.raw_text,
+                    step_idx=i,
+                    total_steps=len(episode.steps),
+                )
+
+            step.label = label
+
+        return episode
+
+
 class OutcomePropagationLabeler(StepLabeler):
     """Propagate final outcome labels to all steps with decay.
 
@@ -361,21 +415,14 @@ def create_labeler(benchmark: str, config: dict) -> StepLabeler:
     """Factory function to create the appropriate labeler."""
     use_llm = config.get("use_llm_judge", False)
 
-    if benchmark == "webarena":
-        primary = WebArenaLabeler(
-            eval_config=config.get("evaluation", {}),
-            use_llm_judge=use_llm,
-        )
-    elif benchmark == "gaia":
-        primary = GAIALabeler(use_llm_judge=use_llm)
-    elif benchmark == "alfworld":
-        primary = ALFWorldLabeler(use_llm_judge=use_llm)
-    elif benchmark == "humaneval":
+    if benchmark == "humaneval":
         primary = HumanEvalLabeler(use_llm_judge=use_llm)
+    elif benchmark == "textworld":
+        primary = TextWorldLabeler(use_llm_judge=use_llm)
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark}. "
-            f"Supported: webarena, gaia, alfworld, humaneval"
+            f"Supported: humaneval, textworld"
         )
 
     # Always add outcome propagation as fallback

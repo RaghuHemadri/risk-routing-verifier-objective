@@ -10,11 +10,11 @@ LLM teacher.
 
 Usage:
     python scripts/evaluate.py \
-        --config configs/gaia/noisy.yaml \
-        --features data/router_features/gaia.jsonl \
-        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-        --router-path outputs/router/gaia_noisy/router_final.pt \
-        --output results/gaia_noisy \
+        --config configs/humaneval/noisy.yaml \
+        --features data/router_features/humaneval.jsonl \
+        --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+        --router-path outputs/router/humaneval_noisy/router_final.pt \
+        --output results/humaneval_noisy \
         --seeds 1 2 3 \
         --methods r2v slm_only llm_only entropy_router
 

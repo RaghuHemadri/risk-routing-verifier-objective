@@ -4,9 +4,9 @@ Apply perturbations to collected trajectories.
 
 Usage:
     python -m scripts.generate_perturbations \
-        --config configs/gaia/noisy.yaml \
-        --input data/runs/gaia_teacher/trajectories.jsonl \
-        --output data/trajectories/gaia_noisy/trajectories.jsonl \
+        --config configs/humaneval/noisy.yaml \
+        --input data/runs/humaneval_teacher/trajectories.jsonl \
+        --output data/trajectories/humaneval_noisy/trajectories.jsonl \
         --seeds 1 2 3
 
 This script:
@@ -55,7 +55,7 @@ def build_pipeline(cfg) -> PerturbationPipeline:
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate perturbed trajectories")
     parser.add_argument("--config", type=str, required=True,
-                        help="Noisy config YAML (e.g. configs/gaia/noisy.yaml)")
+                        help="Noisy config YAML (e.g. configs/humaneval/noisy.yaml)")
     parser.add_argument("--input", type=str, required=True,
                         help="Input JSONL file with clean trajectories")
     parser.add_argument("--output", type=str, required=True,

@@ -9,15 +9,15 @@
 #
 # Example:
 #   bash scripts/launch_router_features.sh 4 \
-#       --config configs/gaia/noisy.yaml \
-#       --policy-path outputs/policy/gaia_noisy/final \
-#       --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-#       --output data/router_features/gaia.jsonl \
+#       --config configs/humaneval/noisy.yaml \
+#       --policy-path outputs/policy/humaneval_noisy/final \
+#       --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+#       --output data/router_features/humaneval.jsonl \
 #       --batch-size 4 --K 5
 #
 # After all shards finish the script auto-merges.  You can also merge manually:
 #   python scripts/generate_router_features.py --merge \
-#       --output data/router_features/gaia.jsonl
+#       --output data/router_features/humaneval.jsonl
 #
 # Resume after a crash: just re-run the same command — each worker detects
 # already-completed episodes in its shard file and skips them.

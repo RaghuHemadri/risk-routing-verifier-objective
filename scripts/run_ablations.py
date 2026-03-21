@@ -4,10 +4,10 @@ Run ablation studies for R2V-Agent.
 
 Usage:
     python scripts/run_ablations.py \
-        --config configs/webarena/noisy.yaml \
-        --policy-path outputs/policy/webarena_noisy/final \
-        --router-path outputs/router/webarena/router_final.pt \
-        --output results/ablations/webarena \
+        --config configs/humaneval/noisy.yaml \
+        --policy-path outputs/policy/humaneval_noisy/final \
+        --router-path outputs/router/humaneval_noisy/router_final.pt \
+        --output results/ablations/humaneval \
         --seeds 1 2 3
 
 Ablations (from proposal Table 2):

@@ -138,7 +138,7 @@ class PerturbationRegistry:
     """Registry for config-driven perturbation instantiation."""
 
     _registry: dict[str, type[Perturbation]] = {}
-    _supported_benchmarks = {"humaneval", "gaia"}
+    _supported_benchmarks = {"humaneval", "textworld"}
 
     @classmethod
     def register(cls, name: str, perturbation_cls: type[Perturbation]):
@@ -194,7 +194,7 @@ class PerturbationRegistry:
              common: {...}
              benchmark_specific:
                humaneval: {...}
-               gaia: {...}
+                             textworld: {...}
         """
         if benchmark and benchmark not in cls._supported_benchmarks:
             return PerturbationPipeline([])

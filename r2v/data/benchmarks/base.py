@@ -2,8 +2,8 @@
 Abstract base class for benchmark environments.
 
 All benchmark wrappers implement this interface so that the collection
-script (collect_trajectories.py) can work uniformly across WebArena,
-GAIA, HumanEval+, ALFWorld, or any future benchmark.
+script (collect_trajectories.py) can work uniformly across HumanEval+,
+TextWorld, or any future benchmark.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ class BenchmarkTask:
 
     task_id: str
     goal: str  # Natural-language intent / problem statement
-    benchmark: str  # e.g. "webarena", "gaia", "humaneval", "alfworld"
+    benchmark: str  # e.g. "humaneval", "textworld"
     template_id: Optional[str] = None
-    site: Optional[str] = None  # WebArena site category
+    site: Optional[str] = None
     repo: Optional[str] = None  # repository (if applicable)
     difficulty: Optional[str] = None
-    config_file: Optional[str] = None  # WebArena config JSON path
+    config_file: Optional[str] = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -32,11 +32,11 @@ class BenchmarkTask:
 class EnvStepResult:
     """Result of a single environment step."""
 
-    observation: str  # Text observation (accessibility tree, logs, etc.)
+    observation: str  # Text observation (logs, traces, game state, etc.)
     reward: float  # Step reward (usually 0 until final step)
     done: bool  # Episode terminated
     success: Optional[bool] = None  # Final success (only meaningful when done=True)
-    url: Optional[str] = None  # Current URL (WebArena)
+    url: Optional[str] = None
     info: dict[str, Any] = field(default_factory=dict)
 
 
@@ -76,7 +76,7 @@ class BenchmarkEnv(ABC):
         """Execute an action in the environment.
 
         Args:
-            action_text: The action string (WebArena grammar or git patch).
+            action_text: The action string for the active benchmark.
 
         Returns:
             EnvStepResult with observation, reward, done, etc.

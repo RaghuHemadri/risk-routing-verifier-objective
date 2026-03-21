@@ -10,16 +10,16 @@
 #
 # Example:
 #   bash scripts/launch_candidates.sh 4 \
-#       --config configs/gaia/noisy.yaml \
-#       --policy-path outputs/policy/gaia_noisy/final \
-#       --verifier-path outputs/verifier/gaia_noisy/final/verifier.pt \
-#       --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-#       --output data/candidates/gaia_noisy.jsonl \
+#       --config configs/humaneval/noisy.yaml \
+#       --policy-path outputs/policy/humaneval_noisy/final \
+#       --verifier-path outputs/verifier/humaneval_noisy/final/verifier.pt \
+#       --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+#       --output data/candidates/humaneval_noisy.jsonl \
 #       --K 5 --batch-size 8
 #
 # After all shards finish, merge:
 #   python scripts/generate_candidates.py --merge \
-#       --output data/candidates/gaia_noisy.jsonl
+#       --output data/candidates/humaneval_noisy.jsonl
 
 set -euo pipefail
 

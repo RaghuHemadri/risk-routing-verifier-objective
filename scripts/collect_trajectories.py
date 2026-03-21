@@ -4,8 +4,8 @@ Collect teacher trajectories from a benchmark environment.
 
 Usage:
     python scripts/collect_trajectories.py \
-        --config configs/webarena/clean.yaml \
-        --output data/trajectories/webarena_teacher \
+        --config configs/humaneval/clean.yaml \
+        --output data/trajectories/humaneval_teacher \
         --num-episodes 500 \
         --seeds 1 2 3
 
@@ -53,90 +53,29 @@ from r2v.utils.logging import JSONLLogger, setup_logging
 
 _MAX_PROMPT_CHARS = 16_000  # Max observation chars in prompt
 
-WEBARENA_SYSTEM_PROMPT = """\
-You are an autonomous web agent. You interact with websites by issuing actions \
-in the following format:
+# ── TextWorld prompt templates ───────────────────────────────────
+
+TEXTWORLD_SYSTEM_PROMPT = """\
+You are a text-game agent in a TextWorld environment.
 
 Actions available:
-  click [element_id]       - Click on an element
-  type [element_id] [text] - Type text into an element
-  hover [element_id]       - Hover over an element
-  scroll [up|down]         - Scroll the page
-  goto [url]               - Navigate to a URL
-  go_back                  - Go back in browser history
-  go_forward               - Go forward in browser history
-  new_tab                  - Open a new tab
-  tab_focus [tab_id]       - Switch to a tab
-  press [key_combo]        - Press keyboard key(s)
-  stop [answer]            - Stop and submit your answer
-
-Respond with EXACTLY ONE action per turn. Think step-by-step about which \
-action to take, then output the action on its own line prefixed with "Action: "."""
-
-WEBARENA_USER_TEMPLATE = """\
-Goal: {goal}
-
-Current URL: {url}
-
-Observation:
-{observation}
-
-Previous actions:
-{action_history}
-
-What is your next action?"""
-
-# ── GAIA prompt templates ─────────────────────────────────────────
-
-GAIA_SYSTEM_PROMPT = """\
-You are a general AI assistant. You solve questions by using available tools.
-
-Actions available (use EXACTLY ONE action per turn):
-  web_search [query]      – Search the web for information
-  python [code]           – Execute Python code
-  calculator [expression] – Evaluate a math expression
-  file_read [filename]    – Read an attached file
-  answer [final_answer]   – Submit your final answer
-
-Respond with EXACTLY ONE action per turn. Think step-by-step about which \
-tool to use, then output the action on its own line prefixed with "Action: ".
-
-Your final answer must be concise and precise — a number, name, or short phrase."""
-
-GAIA_USER_TEMPLATE = """\
-{observation}
-
-Previous actions:
-{action_history}
-
-What is your next action?"""
-
-
-# ── ALFWorld prompt templates ────────────────────────────────────
-
-ALFWORLD_SYSTEM_PROMPT = """\
-You are an embodied AI agent in a household environment. You complete tasks \
-by taking actions to interact with objects and navigate rooms.
-
-Actions available:
-  go to {receptacle}           – Navigate to a location
-  take {object} from {recep}   – Pick up an object
-  put {object} in/on {recep}   – Place an object
-  open {receptacle}            – Open a container/receptacle
-  close {receptacle}           – Close a container/receptacle
-  toggle {object/receptacle}   – Toggle on/off
-  clean {object} with {recep}  – Clean an object
-  heat {object} with {recep}   – Heat an object
-  cool {object} with {recep}   – Cool an object
-  use {receptacle}             – Use a device
-  examine {object/receptacle}  – Look at something closely
-  inventory                    – Check what you are carrying
-  look                         – Look around
+    look
+    inventory
+    examine <object>
+    go <direction>
+    open <object>
+    close <object>
+    take <object>
+    drop <object>
+    put <object> on/in <object>
+    insert <object> into <object>
+    unlock <object> with <object>
+    eat <object>
 
 Respond with EXACTLY ONE action per turn. Think step-by-step, then output \
 the action on its own line prefixed with "Action: "."""
 
-ALFWORLD_USER_TEMPLATE = """\
+TEXTWORLD_USER_TEMPLATE = """\
 Goal: {goal}
 
 Observation:
@@ -183,24 +122,18 @@ What is your next action?"""
 
 def create_benchmark_env(cfg) -> BenchmarkEnv:
     """Instantiate the correct benchmark environment from config."""
-    benchmark = cfg.get("benchmark", "webarena")
+    benchmark = cfg.get("benchmark", "humaneval")
 
-    if benchmark == "webarena":
-        from r2v.data.benchmarks.webarena_env import WebArenaEnv
-        return WebArenaEnv(cfg)
-    elif benchmark == "gaia":
-        from r2v.data.benchmarks.gaia_env import GAIAEnv
-        return GAIAEnv(cfg)
-    elif benchmark == "alfworld":
-        from r2v.data.benchmarks.alfworld_env import ALFWorldEnv
-        return ALFWorldEnv(cfg)
-    elif benchmark == "humaneval":
+    if benchmark == "humaneval":
         from r2v.data.benchmarks.humaneval_env import HumanEvalPlusEnv
         return HumanEvalPlusEnv(cfg)
+    elif benchmark == "textworld":
+        from r2v.data.benchmarks.textworld_env import TextWorldEnv
+        return TextWorldEnv(cfg)
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark}. "
-            f"Supported: webarena, gaia, alfworld, humaneval"
+            f"Supported: humaneval, textworld"
         )
 
 
@@ -210,29 +143,9 @@ def create_benchmark_env(cfg) -> BenchmarkEnv:
 def parse_action_from_response(response_text: str, benchmark: str) -> str:
     """Extract the action string from the teacher LLM's response.
 
-    For WebArena: looks for "Action: <action>" pattern.
-    For GAIA/ALFWorld/HumanEval: looks for "Action: <action>" pattern.
+    For HumanEval/TextWorld: looks for "Action: <action>" pattern.
     """
-    if benchmark == "webarena":
-        # Look for "Action: <action>" pattern
-        match = re.search(r"Action:\s*(.+?)(?:\n|$)", response_text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
-
-        # Fallback: look for a known action verb at start of any line
-        action_verbs = [
-            "click", "type", "hover", "scroll", "goto", "go_back",
-            "go_forward", "new_tab", "tab_focus", "press", "stop",
-        ]
-        for line in response_text.strip().split("\n"):
-            line = line.strip()
-            for verb in action_verbs:
-                if line.lower().startswith(verb):
-                    return line
-        # Last resort
-        return "stop [unable to parse action]"
-
-    elif benchmark in ("gaia", "alfworld", "humaneval"):
+    if benchmark in ("humaneval", "textworld"):
         # ── HumanEval: needs multiline-aware extraction ──────────
         # `write_code [<code>]` spans many lines; the generic single-line
         # regex below would truncate it to just `write_code [`.
@@ -271,38 +184,19 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
 
             return response_text.strip().split("\n")[-1]
 
-        # ── Single-line "Action: <action>" pattern (GAIA, ALFWorld) ──
+        # ── Single-line "Action: <action>" pattern ──
         match = re.search(r"Action:\s*(.+?)(?:\n|$)", response_text, re.IGNORECASE)
         if match:
             return match.group(1).strip()
 
-        # Fallback: look for tool call patterns
-        if benchmark == "gaia":
-            tool_match = re.search(
-                r"(web_search|python|calculator|file_read|answer)\s*\[",
-                response_text,
-            )
-            if tool_match:
-                start = tool_match.start()
-                # Find matching bracket
-                depth = 0
-                for i in range(tool_match.end() - 1, len(response_text)):
-                    if response_text[i] == "[":
-                        depth += 1
-                    elif response_text[i] == "]":
-                        depth -= 1
-                        if depth == 0:
-                            return response_text[start : i + 1]
-                return response_text[start:]
-
-        elif benchmark == "alfworld":
-            alf_verbs = [
-                "go to", "take", "put", "open", "close", "toggle",
-                "clean", "heat", "cool", "use", "examine", "inventory", "look",
+        if benchmark == "textworld":
+            tw_verbs = [
+                "look", "inventory", "examine", "go", "open", "close", "take",
+                "drop", "put", "insert", "unlock", "eat",
             ]
             for line in response_text.strip().split("\n"):
                 line = line.strip()
-                for verb in alf_verbs:
+                for verb in tw_verbs:
                     if line.lower().startswith(verb):
                         return line
 
@@ -313,25 +207,7 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
 
 def classify_action_type(action_text: str, benchmark: str) -> str:
     """Classify the action type for metadata."""
-    if benchmark == "webarena":
-        verb = action_text.strip().split()[0].lower() if action_text.strip() else "unknown"
-        return verb
-    elif benchmark == "gaia":
-        match = re.match(r"^(\w+)\s*\[", action_text)
-        if match:
-            tool = match.group(1)
-            if tool == "answer":
-                return "finish"
-            return tool
-        return "unknown"
-    elif benchmark == "alfworld":
-        lower = action_text.strip().lower()
-        for verb in ["go to", "take", "put", "open", "close", "toggle",
-                      "clean", "heat", "cool", "use", "examine", "inventory", "look"]:
-            if lower.startswith(verb):
-                return verb.replace(" ", "_")
-        return "unknown"
-    elif benchmark == "humaneval":
+    if benchmark == "humaneval":
         lower = action_text.strip().lower()
         if lower == "submit":
             return "submit"
@@ -339,6 +215,17 @@ def classify_action_type(action_text: str, benchmark: str) -> str:
             return "write_code"
         if lower.startswith("test"):
             return "test"
+        return "unknown"
+    elif benchmark == "textworld":
+        lower = action_text.strip().lower()
+        for verb in [
+            "look", "inventory", "examine", "go", "open", "close", "take",
+            "drop", "put", "insert", "unlock", "eat",
+        ]:
+            if lower.startswith(verb):
+                return verb
+        if lower in ("submit", "finish", "stop"):
+            return "finish"
         return "unknown"
     return "unknown"
 
@@ -360,12 +247,11 @@ def collect_with_teacher(
 ) -> Episode | None:
     """Run the teacher LLM on a single task and collect a trajectory.
 
-    For WebArena: rebuilds the prompt each turn with the current page observation.
-    For GAIA/ALFWorld/HumanEval: single-turn per step with context re-build.
+    For HumanEval/TextWorld: single-turn per step with context re-build.
     """
-    benchmark = cfg.get("benchmark", "webarena")
-    # data.max_episode_steps is set per-benchmark (e.g. 10 for humaneval, 30 for
-    # webarena); fall back to inference.step_limit only if not provided.
+    benchmark = cfg.get("benchmark", "humaneval")
+    # data.max_episode_steps is set per benchmark; fall back to
+    # inference.step_limit only if not provided.
     max_steps = (
         cfg.get("data", {}).get("max_episode_steps")
         or cfg.get("inference", {}).get("step_limit", 15)
@@ -374,18 +260,12 @@ def collect_with_teacher(
     logger.info(f"Collecting trajectory: task={task.task_id}, seed={seed}, max_steps={max_steps}")
 
     # Select prompt templates based on benchmark
-    if benchmark == "webarena":
-        system_prompt = WEBARENA_SYSTEM_PROMPT
-        user_template = WEBARENA_USER_TEMPLATE
-    elif benchmark == "gaia":
-        system_prompt = GAIA_SYSTEM_PROMPT
-        user_template = GAIA_USER_TEMPLATE
-    elif benchmark == "alfworld":
-        system_prompt = ALFWORLD_SYSTEM_PROMPT
-        user_template = ALFWORLD_USER_TEMPLATE
-    elif benchmark == "humaneval":
+    if benchmark == "humaneval":
         system_prompt = HUMANEVAL_SYSTEM_PROMPT
         user_template = HUMANEVAL_USER_TEMPLATE
+    elif benchmark == "textworld":
+        system_prompt = TEXTWORLD_SYSTEM_PROMPT
+        user_template = TEXTWORLD_USER_TEMPLATE
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
@@ -400,7 +280,6 @@ def collect_with_teacher(
     steps: list[Step] = []
     action_history: list[str] = []
     current_obs = initial_obs
-    current_url = task.extra.get("start_url", "N/A")
     total_cost = 0.0
     done = False
     t = 0
@@ -408,33 +287,18 @@ def collect_with_teacher(
 
     while not done and t < max_steps:
         # ── Build prompt / call LLM ──
-        if benchmark == "webarena":
-            max_obs_chars = cfg.get("webarena", {}).get("observation", {}).get("max_tokens", 4096) * 4
-            user_prompt = user_template.format(
-                goal=task.goal,
-                url=current_url,
-                observation=current_obs[:max_obs_chars],
-                action_history="\n".join(action_history[-5:]) if action_history else "(none)",
-            )
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-        elif benchmark in ("gaia", "alfworld", "humaneval"):
-            # Single-turn per step with full context re-build
-            fmt_kwargs = {
-                "observation": current_obs[:_MAX_PROMPT_CHARS],
-                "action_history": "\n".join(action_history[-5:]) if action_history else "(none)",
-            }
-            if benchmark == "alfworld":
-                fmt_kwargs["goal"] = task.goal
-            user_prompt = user_template.format(**fmt_kwargs)
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-        else:
-            raise ValueError(f"Unknown benchmark: {benchmark}")
+        # Single-turn per step with full context re-build
+        fmt_kwargs = {
+            "observation": current_obs[:_MAX_PROMPT_CHARS],
+            "action_history": "\n".join(action_history[-5:]) if action_history else "(none)",
+        }
+        if benchmark == "textworld":
+            fmt_kwargs["goal"] = task.goal
+        user_prompt = user_template.format(**fmt_kwargs)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
 
         try:
             step_start = time.time()
@@ -470,12 +334,7 @@ def collect_with_teacher(
 
         # Step the environment
         try:
-            if is_stop and benchmark == "webarena":
-                step_result = EnvStepResult(
-                    observation="[STOP]", reward=0.0, done=True
-                )
-            else:
-                step_result = env.step(action_text)
+            step_result = env.step(action_text)
         except Exception as e:
             logger.warning(f"Env step failed at step {t}: {e}")
             step_result = EnvStepResult(
@@ -490,7 +349,7 @@ def collect_with_teacher(
             step_idx=t,
             observation=Observation(
                 raw_text=current_obs,
-                url=current_url if benchmark == "webarena" else None,
+                url=None,
             ),
             action=Action(
                 raw_text=action_text,
@@ -504,8 +363,6 @@ def collect_with_teacher(
 
         # Update state
         current_obs = step_result.observation
-        if step_result.url:
-            current_url = step_result.url
         done = step_result.done or is_stop
 
         t += 1
@@ -562,7 +419,7 @@ def parse_args():
     )
     parser.add_argument(
         "--config", type=str, required=True,
-        help="Config YAML path (e.g., configs/webarena/clean.yaml)"
+        help="Config YAML path (e.g., configs/humaneval/clean.yaml)"
     )
     parser.add_argument(
         "--output", type=str, default="data/runs",
@@ -598,8 +455,8 @@ def parse_args():
         help=(
             "Number of parallel worker processes for trajectory collection. "
             "Each worker gets its own environment instance and LLM client. "
-            "Recommended: 2-4 for WebArena "
-            "(browser memory). Default: 1 (sequential)."
+            "Recommended: 1-4 depending on API and compute budget. "
+            "Default: 1 (sequential)."
         ),
     )
     parser.add_argument(
@@ -719,7 +576,7 @@ def _worker_collect(
         name=f"r2v.w{worker_id}",
         log_file=str(log_dir / f"worker_{worker_id}.log"),
     )
-    benchmark = cfg.get("benchmark", "webarena")
+    benchmark = cfg.get("benchmark", "humaneval")
 
     # Each worker gets its own LLM client and environment
     teacher_client = create_llm_client_from_cfg(cfg)
@@ -788,7 +645,7 @@ def main():
     args = parse_args()
     cfg = load_config(args.config, args.overrides)
 
-    benchmark = cfg.get("benchmark", "webarena")
+    benchmark = cfg.get("benchmark", "humaneval")
     num_workers = max(1, args.num_workers)
 
     # ── Initialize teacher LLM client (main process, for metadata) ───

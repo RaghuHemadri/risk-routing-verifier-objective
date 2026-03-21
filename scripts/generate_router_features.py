@@ -4,21 +4,21 @@ Generate router training features from collected trajectories.
 
 Single-GPU usage:
     python scripts/generate_router_features.py \
-        --config configs/gaia/noisy.yaml \
-        --policy-path outputs/policy/gaia_noisy/final \
-        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-        --output data/router_features/gaia.jsonl
+        --config configs/humaneval/noisy.yaml \
+        --policy-path outputs/policy/humaneval_noisy/final \
+        --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+        --output data/router_features/humaneval.jsonl
 
 Multi-GPU usage (via launch script — shards episodes across GPUs):
     bash scripts/launch_router_features.sh 4 \
-        --config configs/gaia/noisy.yaml \
-        --policy-path outputs/policy/gaia_noisy/final \
-        --trajectories data/trajectories/gaia_noisy/trajectories.jsonl \
-        --output data/router_features/gaia.jsonl
+        --config configs/humaneval/noisy.yaml \
+        --policy-path outputs/policy/humaneval_noisy/final \
+        --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
+        --output data/router_features/humaneval.jsonl
 
 Merge shards after all GPUs finish:
     python scripts/generate_router_features.py --merge \
-        --output data/router_features/gaia.jsonl
+        --output data/router_features/humaneval.jsonl
 
 Resume after a crash (re-run the same command — skips completed steps):
     # Same command; already-written episode_ids are detected automatically.
