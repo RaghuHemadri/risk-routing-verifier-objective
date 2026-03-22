@@ -65,5 +65,6 @@ config_files/
 .auth
 config_files
 exports.sh
+*.log
 
 R2V_Agent/**

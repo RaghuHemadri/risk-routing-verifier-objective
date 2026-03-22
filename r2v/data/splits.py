@@ -38,19 +38,36 @@ def _is_clean(ep: Episode) -> bool:
     return _get_perturbation_type(ep) == "none"
 
 
+def _parent_episode_id(episode_id: str) -> str:
+    """Strip ``_perturbed_seedN`` suffix to recover the parent clean episode ID."""
+    if "_perturbed_seed" in episode_id:
+        return episode_id.rsplit("_perturbed_seed", 1)[0]
+    return episode_id
+
+
 def _subsample_perturbations(
     task_eps: list[Episode],
     max_perturbations_per_task: int,
     rng: random.Random,
 ) -> list[Episode]:
-    """Keep at most max_perturbations_per_task episodes for one task."""
-    if len(task_eps) <= max_perturbations_per_task:
-        return task_eps
+    """Keep all clean episodes plus at most *max_perturbations_per_task*
+    perturbed variants **per clean episode**."""
     clean = [e for e in task_eps if _is_clean(e)]
     noisy = [e for e in task_eps if not _is_clean(e)]
-    rng.shuffle(noisy)
-    budget = max(0, max_perturbations_per_task - len(clean))
-    return clean + noisy[:budget]
+
+    by_parent: dict[str, list[Episode]] = defaultdict(list)
+    for ep in noisy:
+        by_parent[_parent_episode_id(ep.episode_id)].append(ep)
+
+    kept_noisy: list[Episode] = []
+    for children in by_parent.values():
+        if len(children) <= max_perturbations_per_task:
+            kept_noisy.extend(children)
+        else:
+            rng.shuffle(children)
+            kept_noisy.extend(children[:max_perturbations_per_task])
+
+    return clean + kept_noisy
 
 
 def _split_stats(episodes: list[Episode]) -> dict[str, Any]:
@@ -155,6 +172,7 @@ def split_episodes(
     ratios: dict[str, float] | None = None,
     max_perturbations_per_task: int | None = None,
     seed: int = 42,
+    success_only: bool = False,
 ) -> dict[Split, list[Episode]]:
     """Split episodes into train/val/test by task_id with balanced success/failure.
 
@@ -165,6 +183,9 @@ def split_episodes(
 
     All episodes for a task share the same success label (perturbations
     are applied post-hoc and don't change the outcome).
+
+    If *success_only* is True, failure tasks are dropped before splitting
+    (useful for BC training which only learns from successful episodes).
     """
     if ratios is None:
         ratios = SPLIT_RATIOS
@@ -172,6 +193,13 @@ def split_episodes(
     by_task: dict[str, list[Episode]] = defaultdict(list)
     for ep in episodes:
         by_task[ep.metadata.task_id].append(ep)
+
+    if success_only:
+        dropped = {tid for tid, eps in by_task.items() if not eps[0].success}
+        if dropped:
+            logger.info("success_only=True: dropping %d failure tasks", len(dropped))
+        by_task = {tid: eps for tid, eps in by_task.items() if tid not in dropped}
+        episodes = [ep for eps in by_task.values() for ep in eps]
 
     # ── Pre-split dataset overview ──
     logger.info("")
@@ -242,6 +270,7 @@ def load_and_split(
     max_perturbations_per_task: int | None = None,
     seed: int = 42,
     max_episodes: int | None = None,
+    success_only: bool = False,
 ) -> dict[Split, list[Episode]]:
     """Load from JSONL, then split.
 
@@ -252,11 +281,14 @@ def load_and_split(
     ratios
         Split ratios (default 70/15/15).
     max_perturbations_per_task
-        Cap perturbation variants per task.
+        Max number of perturbed variants to keep **per clean episode**
+        (clean episodes are always kept).
     seed
         RNG seed for shuffling and subsampling.
     max_episodes
         Optional cap on total episodes to load.
+    success_only
+        If True, drop failure tasks before splitting (for BC training).
     """
     store = TrajectoryStore(trajectory_path)
     episodes = store.load_episodes(max_count=max_episodes)
@@ -266,4 +298,5 @@ def load_and_split(
         ratios=ratios,
         max_perturbations_per_task=max_perturbations_per_task,
         seed=seed,
+        success_only=success_only,
     )

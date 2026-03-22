@@ -114,7 +114,14 @@ class BCTrainer:
             weight_decay=self.weight_decay,
         )
 
-        # Learning rate scheduler
+        # Prepare with accelerator first (handles model → GPU, DataLoader sharding)
+        # so len(train_loader) reflects per-process shard size.
+        model, optimizer, train_loader = accelerator.prepare(
+            self.policy.model, optimizer, train_loader
+        )
+
+        # LR scheduler — compute total_steps AFTER prepare so len(train_loader)
+        # reflects the per-GPU shard (dataset_size / num_processes / batch_size).
         total_steps = len(train_loader) * self.epochs // self.grad_accum_steps
         scheduler = get_scheduler(
             self.scheduler_type,
@@ -122,11 +129,7 @@ class BCTrainer:
             num_warmup_steps=int(total_steps * self.warmup_ratio),
             num_training_steps=total_steps,
         )
-
-        # Prepare with accelerator (handles model → GPU, DataLoader → device)
-        model, optimizer, train_loader, scheduler = accelerator.prepare(
-            self.policy.model, optimizer, train_loader, scheduler
-        )
+        scheduler = accelerator.prepare(scheduler)
         if eval_loader:
             eval_loader = accelerator.prepare(eval_loader)
 
@@ -234,14 +237,6 @@ class BCTrainer:
                                     accelerator, "best", global_step
                                 )
 
-                    # Periodic save
-                    if (
-                        accelerator.is_main_process
-                        and global_step % self.save_interval == 0
-                    ):
-                        self._save_checkpoint(
-                            accelerator, f"step_{global_step}", global_step
-                        )
 
             # End of epoch
             avg_epoch_loss = epoch_loss / max(num_batches, 1)
@@ -250,6 +245,11 @@ class BCTrainer:
                 "train_loss": avg_epoch_loss,
                 "global_step": global_step,
             })
+
+            if accelerator.is_main_process:
+                self._save_checkpoint(
+                    accelerator, f"epoch_{epoch + 1}", global_step
+                )
 
         # Final save
         if accelerator.is_main_process:
