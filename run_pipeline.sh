@@ -50,11 +50,18 @@ ROUTER_FEATURES_PATH="data/router_features/${BENCHMARK}.jsonl"
 ROUTER_PATH="outputs/router/${BENCHMARK}_noisy/router_final.pt"
 RESULTS_DIR="results/${BENCHMARK}_noisy"
 
-# Static split paths (created once by Stage 3, reused by later stages)
+# Static split paths (created once, reused by later stages)
 SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
-TRAIN_DATA="${SPLIT_DIR}/train.jsonl"
-VAL_DATA="${SPLIT_DIR}/val.jsonl"
-TEST_DATA="${SPLIT_DIR}/test.jsonl"
+
+# BC splits (success-only tasks, 2 perturbations per clean episode)
+BC_TRAIN_DATA="${SPLIT_DIR}/bc_train.jsonl"
+BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
+BC_TEST_DATA="${SPLIT_DIR}/bc_test.jsonl"
+
+# Verifier splits (all tasks, all perturbations)
+VERIFIER_TRAIN_DATA="${SPLIT_DIR}/verifier_train.jsonl"
+VERIFIER_VAL_DATA="${SPLIT_DIR}/verifier_val.jsonl"
+VERIFIER_TEST_DATA="${SPLIT_DIR}/verifier_test.jsonl"
 
 # ── Argument parsing ─────────────────────────────────────────
 FROM_STAGE=0
@@ -149,48 +156,70 @@ if should_run 2; then
     echo "✓ Noisy trajectories: ${NOISY_TRAJECTORIES}"
 fi
 
-# ── Stage 3: Train BC policy ────────────────────────────────
+# ── Stage 3a: Save static BC splits ──────────────────────────
+# Success-only tasks, 2 perturbations per clean episode.
+if should_run 3; then
+    if [[ -f "${BC_TRAIN_DATA}" && -f "${BC_VAL_DATA}" ]]; then
+        echo "✓ BC splits already exist — skipping generation"
+        echo "  train: ${BC_TRAIN_DATA}"
+        echo "  val:   ${BC_VAL_DATA}"
+    else
+        run_cmd "Stage 3a: Save static BC splits (success-only, 2 perturb/clean, 40% tasks)" \
+            python scripts/save_static_splits.py \
+                --trajectories "${NOISY_TRAJECTORIES}" \
+                --output-dir "${SPLIT_DIR}" \
+                --prefix bc \
+                --success-only \
+                --max-perturbations-per-task 2 \
+                --data-fraction 0.4 \
+                --seed 42
+        echo "✓ BC splits saved to ${SPLIT_DIR}"
+    fi
+fi
+
+# ── Stage 3b: Save static verifier splits ────────────────────
+# All tasks (success + failure), all perturbations.
+if should_run 3; then
+    if [[ -f "${VERIFIER_TRAIN_DATA}" && -f "${VERIFIER_VAL_DATA}" && -f "${VERIFIER_TEST_DATA}" ]]; then
+        echo "✓ Verifier splits already exist — skipping generation"
+        echo "  train: ${VERIFIER_TRAIN_DATA}"
+        echo "  val:   ${VERIFIER_VAL_DATA}"
+        echo "  test:  ${VERIFIER_TEST_DATA}"
+    else
+        run_cmd "Stage 3b: Save static verifier splits (all tasks, all perturbations)" \
+            python scripts/save_static_splits.py \
+                --trajectories "${NOISY_TRAJECTORIES}" \
+                --output-dir "${SPLIT_DIR}" \
+                --prefix verifier \
+                --max-perturbations-per-task 9999 \
+                --seed 42
+        echo "✓ Verifier splits saved to ${SPLIT_DIR}"
+    fi
+fi
+
+# ── Stage 3c: Train BC policy ────────────────────────────────
 if should_run 3; then
     if [[ ${NUM_GPUS} -gt 1 ]]; then
-        run_cmd "Stage 3: Train policy (behavior cloning, 40% tasks, ${NUM_GPUS} GPUs)" \
+        run_cmd "Stage 3c: Train policy (behavior cloning, ${NUM_GPUS} GPUs)" \
             accelerate launch --num_processes=${NUM_GPUS} --multi_gpu \
                 scripts/train_policy.py \
                 --config ${CONFIG_NOISY} \
                 --output outputs/policy/${BENCHMARK}_noisy \
                 --stage bc \
-                --trajectories "${NOISY_TRAJECTORIES}" \
-                --data-fraction 0.4 \
+                --train-data "${BC_TRAIN_DATA}" \
+                --val-data "${BC_VAL_DATA}" \
                 --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
     else
-        run_cmd "Stage 3: Train policy (behavior cloning, 40% tasks)" \
+        run_cmd "Stage 3c: Train policy (behavior cloning)" \
             python scripts/train_policy.py \
                 --config ${CONFIG_NOISY} \
                 --output outputs/policy/${BENCHMARK}_noisy \
                 --stage bc \
-                --trajectories "${NOISY_TRAJECTORIES}" \
-                --data-fraction 0.4 \
+                --train-data "${BC_TRAIN_DATA}" \
+                --val-data "${BC_VAL_DATA}" \
                 --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
     fi
     echo "✓ BC policy: ${POLICY_PATH}"
-fi
-
-# ── Stage 3b: Save static train/val/test splits ─────────────
-# Run once to create fixed split files; subsequent runs reuse them.
-if should_run 4; then
-    if [[ -f "${TRAIN_DATA}" && -f "${VAL_DATA}" && -f "${TEST_DATA}" ]]; then
-        echo "✓ Static splits already exist — skipping generation"
-        echo "  train: ${TRAIN_DATA}"
-        echo "  val:   ${VAL_DATA}"
-        echo "  test:  ${TEST_DATA}"
-    else
-        run_cmd "Stage 3b: Save static train/val/test splits" \
-            python scripts/save_static_splits.py \
-                --trajectories "${NOISY_TRAJECTORIES}" \
-                --output-dir "${SPLIT_DIR}" \
-                --max-perturbations-per-task 9999 \
-                --seed 42
-        echo "✓ Static splits saved to ${SPLIT_DIR}"
-    fi
 fi
 
 # ── Stage 4: Train verifier ─────────────────────────────────
@@ -199,9 +228,9 @@ if should_run 4; then
         python scripts/train_verifier.py \
             --config ${CONFIG_NOISY} \
             --output outputs/verifier/${BENCHMARK}_noisy \
-            --train-data "${TRAIN_DATA}" \
-            --val-data "${VAL_DATA}" \
-            --test-data "${TEST_DATA}" \
+            --train-data "${VERIFIER_TRAIN_DATA}" \
+            --val-data "${VERIFIER_VAL_DATA}" \
+            --test-data "${VERIFIER_TEST_DATA}" \
             --overrides ${QUANT_OVERRIDE} verifier.mode=trained \
                 training.verifier.epochs=3 training.verifier.batch_size=32 \
                 policy.max_seq_len=2048 ${COMMON_OVERRIDES}

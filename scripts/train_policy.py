@@ -17,7 +17,7 @@ This is the main policy training script that combines:
 from __future__ import annotations
 
 import argparse
-import random
+
 import sys
 from pathlib import Path
 
@@ -54,11 +54,16 @@ def parse_args():
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--stage", choices=["bc", "preference", "all"], default="all")
     parser.add_argument("--trajectories", type=str, help="Path to trajectory JSONL")
+    parser.add_argument("--train-data", type=str, default=None,
+                        help="Pre-split BC train JSONL (static splitting)")
+    parser.add_argument("--val-data", type=str, default=None,
+                        help="Pre-split BC val JSONL (static splitting)")
     parser.add_argument("--preference-data", type=str, help="Path to preference pairs JSONL")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument(
         "--data-fraction", type=float, default=1.0,
-        help="Fraction of training tasks to use (0.0–1.0). Subsamples at the task level so all episodes for selected tasks are kept.",
+        help="(Deprecated — use --data-fraction on save_static_splits.py instead.) "
+             "Ignored when --train-data is provided.",
     )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
@@ -109,43 +114,39 @@ def main():
     if args.stage in ("bc", "all"):
         logger.info("=== Stage 1: Behavior Cloning ===")
 
-        traj_path = args.trajectories or cfg.get("data", {}).get("trajectory_file", "")
-        if not traj_path:
-            logger.error("No trajectory file specified. Use --trajectories or config data.trajectory_file")
-            sys.exit(1)
+        use_static_bc = args.train_data and args.val_data
+        if use_static_bc:
+            logger.info("Loading static pre-split BC data files")
+            splits = {
+                "train": TrajectoryStore(args.train_data).load_episodes(),
+                "val": TrajectoryStore(args.val_data).load_episodes(),
+            }
+        else:
+            traj_path = args.trajectories or cfg.get("data", {}).get("trajectory_file", "")
+            if not traj_path:
+                logger.error("No trajectory file specified. Use --trajectories/--train-data or config data.trajectory_file")
+                sys.exit(1)
 
-        if not Path(traj_path).exists():
-            logger.error(f"Trajectory file not found: {traj_path}")
-            sys.exit(1)
+            if not Path(traj_path).exists():
+                logger.error(f"Trajectory file not found: {traj_path}")
+                sys.exit(1)
 
-        max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
-        splits = load_and_split(
-            traj_path,
-            max_perturbations_per_task=max_perturbations,
-            seed=int(cfg.get("project", {}).get("seed", 42)),
-        )
-        logger.info(
-            f"Task-level split: {len(splits['train'])} train, "
-            f"{len(splits['val'])} val, {len(splits['test'])} test episodes"
-        )
+            max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+            splits = load_and_split(
+                traj_path,
+                max_perturbations_per_task=max_perturbations,
+                seed=int(cfg.get("project", {}).get("seed", 42)),
+                success_only=True,
+            )
 
         train_episodes = splits["train"]
-        if args.data_fraction < 1.0:
-            rng = random.Random(int(cfg.get("project", {}).get("seed", 42)))
-            task_to_eps: dict[str, list] = {}
-            for ep in train_episodes:
-                task_to_eps.setdefault(ep.metadata.task_id, []).append(ep)
-            all_task_ids = sorted(task_to_eps.keys())
-            n_tasks_keep = max(1, int(len(all_task_ids) * args.data_fraction))
-            selected_tasks = set(rng.sample(all_task_ids, n_tasks_keep))
-            train_episodes = [ep for tid in selected_tasks for ep in task_to_eps[tid]]
-            n_success = sum(1 for ep in train_episodes if ep.success)
-            logger.info(
-                f"BC task subsampling (fraction={args.data_fraction}): "
-                f"{n_tasks_keep}/{len(all_task_ids)} tasks, "
-                f"{len(train_episodes)}/{len(splits['train'])} episodes "
-                f"({n_success} success, {len(train_episodes) - n_success} failure)"
-            )
+        n_train_tasks = len({ep.metadata.task_id for ep in train_episodes})
+        n_success = sum(1 for ep in train_episodes if ep.success)
+        logger.info(
+            f"BC data: {len(train_episodes)} train episodes across {n_train_tasks} tasks "
+            f"({n_success} success, {len(train_episodes) - n_success} failure), "
+            f"{len(splits['val'])} val episodes"
+        )
 
         max_seq_len = cfg.policy.get("max_seq_len", 4096)
         train_ds = BCDataset(tokenizer=policy.tokenizer, max_seq_len=max_seq_len, episodes=train_episodes)
