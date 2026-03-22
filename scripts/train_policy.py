@@ -58,7 +58,7 @@ def parse_args():
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument(
         "--data-fraction", type=float, default=1.0,
-        help="Fraction of training episodes to use (0.0–1.0). Useful for BC distillation ablations.",
+        help="Fraction of training tasks to use (0.0–1.0). Subsamples at the task level so all episodes for selected tasks are kept.",
     )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
@@ -132,10 +132,19 @@ def main():
         train_episodes = splits["train"]
         if args.data_fraction < 1.0:
             rng = random.Random(int(cfg.get("project", {}).get("seed", 42)))
-            n_keep = max(1, int(len(train_episodes) * args.data_fraction))
-            train_episodes = rng.sample(train_episodes, n_keep)
+            task_to_eps: dict[str, list] = {}
+            for ep in train_episodes:
+                task_to_eps.setdefault(ep.metadata.task_id, []).append(ep)
+            all_task_ids = sorted(task_to_eps.keys())
+            n_tasks_keep = max(1, int(len(all_task_ids) * args.data_fraction))
+            selected_tasks = set(rng.sample(all_task_ids, n_tasks_keep))
+            train_episodes = [ep for tid in selected_tasks for ep in task_to_eps[tid]]
+            n_success = sum(1 for ep in train_episodes if ep.success)
             logger.info(
-                f"BC data fraction={args.data_fraction}: subsampled {n_keep}/{len(splits['train'])} training episodes"
+                f"BC task subsampling (fraction={args.data_fraction}): "
+                f"{n_tasks_keep}/{len(all_task_ids)} tasks, "
+                f"{len(train_episodes)}/{len(splits['train'])} episodes "
+                f"({n_success} success, {len(train_episodes) - n_success} failure)"
             )
 
         max_seq_len = cfg.policy.get("max_seq_len", 4096)

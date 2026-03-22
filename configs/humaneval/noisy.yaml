@@ -10,9 +10,9 @@ policy:
   max_seq_len: 4096
   lora:
     enabled: true
-    r: 64
-    alpha: 128
-    dropout: 0.05
+    r: 32
+    alpha: 64
+    dropout: 0.10
   quantization:
     load_in_4bit: false
 
@@ -37,10 +37,10 @@ data:
 
 training:
   bc:
-    epochs: 5
-    batch_size: 8
-    gradient_accumulation_steps: 8
-    learning_rate: 1.5e-5
+    epochs: 3
+    batch_size: 4
+    gradient_accumulation_steps: 2
+    learning_rate: 1.5e-4
     warmup_ratio: 0.05
   preference:
     epochs: 3
