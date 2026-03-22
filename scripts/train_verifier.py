@@ -35,7 +35,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train verifier")
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--output", type=str, required=True)
-    parser.add_argument("--trajectories", type=str, required=True)
+    parser.add_argument("--trajectories", type=str, default=None,
+                        help="Full trajectories JSONL (triggers dynamic splitting)")
+    parser.add_argument("--train-data", type=str, default=None,
+                        help="Pre-split train JSONL (static splitting)")
+    parser.add_argument("--val-data", type=str, default=None,
+                        help="Pre-split val JSONL (static splitting)")
+    parser.add_argument("--test-data", type=str, default=None,
+                        help="Pre-split test JSONL (static splitting)")
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -60,18 +67,42 @@ def main():
         mode=log_cfg.get("wandb_mode", "disabled"),
     )
 
-    # ── Load, split, and label trajectories ──
-    max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
-    splits = load_and_split(
-        args.trajectories,
-        max_perturbations_per_task=max_perturbations,
-        seed=int(cfg.get("project", {}).get("seed", 42)),
-    )
+    # ── Load trajectories (static pre-split files or dynamic splitting) ──
+    use_static = args.train_data and args.val_data
+    if use_static:
+        logger.info("Loading static pre-split data files")
+        splits = {
+            "train": TrajectoryStore(args.train_data).load_episodes(),
+            "val": TrajectoryStore(args.val_data).load_episodes(),
+            "test": TrajectoryStore(args.test_data).load_episodes() if args.test_data else [],
+        }
+    else:
+        if not args.trajectories:
+            raise ValueError("Provide either --trajectories or --train-data/--val-data")
+        max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+        splits = load_and_split(
+            args.trajectories,
+            max_perturbations_per_task=max_perturbations,
+            seed=int(cfg.get("project", {}).get("seed", 42)),
+        )
     all_episodes = splits["train"] + splits["val"] + splits["test"]
     logger.info(
         f"Task-level split: {len(splits['train'])} train, "
         f"{len(splits['val'])} val, {len(splits['test'])} test episodes"
     )
+
+    for sname, seps in splits.items():
+        if not seps:
+            continue
+        n_s = sum(1 for ep in seps if ep.success)
+        n_f = len(seps) - n_s
+        task_ids = {ep.metadata.task_id for ep in seps}
+        logger.info(
+            "  Verifier %-5s: %d episodes (%d success / %d failure, %.1f%% success) "
+            "across %d tasks",
+            sname, len(seps), n_s, n_f,
+            n_s / len(seps) * 100, len(task_ids),
+        )
 
     # Apply step-level labeling
     benchmark = cfg.get("data", {}).get("benchmark", "gaia")
