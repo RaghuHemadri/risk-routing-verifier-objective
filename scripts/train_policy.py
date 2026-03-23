@@ -17,7 +17,7 @@ This is the main policy training script that combines:
 from __future__ import annotations
 
 import argparse
-
+import re
 import sys
 from pathlib import Path
 
@@ -68,6 +68,13 @@ def parse_args():
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
+def model_type_tag(model_name: str) -> str:
+    """Create a filesystem-safe short model tag for checkpoint directories."""
+    # Keep the right-most segment so HF org prefixes do not bloat folder names.
+    short_name = str(model_name).split("/")[-1].strip().lower()
+    tag = re.sub(r"[^a-z0-9._-]+", "-", short_name)
+    tag = re.sub(r"-+", "-", tag).strip("-._")
+    return tag or "unknown-model"
 
 def main():
     args = parse_args()
@@ -154,12 +161,15 @@ def main():
         logger.info(f"BCDataset: {len(train_ds)} train, {len(val_ds)} val examples (from successful episodes)")
 
         bc_cfg = OmegaConf.to_container(cfg.training.bc, resolve=True)
+        model_name = cfg.get("policy", {}).get("model_name", "unknown-model")
+        bc_output_dir = output_dir / f"bc_{model_type_tag(model_name)}"
+        logger.info(f"BC checkpoint directory: {bc_output_dir}")
         bc_trainer = BCTrainer(
             policy=policy,
             train_dataset=train_ds,
             eval_dataset=val_ds,
             config=bc_cfg,
-            output_dir=str(output_dir / "bc"),
+            output_dir=str(bc_output_dir),
             collate_fn=BCDataset.collate_fn,
             resume_state_path=resume_bc_state_path,
         )
