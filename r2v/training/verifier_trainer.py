@@ -23,6 +23,70 @@ from transformers import get_scheduler
 logger = logging.getLogger(__name__)
 
 
+def _binary_clf_metrics(
+    scores: torch.Tensor, labels: torch.Tensor, threshold: float = 0.5
+) -> dict[str, float]:
+    """Compute precision, recall, F1, accuracy, and AUROC for binary predictions.
+
+    Args:
+        scores: predicted probabilities in [0, 1]
+        labels: ground-truth binary labels (0 or 1)
+        threshold: decision boundary for precision/recall/F1/accuracy
+    """
+    preds = (scores > threshold).float()
+    tp = ((preds == 1) & (labels == 1)).sum().float()
+    fp = ((preds == 1) & (labels == 0)).sum().float()
+    fn = ((preds == 0) & (labels == 1)).sum().float()
+    tn = ((preds == 0) & (labels == 0)).sum().float()
+
+    accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-8)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+    f1 = 2 * precision * recall / (precision + recall + 1e-8)
+
+    # AUROC — sort-based, no sklearn dependency
+    auroc = _compute_auroc(scores, labels)
+
+    return {
+        "accuracy": accuracy.item(),
+        "precision": precision.item(),
+        "recall": recall.item(),
+        "f1": f1.item(),
+        "auroc": auroc,
+        "tp": tp.item(),
+        "fp": fp.item(),
+        "fn": fn.item(),
+        "tn": tn.item(),
+    }
+
+
+def _compute_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
+    """Compute AUROC via the trapezoidal rule (no external dependencies)."""
+    if labels.sum() == 0 or labels.sum() == len(labels):
+        return 0.5  # undefined when only one class is present
+
+    desc_idx = scores.argsort(descending=True)
+    sorted_labels = labels[desc_idx].float()
+    n_pos = sorted_labels.sum()
+    n_neg = len(sorted_labels) - n_pos
+
+    tpr_prev, fpr_prev = 0.0, 0.0
+    tp, fp = 0.0, 0.0
+    auc = 0.0
+
+    for label_val in sorted_labels:
+        if label_val == 1.0:
+            tp += 1
+        else:
+            fp += 1
+        tpr = tp / n_pos
+        fpr = fp / n_neg
+        auc += 0.5 * (tpr + tpr_prev) * (fpr - fpr_prev)
+        tpr_prev, fpr_prev = tpr, fpr
+
+    return float(auc)
+
+
 class VerifierTrainer:
     """Trainer for the step/outcome verifier."""
 
@@ -86,17 +150,54 @@ class VerifierTrainer:
 
         metrics["total_loss"] = total_loss.item()
 
-        # Accuracy metrics
+        # Classification metrics (threshold=0.5)
         with torch.no_grad():
-            final_preds = (outputs["final_score"] > 0.5).float()
-            metrics["final_accuracy"] = (
-                final_preds == batch["final_label"]
-            ).float().mean().item()
+            clf = _binary_clf_metrics(outputs["final_score"], batch["final_label"])
+            for k, v in clf.items():
+                metrics[f"final_{k}"] = v
 
         return total_loss, metrics
 
+    @torch.no_grad()
+    def evaluate(self, model, eval_loader, accelerator) -> dict[str, float]:
+        """Run full validation pass and return aggregated metrics."""
+        model.eval()
+
+        all_scores = []
+        all_labels = []
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in eval_loader:
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+            )
+            loss, _ = self.compute_loss(outputs, batch)
+            total_loss += loss.item()
+            num_batches += 1
+
+            all_scores.append(outputs["final_score"])
+            all_labels.append(batch["final_label"])
+
+        all_scores = torch.cat(all_scores, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
+
+        # Gather across processes for multi-GPU
+        if accelerator.num_processes > 1:
+            all_scores = accelerator.gather(all_scores)
+            all_labels = accelerator.gather(all_labels)
+
+        clf = _binary_clf_metrics(all_scores, all_labels)
+        clf["loss"] = total_loss / max(num_batches, 1)
+        clf["n_samples"] = len(all_scores)
+        clf["pos_rate"] = all_labels.float().mean().item()
+
+        model.train()
+        return clf
+
     def train(self, accelerator=None) -> dict[str, Any]:
-        """Run verifier training."""
+        """Run verifier training with per-epoch validation."""
         from accelerate import Accelerator
 
         if accelerator is None:
@@ -107,9 +208,16 @@ class VerifierTrainer:
 
         # Use dynamic-padding collate_fn if available (VerifierDataset provides one)
         collate_fn = getattr(self.train_dataset, 'collate_fn', None)
-        # For random_split subsets, look on the underlying dataset
         if collate_fn is None and hasattr(self.train_dataset, 'dataset'):
             collate_fn = getattr(self.train_dataset.dataset, 'collate_fn', None)
+
+        eval_collate_fn = None
+        if self.eval_dataset is not None:
+            eval_collate_fn = getattr(self.eval_dataset, 'collate_fn', None)
+            if eval_collate_fn is None and hasattr(self.eval_dataset, 'dataset'):
+                eval_collate_fn = getattr(self.eval_dataset.dataset, 'collate_fn', None)
+            if eval_collate_fn is None:
+                eval_collate_fn = collate_fn
 
         train_loader = DataLoader(
             self.train_dataset,
@@ -120,6 +228,18 @@ class VerifierTrainer:
             drop_last=True,
             collate_fn=collate_fn,
         )
+
+        eval_loader = None
+        if self.eval_dataset is not None:
+            eval_loader = DataLoader(
+                self.eval_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=False,
+                collate_fn=eval_collate_fn,
+            )
 
         # Only train the classification heads (backbone is frozen)
         trainable_params = [
@@ -146,11 +266,15 @@ class VerifierTrainer:
             num_training_steps=total_steps,
         )
 
-        model, optimizer, train_loader, scheduler = accelerator.prepare(
-            self.verifier, optimizer, train_loader, scheduler
-        )
+        prepare_args = [self.verifier, optimizer, train_loader, scheduler]
+        if eval_loader is not None:
+            prepare_args.append(eval_loader)
+            model, optimizer, train_loader, scheduler, eval_loader = accelerator.prepare(*prepare_args)
+        else:
+            model, optimizer, train_loader, scheduler = accelerator.prepare(*prepare_args)
 
         global_step = 0
+        best_val_f1 = -1.0
         metrics_history = []
 
         for epoch in range(self.epochs):
@@ -184,16 +308,82 @@ class VerifierTrainer:
                         accelerator.print(
                             f"[Verifier] Epoch {epoch+1} Step {global_step} "
                             f"Loss={avg.get('total_loss', 0):.4f} "
-                            f"Acc={avg.get('final_accuracy', 0):.3f}"
+                            f"Acc={avg.get('final_accuracy', 0):.3f} "
+                            f"F1={avg.get('final_f1', 0):.3f}"
                         )
 
+            # ── End-of-epoch train summary ──
             avg_metrics = {k: v / max(num_batches, 1) for k, v in epoch_metrics.items()}
             avg_metrics["epoch"] = epoch + 1
+
+            accelerator.print(
+                f"\n[Verifier] ── Epoch {epoch+1}/{self.epochs} Train ──\n"
+                f"  Loss={avg_metrics.get('total_loss', 0):.4f}  "
+                f"Acc={avg_metrics.get('final_accuracy', 0):.3f}  "
+                f"F1={avg_metrics.get('final_f1', 0):.3f}  "
+                f"P={avg_metrics.get('final_precision', 0):.3f}  "
+                f"R={avg_metrics.get('final_recall', 0):.3f}  "
+                f"AUROC={avg_metrics.get('final_auroc', 0):.3f}"
+            )
+
+            # ── Validation ──
+            if eval_loader is not None:
+                val_metrics = self.evaluate(model, eval_loader, accelerator)
+                for k, v in val_metrics.items():
+                    avg_metrics[f"val_{k}"] = v
+
+                accelerator.print(
+                    f"[Verifier] ── Epoch {epoch+1}/{self.epochs} Val ──\n"
+                    f"  Loss={val_metrics['loss']:.4f}  "
+                    f"Acc={val_metrics['accuracy']:.3f}  "
+                    f"F1={val_metrics['f1']:.3f}  "
+                    f"P={val_metrics['precision']:.3f}  "
+                    f"R={val_metrics['recall']:.3f}  "
+                    f"AUROC={val_metrics['auroc']:.3f}\n"
+                    f"  TP={val_metrics['tp']:.0f}  FP={val_metrics['fp']:.0f}  "
+                    f"FN={val_metrics['fn']:.0f}  TN={val_metrics['tn']:.0f}  "
+                    f"N={val_metrics['n_samples']}  "
+                    f"pos_rate={val_metrics['pos_rate']:.2%}"
+                )
+
+                # Save best model by val F1
+                if val_metrics["f1"] > best_val_f1:
+                    best_val_f1 = val_metrics["f1"]
+                    if accelerator.is_main_process:
+                        best_path = self.output_dir / "best"
+                        best_path.mkdir(parents=True, exist_ok=True)
+                        unwrapped = accelerator.unwrap_model(model)
+                        torch.save(unwrapped.state_dict(), best_path / "verifier.pt")
+                        accelerator.print(
+                            f"  ✓ New best model saved (val F1={best_val_f1:.4f})"
+                        )
+
+            # ── Save epoch checkpoint ──
+            if accelerator.is_main_process:
+                epoch_path = self.output_dir / f"epoch_{epoch + 1}"
+                epoch_path.mkdir(parents=True, exist_ok=True)
+                unwrapped = accelerator.unwrap_model(model)
+                torch.save(unwrapped.state_dict(), epoch_path / "verifier.pt")
+                accelerator.print(
+                    f"  Saved epoch {epoch + 1} checkpoint to {epoch_path}"
+                )
+
             metrics_history.append(avg_metrics)
 
+        # Save final model
         if accelerator.is_main_process:
             save_path = self.output_dir / "final"
             save_path.mkdir(parents=True, exist_ok=True)
-            torch.save(self.verifier.state_dict(), save_path / "verifier.pt")
+            unwrapped = accelerator.unwrap_model(model)
+            torch.save(unwrapped.state_dict(), save_path / "verifier.pt")
+            accelerator.print(
+                f"\n[Verifier] Final model saved to {save_path}\n"
+                f"[Verifier] Best val F1={best_val_f1:.4f} "
+                f"(checkpoint at {self.output_dir / 'best'})"
+            )
 
-        return {"history": metrics_history, "total_steps": global_step}
+        return {
+            "history": metrics_history,
+            "total_steps": global_step,
+            "best_val_f1": best_val_f1,
+        }

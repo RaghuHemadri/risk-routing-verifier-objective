@@ -1,0 +1,14 @@
+source /ext3/env.sh
+conda activate ${ENV_NAME:-pt311}
+cd /scratch/rh3884/humaira/risk-routing-verifier-objective
+nohup env NUM_GPUS=4 bash run_pipeline.sh --only 3 > run_pipeline_stage3.log 2>&1 &
+tail -f /scratch/rh3884/humaira/risk-routing-verifier-objective/run_pipeline_stage3.log
+
+
+#verifier training
+source /ext3/env.sh
+conda activate ${ENV_NAME:-pt311}
+cd /scratch/rh3884/humaira/risk-routing-verifier-objective
+source exports.sh
+nohup bash run_verifier_training.sh > logs/verifier_all.log 2>&1 &
+tail -f logs/verifier_all.log
