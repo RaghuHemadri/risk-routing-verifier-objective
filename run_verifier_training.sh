@@ -35,7 +35,8 @@ NUM_GPUS="${NUM_GPUS:-4}"
 DRY_RUN=false
 VERIFIER_EPOCHS="${VERIFIER_EPOCHS:-5}"
 FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
-FOCAL_ALPHA="${FOCAL_ALPHA:-0.25}"
+FOCAL_ALPHA="${FOCAL_ALPHA:-0.22}"   # (1-alpha)=0.78 upweights failure class
+LDAM_C="${LDAM_C:-0.5}"             # LDAM margin: Δ_j = C / n_j^(1/4)
 FROM_BASE=false
 VERIFIER_FREEZE_BACKBONE="${VERIFIER_FREEZE_BACKBONE:-true}"
 VERIFIER_USE_LORA="${VERIFIER_USE_LORA:-true}"
@@ -49,7 +50,7 @@ VERIFIER_VAL_DATA="${SPLIT_DIR}/verifier_val.jsonl"
 VERIFIER_TEST_DATA="${SPLIT_DIR}/verifier_test.jsonl"
 
 QUANT_OVERRIDE="policy.quantization.load_in_4bit=false"
-COMMON_OVERRIDES="logging.wandb_mode=disabled"
+COMMON_OVERRIDES="logging.wandb_mode=disabled training.verifier.use_ldam=true training.verifier.ldam_C=${LDAM_C}"
 
 BC_BASE="outputs/policy/${BENCHMARK}_noisy"
 MERGED_BASE="outputs/merged"

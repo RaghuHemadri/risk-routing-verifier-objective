@@ -376,11 +376,10 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             ])
             in_dim = hidden_dim
 
-        # Final outcome head
+        # Final outcome head — Sigmoid applied explicitly in forward() for LDAM compatibility
         self.final_head = nn.Sequential(
             *layers,
             nn.Linear(in_dim, 1),
-            nn.Sigmoid(),
         )
 
         # Step-level head (optional multi-task) — independent copy of same architecture
@@ -394,7 +393,7 @@ class TrainedVerifier(BaseVerifier, nn.Module):
                     nn.Dropout(dropout),
                 ])
                 s_in = hidden_dim
-            step_layers.extend([nn.Linear(s_in, 1), nn.Sigmoid()])
+            step_layers.append(nn.Linear(s_in, 1))
             self.step_head = nn.Sequential(*step_layers)
         else:
             self.step_head = None
@@ -448,12 +447,21 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        """Forward pass returning final and step scores."""
+        """Forward pass returning final logit, final score, and optional step score.
+
+        Returns both pre-sigmoid logits (for LDAM margin adjustment in training)
+        and sigmoid-activated scores (for inference and metrics).
+        """
         pooled = self._encode(input_ids, attention_mask)
 
-        result = {"final_score": self.final_head(pooled).squeeze(-1)}
+        final_logit = self.final_head(pooled).squeeze(-1)
+        result = {
+            "final_logit": final_logit,
+            "final_score": torch.sigmoid(final_logit),
+        }
         if self.step_head is not None:
-            result["step_score"] = self.step_head(pooled).squeeze(-1)
+            step_logit = self.step_head(pooled).squeeze(-1)
+            result["step_score"] = torch.sigmoid(step_logit)
 
         return result
 
