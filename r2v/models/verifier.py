@@ -328,6 +328,8 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         hidden_dim = config.get("hidden_dim", 1024)
         num_layers = config.get("num_layers", 2)
         dropout = config.get("dropout", 0.1)
+        self.freeze_backbone = bool(config.get("freeze_backbone", True))
+        self.use_lora = bool(config.get("lora", {}).get("enabled", False))
 
         # Backbone encoder
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -345,9 +347,21 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             # device placement during training.  For standalone inference
             # the caller can .to(device) explicitly.
         )
-        # Freeze backbone (only train head)
+
+        # Optional LoRA adapters on top of the verifier backbone.
+        if self.use_lora:
+            self._apply_lora(config.get("lora", {}))
+
+        # Optionally freeze backbone (default keeps previous behavior).
         for param in self.backbone.parameters():
-            param.requires_grad = False
+            param.requires_grad = not self.freeze_backbone
+
+        # If LoRA is enabled, keep adapter weights trainable even when
+        # the base backbone is frozen.
+        if self.use_lora and self.freeze_backbone:
+            for name, param in self.backbone.named_parameters():
+                if "lora_" in name:
+                    param.requires_grad = True
 
         backbone_dim = self.backbone.config.hidden_size
 
@@ -385,9 +399,37 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         else:
             self.step_head = None
 
+    def _apply_lora(self, lora_config: dict[str, Any]):
+        """Attach LoRA adapters to the verifier backbone."""
+        from peft import LoraConfig, TaskType, get_peft_model
+
+        peft_cfg = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=lora_config.get("r", 16),
+            lora_alpha=lora_config.get("alpha", 32),
+            lora_dropout=lora_config.get("dropout", 0.05),
+            target_modules=lora_config.get(
+                "target_modules",
+                [
+                    "q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj",
+                ],
+            ),
+            bias="none",
+        )
+        self.backbone = get_peft_model(self.backbone, peft_cfg)
+        try:
+            self.backbone.print_trainable_parameters()
+        except Exception:
+            pass
+
     def _encode(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Get pooled hidden state from backbone."""
-        with torch.no_grad():
+        # Keep gradients when backbone updates are enabled, including LoRA-only
+        # training where the frozen base has trainable adapter weights.
+        enable_backbone_grads = (not self.freeze_backbone) or self.use_lora
+        grad_ctx = torch.enable_grad() if enable_backbone_grads else torch.no_grad()
+        with grad_ctx:
             outputs = self.backbone(
                 input_ids=input_ids,
                 attention_mask=attention_mask,

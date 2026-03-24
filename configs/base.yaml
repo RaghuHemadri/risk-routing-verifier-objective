@@ -55,6 +55,13 @@ verifier:
     # model_name: gpt-4o
   trained:
     backbone: meta-llama/Llama-3.1-8B-Instruct
+    freeze_backbone: true
+    lora:
+      enabled: false
+      r: 16
+      alpha: 32
+      dropout: 0.05
+      target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     hidden_dim: 1024
     num_layers: 2
     dropout: 0.1
