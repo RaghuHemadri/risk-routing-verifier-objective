@@ -36,6 +36,7 @@ DRY_RUN=false
 VERIFIER_EPOCHS="${VERIFIER_EPOCHS:-5}"
 FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
 FOCAL_ALPHA="${FOCAL_ALPHA:-0.25}"
+FROM_BASE=false
 
 SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
 VERIFIER_TRAIN_DATA="${SPLIT_DIR}/verifier_train.jsonl"
@@ -56,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)  DRY_RUN=true; shift ;;
         --gpus)     NUM_GPUS="$2"; shift 2 ;;
+        --from-base) FROM_BASE=true; shift ;;
         --help|-h)
             head -24 "$0" | tail -21
             exit 0
@@ -107,6 +109,7 @@ echo "  GPUs:        ${NUM_GPUS}"
 echo "  Dry run:     ${DRY_RUN}"
 echo "  Epochs:      ${VERIFIER_EPOCHS}"
 echo "  Variants:    focal + bce"
+echo "  Source:      $([[ ${FROM_BASE} == true ]] && echo 'pretrained base models' || echo 'merged BC checkpoints')"
 echo ""
 
 ERRORS=0
@@ -118,15 +121,17 @@ for f in "${VERIFIER_TRAIN_DATA}" "${VERIFIER_VAL_DATA}" "${VERIFIER_TEST_DATA}"
     fi
 done
 
-for tag in "${MODEL_TAGS[@]}"; do
-    bc_best="${BC_BASE}/${MODEL_BC_DIR[$tag]}/best"
-    if [[ ! -f "${bc_best}/model.safetensors" ]]; then
-        echo "  ERROR: Missing BC checkpoint: ${bc_best}/model.safetensors"
-        ERRORS=1
-    else
-        echo "  ✓ BC best checkpoint: ${bc_best}"
-    fi
-done
+if [[ ${FROM_BASE} == false ]]; then
+    for tag in "${MODEL_TAGS[@]}"; do
+        bc_best="${BC_BASE}/${MODEL_BC_DIR[$tag]}/best"
+        if [[ ! -f "${bc_best}/model.safetensors" ]]; then
+            echo "  ERROR: Missing BC checkpoint: ${bc_best}/model.safetensors"
+            ERRORS=1
+        else
+            echo "  ✓ BC best checkpoint: ${bc_best}"
+        fi
+    done
+fi
 
 if [[ ${ERRORS} -ne 0 ]]; then
     echo ""
@@ -135,29 +140,37 @@ if [[ ${ERRORS} -ne 0 ]]; then
 fi
 
 echo ""
-echo "  Models to train (backbone from BC best/ weights):"
+if [[ ${FROM_BASE} == true ]]; then
+    echo "  Models to train (pretrained backbones):"
+else
+    echo "  Models to train (backbone from BC best/ weights):"
+fi
 for tag in "${MODEL_TAGS[@]}"; do
     echo "    ${tag}"
     echo "      HF base:    ${MODEL_HF_ID[$tag]}"
-    echo "      BC weights:  ${BC_BASE}/${MODEL_BC_DIR[$tag]}/best"
-    echo "      Merged to:   ${MERGED_BASE}/${tag}"
+    if [[ ${FROM_BASE} == false ]]; then
+        echo "      BC weights:  ${BC_BASE}/${MODEL_BC_DIR[$tag]}/best"
+        echo "      Merged to:   ${MERGED_BASE}/${tag}"
+    fi
 done
 echo ""
 
-# Back up the original noisy.yaml
-cp "${CONFIG_NOISY}" "${CONFIG_NOISY}.bak"
-echo "  Backed up ${CONFIG_NOISY} → ${CONFIG_NOISY}.bak"
-echo ""
+if [[ ${FROM_BASE} == false ]]; then
+    # Back up the original noisy.yaml
+    cp "${CONFIG_NOISY}" "${CONFIG_NOISY}.bak"
+    echo "  Backed up ${CONFIG_NOISY} → ${CONFIG_NOISY}.bak"
+    echo ""
 
-# ── Cleanup trap: restore noisy.yaml on exit ──────────────────
-cleanup() {
-    if [[ -f "${CONFIG_NOISY}.bak" ]]; then
-        cp "${CONFIG_NOISY}.bak" "${CONFIG_NOISY}"
-        echo ""
-        echo "  Restored ${CONFIG_NOISY} from backup"
-    fi
-}
-trap cleanup EXIT
+    # ── Cleanup trap: restore noisy.yaml on exit ──────────────────
+    cleanup() {
+        if [[ -f "${CONFIG_NOISY}.bak" ]]; then
+            cp "${CONFIG_NOISY}.bak" "${CONFIG_NOISY}"
+            echo ""
+            echo "  Restored ${CONFIG_NOISY} from backup"
+        fi
+    }
+    trap cleanup EXIT
+fi
 
 # ── Sequential training loop ─────────────────────────────────
 TOTAL=${#MODEL_TAGS[@]}
@@ -177,42 +190,46 @@ for tag in "${MODEL_TAGS[@]}"; do
     echo "════════════════════════════════════════════════════════"
     echo "  [${CURRENT}/${TOTAL}] Verifier: ${tag}"
     echo "    HF base:     ${hf_id}"
-    echo "    BC best/:    ${bc_best}"
-    echo "    Merged dir:  ${merged_dir}"
+    if [[ ${FROM_BASE} == false ]]; then
+        echo "    BC best/:    ${bc_best}"
+        echo "    Merged dir:  ${merged_dir}"
+    fi
     echo "    Output base: ${base_output_dir}"
     echo "    Log base:    ${base_logfile}"
     echo "════════════════════════════════════════════════════════"
     echo ""
 
-    # ── Step 1: Merge BC checkpoint into a standalone HF model dir ──
-    echo "  Step 1: Merging BC checkpoint → ${merged_dir}"
-    MERGE_CMD=(
-        python scripts/merge_bc_for_verifier.py
-        --hf-model-id "${hf_id}"
-        --bc-checkpoint "${bc_best}"
-        --output "${merged_dir}"
-        --lora-r "${MODEL_LORA_R[$tag]}"
-        --lora-alpha "${MODEL_LORA_ALPHA[$tag]}"
-    )
-    echo "    ${MERGE_CMD[*]}"
+    BACKBONE_PATH="${hf_id}"
+    if [[ ${FROM_BASE} == false ]]; then
+        # ── Step 1: Merge BC checkpoint into a standalone HF model dir ──
+        echo "  Step 1: Merging BC checkpoint → ${merged_dir}"
+        MERGE_CMD=(
+            python scripts/merge_bc_for_verifier.py
+            --hf-model-id "${hf_id}"
+            --bc-checkpoint "${bc_best}"
+            --output "${merged_dir}"
+            --lora-r "${MODEL_LORA_R[$tag]}"
+            --lora-alpha "${MODEL_LORA_ALPHA[$tag]}"
+        )
+        echo "    ${MERGE_CMD[*]}"
 
-    if ${DRY_RUN}; then
-        echo "    [DRY RUN] Skipping merge"
-    else
-        if ! "${MERGE_CMD[@]}" 2>&1 | tee -a "${base_logfile}"; then
-            echo "  ✗ Merge FAILED for ${tag}"
-            FAILED+=("${tag}:merge")
-            echo ""
-            continue
+        if ${DRY_RUN}; then
+            echo "    [DRY RUN] Skipping merge"
+        else
+            if ! "${MERGE_CMD[@]}" 2>&1 | tee -a "${base_logfile}"; then
+                echo "  ✗ Merge FAILED for ${tag}"
+                FAILED+=("${tag}:merge")
+                echo ""
+                continue
+            fi
         fi
-    fi
-    echo ""
+        echo ""
 
-    # ── Step 2: Update noisy.yaml to point at the merged model dir ──
-    # Use absolute path so train_verifier.py can find it
-    MERGED_ABS="$(cd "${SCRIPT_DIR}" && realpath "${merged_dir}" 2>/dev/null || echo "${SCRIPT_DIR}/${merged_dir}")"
+        # ── Step 2: Update noisy.yaml to point at the merged model dir ──
+        # Use absolute path so train_verifier.py can find it
+        MERGED_ABS="$(cd "${SCRIPT_DIR}" && realpath "${merged_dir}" 2>/dev/null || echo "${SCRIPT_DIR}/${merged_dir}")"
 
-    python3 -c "
+        python3 -c "
 import sys
 
 config_path = '${CONFIG_NOISY}'
@@ -240,7 +257,9 @@ with open(config_path, 'w') as f:
 print(f'  Updated {config_path}:')
 print(f'    verifier.trained.backbone = {new_backbone}')
 "
-    echo ""
+        echo ""
+        BACKBONE_PATH="${MERGED_ABS}"
+    fi
 
     # ── Step 3: Run verifier training (two variants, sequentially) ──
     for variant in focal bce; do
@@ -250,7 +269,7 @@ print(f'    verifier.trained.backbone = {new_backbone}')
         OVERRIDES=(
             "${QUANT_OVERRIDE}"
             "verifier.mode=trained"
-            "verifier.trained.backbone=${MERGED_ABS}"
+            "verifier.trained.backbone=${BACKBONE_PATH}"
             "training.verifier.epochs=${VERIFIER_EPOCHS}"
             "training.verifier.batch_size=4"
             "training.verifier.gradient_accumulation_steps=4"
