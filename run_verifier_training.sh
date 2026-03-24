@@ -34,8 +34,9 @@ CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
 NUM_GPUS="${NUM_GPUS:-4}"
 DRY_RUN=false
 VERIFIER_EPOCHS="${VERIFIER_EPOCHS:-5}"
-VERIFIER_BATCH_SIZE="${VERIFIER_BATCH_SIZE:-2}"
-VERIFIER_GRAD_ACCUM="${VERIFIER_GRAD_ACCUM:-4}"
+VERIFIER_BATCH_SIZE="${VERIFIER_BATCH_SIZE:-1}"
+VERIFIER_GRAD_ACCUM="${VERIFIER_GRAD_ACCUM:-8}"
+VERIFIER_MAX_SEQ_LEN="${VERIFIER_MAX_SEQ_LEN:-1024}"
 FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
 FOCAL_ALPHA="${FOCAL_ALPHA:-0.22}"   # (1-alpha)=0.78 upweights failure class
 LDAM_C="${LDAM_C:-0.5}"             # LDAM margin: Δ_j = C / n_j^(1/4)
@@ -125,6 +126,7 @@ echo "  Epochs:      ${VERIFIER_EPOCHS}"
 echo "  Batch size:  ${VERIFIER_BATCH_SIZE}"
 echo "  Grad accum:  ${VERIFIER_GRAD_ACCUM}"
 echo "  Eff. batch:  $(( VERIFIER_BATCH_SIZE * VERIFIER_GRAD_ACCUM ))"
+echo "  Max seq len: ${VERIFIER_MAX_SEQ_LEN}"
 echo "  Variants:    focal + bce"
 echo "  Source:      $([[ ${FROM_BASE} == true ]] && echo 'pretrained base models' || echo 'merged BC checkpoints')"
 echo "  Freeze BB:   ${VERIFIER_FREEZE_BACKBONE}"
@@ -301,7 +303,7 @@ print(f'    verifier.trained.backbone = {new_backbone}')
             "training.verifier.epochs=${VERIFIER_EPOCHS}"
             "training.verifier.batch_size=${VERIFIER_BATCH_SIZE}"
             "training.verifier.gradient_accumulation_steps=${VERIFIER_GRAD_ACCUM}"
-            "policy.max_seq_len=2048"
+            "policy.max_seq_len=${VERIFIER_MAX_SEQ_LEN}"
             "${COMMON_OVERRIDES[@]}"
         )
 

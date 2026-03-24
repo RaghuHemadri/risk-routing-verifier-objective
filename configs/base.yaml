@@ -56,6 +56,7 @@ verifier:
   trained:
     backbone: meta-llama/Llama-3.1-8B-Instruct
     freeze_backbone: true
+    gradient_checkpointing: true
     lora:
       enabled: false
       r: 16
