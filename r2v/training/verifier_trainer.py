@@ -7,6 +7,70 @@ Trains V_φ to predict success/progress for (x, a) pairs:
 
 Optionally multi-tasks with step-level labels y^step_t (agent analogue
 of process-supervised reward modeling).
+
+Class-Imbalance Handling
+------------------------
+The HumanEval verifier dataset is ~78% success / ~22% failure, causing a
+degenerate "all-success" predictor (TN=0, FP≈constant) under naive training.
+Four complementary techniques are applied to address this:
+
+1. Class-Balanced Sampling (cRT) [Kang2020]
+   WeightedRandomSampler gives each class equal probability per batch (50/50).
+   This implements Stage 2 of Decoupled Training: the frozen backbone is Stage 1
+   (representation already learned); re-training the MLP head with balanced batches
+   directly corrects minority-class weight collapse.
+
+2. LDAM Margin Loss [Cao2019]
+   Per-class margins Δ_j = C / n_j^(1/4) are subtracted from the logit of the
+   true class before BCE, giving the minority (failure) class a larger required
+   decision margin. Applied on top of class-weighted BCE.
+
+3. Focal Loss [Lin2017]
+   Modulating factor (1−p_t)^γ down-weights easy majority (success) examples
+   and concentrates gradient on hard minority (failure) examples.
+   α-balancing (focal_alpha) further upweights the failure class per sample.
+
+4. Tau-Normalization [Kang2020]
+   Post-hoc correction: divides each Linear weight row by ||w||^τ (τ=0.5).
+   After joint training on imbalanced data, ||w_failure|| << ||w_success||;
+   tau-normalization equalises norms without retraining and is saved to tau_norm/.
+
+Threshold Selection
+-------------------
+Validation threshold is chosen by maximising balanced accuracy
+  BA = sqrt(TPR × TNR)                                         [Davis2006]
+rather than F1, which is insensitive to TN=0 (a model predicting all-success
+achieves F1≈0.88 at 78% prevalence).
+
+Primary Metric
+--------------
+PR-AUC is tracked as the primary metric alongside AUROC.          [Davis2006]
+A random classifier achieves PR-AUC = prevalence ≈ 0.22.
+Unlike AUROC/F1, PR-AUC penalises constant FP directly.
+
+References
+----------
+[Lin2017]  T.-Y. Lin et al., "Focal Loss for Dense Object Detection,"
+           ICCV 2017. arXiv:1708.02002.
+           https://arxiv.org/abs/1708.02002
+
+[Cao2019]  K. Cao et al., "Learning Imbalanced Datasets with
+           Label-Distribution-Aware Margin Loss," NeurIPS 2019.
+           arXiv:1906.07413.
+           https://arxiv.org/abs/1906.07413
+
+[Kang2020] B. Kang et al., "Decoupling Representation and Classifier
+           for Long-Tailed Recognition," ICLR 2020. arXiv:1910.09217.
+           https://arxiv.org/abs/1910.09217
+
+[Davis2006] J. Davis & M. Goadrich, "The Relationship Between
+            Precision-Recall and ROC Curves," ICML 2006.
+            https://dl.acm.org/doi/10.1145/1143844.1143874
+
+[Han2023]  X. Han et al., "Neural Collapse for Unconstrained Feature
+           Model under Cross-Entropy Loss with Imbalanced Data,"
+           JMLR 25, 2024. arXiv:2309.09725.
+           https://arxiv.org/abs/2309.09725
 """
 
 from __future__ import annotations
@@ -26,7 +90,13 @@ logger = logging.getLogger(__name__)
 def _binary_clf_metrics(
     scores: torch.Tensor, labels: torch.Tensor, threshold: float = 0.5
 ) -> dict[str, float]:
-    """Compute precision, recall, F1, accuracy, and AUROC for binary predictions.
+    """Compute per-threshold classification metrics for binary predictions.
+
+    Returns precision, recall, F1, accuracy, TNR (specificity), and AUROC.
+    TNR = TN / (TN + FP) is added because TN=0 is the primary failure mode
+    under class imbalance — it is invisible in F1 and AUROC but immediately
+    apparent in TNR. See [Davis2006] for why ROC/F1 are optimistic estimators
+    under imbalance.
 
     Args:
         scores: predicted probabilities in [0, 1]
@@ -69,12 +139,25 @@ def _find_best_threshold(
     max_thr: float = 0.95,
     step: float = 0.01,
 ) -> tuple[float, float]:
-    """Grid-search threshold maximizing balanced accuracy (geometric mean of TPR and TNR).
+    """Grid-search threshold maximising balanced accuracy = sqrt(TPR × TNR).
 
-    Replaces F1 maximization, which is biased toward the majority class and allows
-    TN=0 to persist — a model predicting all-success achieves F1≈0.88 at 78% prevalence.
-    Balanced accuracy is 0 whenever TNR=0, directly penalizing the failure-collapse.
-    Reference: Davis & Goadrich, ICML 2006.
+    Motivation — why not F1?
+    Davis & Goadrich [Davis2006] prove that ROC/F1 are optimistic estimators
+    under class imbalance: FPR = FP/(FP+TN) stays near zero even when FP is
+    large because TN dominates the denominator. Concretely, a model predicting
+    all-success achieves F1≈0.88 at 78% prevalence, so the grid search always
+    collapses to a high threshold that never classifies any failure.
+
+    Balanced accuracy (geometric mean of TPR and TNR) is 0 whenever either
+    class is completely missed — if TNR=0, BA=0 regardless of TPR, forcing the
+    optimiser to find a threshold where at least some failures are recovered.
+
+    Returns:
+        (best_threshold, best_balanced_accuracy)
+
+    Reference: [Davis2006] J. Davis & M. Goadrich, "The Relationship Between
+    Precision-Recall and ROC Curves," ICML 2006.
+    https://dl.acm.org/doi/10.1145/1143844.1143874
     """
     best_thr = 0.5
     best_ba = -1.0
@@ -94,13 +177,25 @@ def _find_best_threshold(
 
 
 def _compute_pr_auc(scores: torch.Tensor, labels: torch.Tensor) -> float:
-    """Area under Precision-Recall curve (trapezoidal rule, no sklearn).
+    """Area under the Precision-Recall curve (trapezoidal rule, no sklearn).
 
-    PR-AUC is the correct primary metric for imbalanced binary classification.
-    A random classifier achieves PR-AUC = prevalence (≈0.22 for failure class).
-    Unlike AUROC/F1, PR-AUC directly penalizes TN=0: when FP is constant and
-    TP is low, precision collapses regardless of threshold.
-    Reference: Davis & Goadrich, ICML 2006.
+    PR-AUC is the recommended primary metric for imbalanced binary classification
+    [Davis2006]. Key properties relevant to the TN=0 / constant-FP failure mode:
+
+    - Baseline: a random classifier achieves PR-AUC = prevalence ≈ 0.22 (failure
+      class rate). Any trained model must exceed this to demonstrate learning.
+    - Penalises constant FP directly: Precision = TP / (TP + FP). When FP is
+      pinned at ~720 and TP is low, Precision collapses ≈ 0 at every threshold,
+      driving PR-AUC toward 0 — unlike AUROC which can remain ≈ 0.5.
+    - Not affected by the large TN count: the PR curve ignores TN entirely,
+      so a high TN count cannot inflate the metric.
+
+    Implementation uses the trapezoidal rule over 101 linearly spaced thresholds
+    with boundary anchors at (recall=0, precision=1) and (recall=1, precision=0).
+
+    Reference: [Davis2006] J. Davis & M. Goadrich, "The Relationship Between
+    Precision-Recall and ROC Curves," ICML 2006.
+    https://dl.acm.org/doi/10.1145/1143844.1143874
     """
     if labels.sum() == 0 or labels.sum() == len(labels):
         return 0.0
