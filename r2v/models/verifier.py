@@ -449,9 +449,24 @@ class TrainedVerifier(BaseVerifier, nn.Module):
                 base_out = base_model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
+                    output_hidden_states=False,
                     return_dict=True,
                 )
-                hidden = base_out.last_hidden_state
+                hidden = getattr(base_out, "last_hidden_state", None)
+                if hidden is None:
+                    # Some architectures return CausalLM-style outputs without
+                    # last_hidden_state; request hidden_states and use final layer.
+                    base_out = base_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True,
+                        return_dict=True,
+                    )
+                    if getattr(base_out, "hidden_states", None) is None:
+                        raise RuntimeError(
+                            "Backbone output missing both last_hidden_state and hidden_states"
+                        )
+                    hidden = base_out.hidden_states[-1]
             else:
                 # Fallback for architectures that don't expose .model.
                 outputs = self.backbone(
