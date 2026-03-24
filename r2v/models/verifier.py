@@ -348,6 +348,18 @@ class TrainedVerifier(BaseVerifier, nn.Module):
             # the caller can .to(device) explicitly.
         )
 
+        # Memory-saving defaults for training.
+        if hasattr(self.backbone, "config"):
+            self.backbone.config.use_cache = False
+
+        if config.get("gradient_checkpointing", True):
+            if hasattr(self.backbone, "gradient_checkpointing_enable"):
+                self.backbone.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            if hasattr(self.backbone, "enable_input_require_grads"):
+                self.backbone.enable_input_require_grads()
+
         # Optional LoRA adapters on top of the verifier backbone.
         if self.use_lora:
             self._apply_lora(config.get("lora", {}))
@@ -429,13 +441,28 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         enable_backbone_grads = (not self.freeze_backbone) or self.use_lora
         grad_ctx = torch.enable_grad() if enable_backbone_grads else torch.no_grad()
         with grad_ctx:
-            outputs = self.backbone(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
-        # Use last hidden state, mean-pooled over non-padding tokens
-        hidden = outputs.hidden_states[-1]
+            # Prefer backbone base-model forward (last_hidden_state only) to
+            # avoid materializing hidden states from every layer.
+            hidden = None
+            base_model = getattr(self.backbone, "model", None)
+            if base_model is not None:
+                base_out = base_model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    return_dict=True,
+                )
+                hidden = base_out.last_hidden_state
+            else:
+                # Fallback for architectures that don't expose .model.
+                outputs = self.backbone(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+                hidden = outputs.hidden_states[-1]
+
+        # Use last hidden state, mean-pooled over non-padding tokens.
         # Keep pooling math in the same dtype as backbone activations to avoid
         # fp32/fp16 matmul mismatches in the verifier head.
         mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
