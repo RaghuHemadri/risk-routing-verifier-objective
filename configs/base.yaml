@@ -111,6 +111,14 @@ training:
     gradient_accumulation_steps: 4
     learning_rate: 1.0e-5
     weight_decay: 0.01
+    auto_class_balance: true
+    positive_class_weight: null    # if null, use neg/pos estimated from train split
+    max_class_weight: 5.0
+    use_focal_loss: false         # enable focal modulation on final BCE loss
+    focal_gamma: 2.0              # higher => more focus on hard examples
+    focal_alpha: null             # optional [0,1] class-balance factor for focal
+    decision_threshold: 0.5        # initial value; overridden by val tuning when enabled
+    tune_threshold_on_val: true
 
   # Router training
   router:

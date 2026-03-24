@@ -380,11 +380,14 @@ class VerifierDataset(Dataset):
 
                 # Step-level label (if available)
                 if use_step_labels and step.label is not None:
-                    entry["step_label"] = float(
-                        step.label.is_correct if step.label.is_correct is not None
-                        else step.label.is_progress if step.label.is_progress is not None
-                        else ep.success
-                    )
+                    if step.label.is_correct is not None:
+                        entry["step_label"] = float(step.label.is_correct)
+                    elif step.label.is_progress is not None:
+                        entry["step_label"] = float(step.label.is_progress)
+                    else:
+                        # Leave ambiguous steps unlabeled rather than leaking
+                        # the final episode outcome into every step target.
+                        entry["step_label"] = None
                 else:
                     entry["step_label"] = None
 
