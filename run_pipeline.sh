@@ -6,6 +6,7 @@
 # Usage:
 #   BENCHMARK=humaneval bash run_pipeline.sh          # HumanEval+ benchmark (default)
 #   BENCHMARK=textworld bash run_pipeline.sh          # TextWorld benchmark
+#   BENCHMARK=rtlrepair bash run_pipeline.sh          # RTL-Repair benchmark
 #   bash run_pipeline.sh --benchmark textworld --from 3  # Resume from stage 3
 #   bash run_pipeline.sh --only 5                     # Run only stage 5
 #   bash run_pipeline.sh --dry-run                    # Print commands without executing
@@ -21,7 +22,7 @@
 set -euo pipefail
 
 # ── Configuration ────────────────────────────────────────────
-# Benchmark name: humaneval | textworld
+# Benchmark name: humaneval | textworld | rtlrepair
 BENCHMARK=${BENCHMARK:-humaneval}
 
 CONFIG_CLEAN="configs/${BENCHMARK}/clean.yaml"
@@ -64,8 +65,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ "${BENCHMARK}" != "humaneval" && "${BENCHMARK}" != "textworld" ]]; then
-    echo "ERROR: Unsupported benchmark '${BENCHMARK}'. Supported: humaneval | textworld"
+if [[ "${BENCHMARK}" != "humaneval" && "${BENCHMARK}" != "textworld" && "${BENCHMARK}" != "rtlrepair" ]]; then
+    echo "ERROR: Unsupported benchmark '${BENCHMARK}'. Supported: humaneval | textworld | rtlrepair"
     exit 1
 fi
 

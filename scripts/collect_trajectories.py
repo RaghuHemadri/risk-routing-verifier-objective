@@ -117,6 +117,37 @@ Previous actions:
 What is your next action?"""
 
 
+# ── RTL-Repair prompt templates ───────────────────────────────
+
+RTLREPAIR_SYSTEM_PROMPT = """\
+You are an expert RTL engineer fixing buggy Verilog modules.
+
+Actions available:
+    write_code [your_verilog_code]  - Write/overwrite the current candidate patch
+    test                            - Run the configured simulation/test command
+    submit                          - Submit your final patch
+
+Workflow:
+1. Inspect the buggy module and the repair objective.
+2. Propose a minimal, correct patch using write_code [...].
+3. Run test, inspect failures, and iterate.
+4. Submit when tests are passing.
+
+Respond with EXACTLY ONE action per turn. Think step-by-step, then output \
+the action on its own line prefixed with "Action: "."""
+
+RTLREPAIR_USER_TEMPLATE = """\
+Goal: {goal}
+
+Observation:
+{observation}
+
+Previous actions:
+{action_history}
+
+What is your next action?"""
+
+
 # ── Benchmark factory ────────────────────────────────────────────
 
 
@@ -130,10 +161,13 @@ def create_benchmark_env(cfg) -> BenchmarkEnv:
     elif benchmark == "textworld":
         from r2v.data.benchmarks.textworld_env import TextWorldEnv
         return TextWorldEnv(cfg)
+    elif benchmark == "rtlrepair":
+        from r2v.data.benchmarks.rtlrepair_env import RTLRepairEnv
+        return RTLRepairEnv(cfg)
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark}. "
-            f"Supported: humaneval, textworld"
+            f"Supported: humaneval, textworld, rtlrepair"
         )
 
 
@@ -143,9 +177,9 @@ def create_benchmark_env(cfg) -> BenchmarkEnv:
 def parse_action_from_response(response_text: str, benchmark: str) -> str:
     """Extract the action string from the teacher LLM's response.
 
-    For HumanEval/TextWorld: looks for "Action: <action>" pattern.
+    For HumanEval/TextWorld/RTLRepair: looks for "Action: <action>" pattern.
     """
-    if benchmark in ("humaneval", "textworld"):
+    if benchmark in ("humaneval", "textworld", "rtlrepair"):
         # ── HumanEval: needs multiline-aware extraction ──────────
         # `write_code [<code>]` spans many lines; the generic single-line
         # regex below would truncate it to just `write_code [`.
@@ -181,6 +215,52 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
             raw_py = re.search(r"^def \w+", response_text, re.MULTILINE)
             if raw_py:
                 return f"write_code [{response_text[raw_py.start():].strip()}]"
+
+            return response_text.strip().split("\n")[-1]
+
+        if benchmark == "rtlrepair":
+            cb = re.search(
+                r"```(?:verilog|systemverilog)?\s*(.*?)```",
+                response_text,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if cb:
+                code = cb.group(1).strip()
+                if code:
+                    return f"write_code [{code}]"
+
+            wc = re.search(r"write_code\s*\[", response_text, re.IGNORECASE)
+            if wc:
+                body = response_text[wc.end():]
+                last_bracket = body.rfind("]")
+                if last_bracket != -1:
+                    code = body[:last_bracket].strip()
+                    if code:
+                        return f"write_code [{code}]"
+                code = body.strip()
+                if code:
+                    return f"write_code [{code}]"
+
+            # Fallback: capture a full module body even when not fenced.
+            module_match = re.search(
+                r"(module\s+\w+[\s\S]*?endmodule)",
+                response_text,
+                re.IGNORECASE,
+            )
+            if module_match:
+                code = module_match.group(1).strip()
+                if code:
+                    return f"write_code [{code}]"
+
+            for keyword in ("submit", "test"):
+                if re.search(rf"\bAction:\s*{keyword}\b", response_text, re.IGNORECASE):
+                    return keyword
+                if re.search(rf"^{keyword}\b", response_text.strip(), re.IGNORECASE | re.MULTILINE):
+                    return keyword
+
+            raw_rtl = re.search(r"^\s*module\s+\w+", response_text, re.IGNORECASE | re.MULTILINE)
+            if raw_rtl:
+                return f"write_code [{response_text[raw_rtl.start():].strip()}]"
 
             return response_text.strip().split("\n")[-1]
 
@@ -227,6 +307,15 @@ def classify_action_type(action_text: str, benchmark: str) -> str:
         if lower in ("submit", "finish", "stop"):
             return "finish"
         return "unknown"
+    elif benchmark == "rtlrepair":
+        lower = action_text.strip().lower()
+        if lower == "submit":
+            return "submit"
+        if lower.startswith("test"):
+            return "test"
+        if lower.startswith("write_code") or lower.startswith("module ") or "endmodule" in lower:
+            return "write_code"
+        return "unknown"
     return "unknown"
 
 
@@ -266,6 +355,9 @@ def collect_with_teacher(
     elif benchmark == "textworld":
         system_prompt = TEXTWORLD_SYSTEM_PROMPT
         user_template = TEXTWORLD_USER_TEMPLATE
+    elif benchmark == "rtlrepair":
+        system_prompt = RTLREPAIR_SYSTEM_PROMPT
+        user_template = RTLREPAIR_USER_TEMPLATE
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
@@ -293,6 +385,8 @@ def collect_with_teacher(
             "action_history": "\n".join(action_history[-5:]) if action_history else "(none)",
         }
         if benchmark == "textworld":
+            fmt_kwargs["goal"] = task.goal
+        if benchmark == "rtlrepair":
             fmt_kwargs["goal"] = task.goal
         user_prompt = user_template.format(**fmt_kwargs)
         messages = [

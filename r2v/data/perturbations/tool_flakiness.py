@@ -67,6 +67,14 @@ TEXTWORLD_TOOL_ERRORS = [
     "EnvironmentWarning: last command may have executed partially.",
 ]
 
+RTLREPAIR_TOOL_ERRORS = [
+    "IcarusError: compile failed due to unresolved parameter width in candidate module.",
+    "SimulationTimeout: oracle testbench exceeded {timeout}s waiting for expected waveform.",
+    "LinterWarningEscalated: inferred latch detected; run aborted in strict mode.",
+    "VCDWriteError: failed to flush dump.vcd before simulator exit.",
+    "OracleMismatch: output trace length differs from golden trace by 1 cycle.",
+]
+
 UNIT_TOKENS = ["km", "m", "kg", "g", "ms", "s", "%", "USD", "EUR"]
 
 
@@ -172,6 +180,10 @@ class ToolFlakinessPerturbation(Perturbation):
         if self.benchmark == "textworld":
             msg = rng.choice(TEXTWORLD_TOOL_ERRORS)
             return msg.format(timeout=rng.randint(8, 45))
+
+        if self.benchmark == "rtlrepair":
+            msg = rng.choice(RTLREPAIR_TOOL_ERRORS)
+            return msg.format(timeout=rng.randint(20, 120))
 
         msg = rng.choice(HTTP_ERROR_TEMPLATES)
         return msg.format(timeout=rng.randint(10, 60), delay=rng.randint(1, 30))

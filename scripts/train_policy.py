@@ -17,6 +17,7 @@ This is the main policy training script that combines:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -136,7 +137,7 @@ def main():
             train_dataset=train_ds,
             eval_dataset=val_ds,
             config=bc_cfg,
-            output_dir=str(output_dir / "bc"),
+            output_dir=str(bc_output_dir),
             collate_fn=BCDataset.collate_fn,
             resume_state_path=resume_bc_state_path,
         )

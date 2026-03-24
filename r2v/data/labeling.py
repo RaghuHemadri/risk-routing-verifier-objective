@@ -374,6 +374,51 @@ class TextWorldLabeler(StepLabeler):
         return episode
 
 
+class RTLRepairLabeler(StepLabeler):
+    """Label RTL-Repair steps using code/test loop heuristics."""
+
+    def __init__(
+        self,
+        use_llm_judge: bool = False,
+        llm_judge_fn: Optional[callable] = None,
+    ):
+        self.use_llm_judge = use_llm_judge
+        self.llm_judge_fn = llm_judge_fn
+
+    def label_episode(self, episode: Episode) -> Episode:
+        for i, step in enumerate(episode.steps):
+            label = StepLabel()
+            action_text = step.action.raw_text.strip().lower()
+            obs_text = step.observation.raw_text if step.observation else ""
+
+            if action_text.startswith("write_code") or action_text.startswith("module "):
+                label.is_progress = True
+
+            if action_text.startswith("test"):
+                label.is_progress = True
+                obs_lower = obs_text.lower()
+                if "test passed" in obs_lower or "score=1.00" in obs_lower:
+                    label.is_correct = True
+                elif "test failed" in obs_lower or "error" in obs_lower or "timeout" in obs_lower:
+                    label.is_correct = False
+
+            if action_text == "submit":
+                label.is_correct = episode.success
+
+            if self.use_llm_judge and label.is_progress is None and self.llm_judge_fn:
+                label.is_progress = self.llm_judge_fn(
+                    goal=episode.metadata.goal,
+                    observation=obs_text,
+                    action=step.action.raw_text,
+                    step_idx=i,
+                    total_steps=len(episode.steps),
+                )
+
+            step.label = label
+
+        return episode
+
+
 class OutcomePropagationLabeler(StepLabeler):
     """Propagate final outcome labels to all steps with decay.
 
@@ -419,10 +464,12 @@ def create_labeler(benchmark: str, config: dict) -> StepLabeler:
         primary = HumanEvalLabeler(use_llm_judge=use_llm)
     elif benchmark == "textworld":
         primary = TextWorldLabeler(use_llm_judge=use_llm)
+    elif benchmark == "rtlrepair":
+        primary = RTLRepairLabeler(use_llm_judge=use_llm)
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark}. "
-            f"Supported: humaneval, textworld"
+            f"Supported: humaneval, textworld, rtlrepair"
         )
 
     # Always add outcome propagation as fallback

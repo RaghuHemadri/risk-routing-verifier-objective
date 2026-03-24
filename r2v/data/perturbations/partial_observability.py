@@ -51,7 +51,7 @@ class PartialObservabilityPerturbation(Perturbation):
         meta: dict[str, Any] = {"perturbations_applied": []}
 
         text = new_obs.raw_text
-        is_target_benchmark = self.benchmark in {"humaneval", "textworld"}
+        is_target_benchmark = self.benchmark in {"humaneval", "textworld", "rtlrepair"}
 
         # Apply perturbations in order of severity (least → most destructive)
 

@@ -102,6 +102,7 @@ BENCHMARK=gaia      bash run_pipeline.sh   # GAIA benchmark (default)
 BENCHMARK=alfworld  bash run_pipeline.sh   # ALFWorld benchmark
 BENCHMARK=humaneval bash run_pipeline.sh   # HumanEval+ benchmark
 BENCHMARK=textworld bash run_pipeline.sh   # TextWorld benchmark
+BENCHMARK=rtlrepair bash run_pipeline.sh   # RTL-Repair benchmark
 
 # Or resume / run a single stage
 bash run_pipeline.sh --benchmark gaia --from 5
@@ -119,6 +120,7 @@ See [RUN.md](RUN.md) for detailed per-stage instructions.
 | **ALFWorld** | Embodied text agent | 134 | ✅ | Task completion (env reward) |
 | **HumanEval+** | Code generation | 164 | ✅ | Extended test suite (EvalPlus) |
 | **TextWorld** | Text adventure | configurable | ✅ | Quest completion (env score) |
+| **RTL-Repair** | Verilog repair | configurable | ✅* | Testbench/simulation pass rate |
 
 All benchmarks support the full perturbation framework (tool flakiness, partial observability, prompt injection, distractors) since perturbations operate on the generic `Observation` representation.
 
@@ -136,6 +138,11 @@ pip install textworld
 
 # HumanEval+
 pip install evalplus
+
+# RTL-Repair
+git clone https://github.com/ekiwi/rtl-repair.git
+# Optional simulator/toolchain for real-mode evaluation (example):
+# sudo apt-get install iverilog verilator
 ```
 
 ## Key Features

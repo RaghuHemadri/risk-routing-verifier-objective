@@ -1,8 +1,9 @@
-# R2V-Agent Run Guide (HumanEval + TextWorld)
+# R2V-Agent Run Guide (HumanEval + TextWorld + RTL-Repair)
 
-This repository now supports only two benchmarks:
+This repository supports three benchmarks:
 - `humaneval`
 - `textworld`
+- `rtlrepair`
 
 ## 1) End-to-end pipeline
 
@@ -16,6 +17,12 @@ Run full pipeline for TextWorld:
 
 ```bash
 BENCHMARK=textworld bash run_pipeline.sh
+```
+
+Run full pipeline for RTL-Repair:
+
+```bash
+BENCHMARK=rtlrepair bash run_pipeline.sh
 ```
 
 Resume from a stage:
@@ -98,5 +105,7 @@ python scripts/train_verifier.py \
 - `configs/humaneval/noisy.yaml`
 - `configs/textworld/clean.yaml`
 - `configs/textworld/noisy.yaml`
+- `configs/rtlrepair/clean.yaml`
+- `configs/rtlrepair/noisy.yaml`
 
 Any config path pointing to removed benchmarks is no longer valid.

@@ -1,0 +1,32 @@
+# RTL-Repair Clean Configuration
+defaults:
+  - ../base
+
+benchmark: rtlrepair
+
+teacher:
+  provider: google
+  model_name: gemini-3-flash-preview
+
+rtlrepair:
+  dataset:
+    path: data/rtlrepair/tasks.jsonl
+    max_instances: null
+
+  prefill_with_buggy: true
+  cmd_timeout: 60
+  test_timeout: 120
+
+data:
+  num_teacher_trajectories: 1
+  max_episode_steps: 12
+
+perturbations:
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false
