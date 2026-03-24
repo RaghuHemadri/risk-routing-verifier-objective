@@ -68,3 +68,4 @@ exports.sh
 *.log
 
 R2V_Agent/**
+proofs/

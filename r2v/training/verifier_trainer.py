@@ -60,6 +60,28 @@ def _binary_clf_metrics(
     }
 
 
+def _find_best_threshold(
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    min_thr: float = 0.05,
+    max_thr: float = 0.95,
+    step: float = 0.01,
+) -> tuple[float, float]:
+    """Grid-search threshold that maximizes F1 on provided scores/labels."""
+    best_thr = 0.5
+    best_f1 = -1.0
+
+    n = int(round((max_thr - min_thr) / step))
+    for i in range(n + 1):
+        thr = min_thr + i * step
+        f1 = _binary_clf_metrics(scores, labels, threshold=thr)["f1"]
+        if f1 > best_f1:
+            best_f1 = f1
+            best_thr = thr
+
+    return float(best_thr), float(best_f1)
+
+
 def _compute_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
     """Compute AUROC via the trapezoidal rule (no external dependencies)."""
     if labels.sum() == 0 or labels.sum() == len(labels):
@@ -116,6 +138,67 @@ class VerifierTrainer:
         self.step_weight = mt_config.get("step_weight", 0.3)
         self.final_weight = mt_config.get("final_weight", 1.0)
 
+        # Class-imbalance handling for final outcome loss.
+        # Positive samples are weighted by this factor in BCE.
+        # If auto_class_balance=True and no explicit weight is provided,
+        # it is estimated as (#neg / #pos) from the training dataset.
+        self.auto_class_balance = bool(self.config.get("auto_class_balance", True))
+        self.positive_class_weight = self.config.get("positive_class_weight", None)
+        if self.positive_class_weight is not None:
+            self.positive_class_weight = float(self.positive_class_weight)
+        self.max_class_weight = float(self.config.get("max_class_weight", 5.0))
+
+        # Optional focal modulation on top of BCE for hard-example emphasis.
+        # When disabled, loss reduces to (weighted) BCE as before.
+        self.use_focal_loss = bool(self.config.get("use_focal_loss", False))
+        self.focal_gamma = float(self.config.get("focal_gamma", 2.0))
+        # Optional alpha balancing for focal loss. If null, no alpha term is used.
+        focal_alpha = self.config.get("focal_alpha", None)
+        self.focal_alpha = None if focal_alpha is None else float(focal_alpha)
+
+        # Use a learned validation threshold instead of hard-coded 0.5.
+        self.decision_threshold = float(self.config.get("decision_threshold", 0.5))
+        self.tune_threshold_on_val = bool(self.config.get("tune_threshold_on_val", True))
+
+    def _ensure_class_weight(self):
+        """Infer positive class weight from train dataset when requested."""
+        if self.positive_class_weight is not None:
+            return
+
+        if not self.auto_class_balance:
+            self.positive_class_weight = 1.0
+            return
+
+        examples = getattr(self.train_dataset, "examples", None)
+        if not examples:
+            self.positive_class_weight = 1.0
+            logger.warning(
+                "Could not infer class balance from train dataset; using positive_class_weight=1.0"
+            )
+            return
+
+        labels = [float(ex.get("final_label", 0.0)) for ex in examples]
+        n = len(labels)
+        n_pos = sum(labels)
+        n_neg = n - n_pos
+
+        if n_pos <= 0 or n_neg <= 0:
+            self.positive_class_weight = 1.0
+            logger.warning(
+                "Single-class training labels detected (pos=%s, neg=%s); "
+                "using positive_class_weight=1.0",
+                int(n_pos), int(n_neg),
+            )
+            return
+
+        weight = n_neg / max(n_pos, 1e-8)
+        weight = min(weight, self.max_class_weight)
+        self.positive_class_weight = float(weight)
+        logger.info(
+            "Auto class balance: n=%d, pos=%d, neg=%d, positive_class_weight=%.4f",
+            n, int(n_pos), int(n_neg), self.positive_class_weight,
+        )
+
     def compute_loss(
         self,
         outputs: dict[str, torch.Tensor],
@@ -127,14 +210,46 @@ class VerifierTrainer:
         """
         metrics = {}
 
+        pos_w = float(self.positive_class_weight or 1.0)
+
         # Final outcome loss (always computed)
-        final_loss = F.binary_cross_entropy(
+        final_weights = torch.where(
+            batch["final_label"] > 0.5,
+            torch.full_like(batch["final_label"], pos_w),
+            torch.ones_like(batch["final_label"]),
+        )
+        final_bce = F.binary_cross_entropy(
             outputs["final_score"],
             batch["final_label"],
-            reduction="mean",
+            weight=final_weights,
+            reduction="none",
         )
+
+        if self.use_focal_loss:
+            probs = outputs["final_score"].clamp(min=1e-6, max=1 - 1e-6)
+            pt = torch.where(batch["final_label"] > 0.5, probs, 1.0 - probs)
+            focal_factor = (1.0 - pt).pow(self.focal_gamma)
+
+            if self.focal_alpha is not None:
+                alpha_factor = torch.where(
+                    batch["final_label"] > 0.5,
+                    torch.full_like(batch["final_label"], self.focal_alpha),
+                    torch.full_like(batch["final_label"], 1.0 - self.focal_alpha),
+                )
+            else:
+                alpha_factor = torch.ones_like(batch["final_label"])
+
+            final_loss = (final_bce * focal_factor * alpha_factor).mean()
+        else:
+            final_loss = final_bce.mean()
+
         total_loss = self.final_weight * final_loss
         metrics["final_loss"] = final_loss.item()
+        metrics["positive_class_weight"] = pos_w
+        metrics["use_focal_loss"] = float(self.use_focal_loss)
+        metrics["focal_gamma"] = float(self.focal_gamma)
+        if self.focal_alpha is not None:
+            metrics["focal_alpha"] = float(self.focal_alpha)
 
         # Step-level loss (only for samples with step labels)
         if "step_score" in outputs and "has_step_label" in batch:
@@ -150,11 +265,16 @@ class VerifierTrainer:
 
         metrics["total_loss"] = total_loss.item()
 
-        # Classification metrics (threshold=0.5)
+        # Classification metrics at the trainer's current decision threshold.
         with torch.no_grad():
-            clf = _binary_clf_metrics(outputs["final_score"], batch["final_label"])
+            clf = _binary_clf_metrics(
+                outputs["final_score"],
+                batch["final_label"],
+                threshold=self.decision_threshold,
+            )
             for k, v in clf.items():
                 metrics[f"final_{k}"] = v
+            metrics["decision_threshold"] = self.decision_threshold
 
         return total_loss, metrics
 
@@ -188,10 +308,17 @@ class VerifierTrainer:
             all_scores = accelerator.gather(all_scores)
             all_labels = accelerator.gather(all_labels)
 
-        clf = _binary_clf_metrics(all_scores, all_labels)
+        if self.tune_threshold_on_val:
+            tuned_thr, tuned_f1 = _find_best_threshold(all_scores, all_labels)
+        else:
+            tuned_thr, tuned_f1 = self.decision_threshold, -1.0
+
+        clf = _binary_clf_metrics(all_scores, all_labels, threshold=tuned_thr)
         clf["loss"] = total_loss / max(num_batches, 1)
         clf["n_samples"] = len(all_scores)
         clf["pos_rate"] = all_labels.float().mean().item()
+        clf["threshold"] = float(tuned_thr)
+        clf["best_f1_threshold_sweep"] = float(tuned_f1)
 
         model.train()
         return clf
@@ -205,6 +332,8 @@ class VerifierTrainer:
                 gradient_accumulation_steps=self.grad_accum_steps,
                 mixed_precision="bf16",
             )
+
+        self._ensure_class_weight()
 
         # Use dynamic-padding collate_fn if available (VerifierDataset provides one)
         collate_fn = getattr(self.train_dataset, 'collate_fn', None)
@@ -329,6 +458,9 @@ class VerifierTrainer:
             # ── Validation ──
             if eval_loader is not None:
                 val_metrics = self.evaluate(model, eval_loader, accelerator)
+                self.decision_threshold = float(
+                    val_metrics.get("threshold", self.decision_threshold)
+                )
                 for k, v in val_metrics.items():
                     avg_metrics[f"val_{k}"] = v
 
@@ -339,7 +471,8 @@ class VerifierTrainer:
                     f"F1={val_metrics['f1']:.3f}  "
                     f"P={val_metrics['precision']:.3f}  "
                     f"R={val_metrics['recall']:.3f}  "
-                    f"AUROC={val_metrics['auroc']:.3f}\n"
+                    f"AUROC={val_metrics['auroc']:.3f}  "
+                    f"Thr={val_metrics.get('threshold', self.decision_threshold):.3f}\n"
                     f"  TP={val_metrics['tp']:.0f}  FP={val_metrics['fp']:.0f}  "
                     f"FN={val_metrics['fn']:.0f}  TN={val_metrics['tn']:.0f}  "
                     f"N={val_metrics['n_samples']}  "
@@ -354,6 +487,9 @@ class VerifierTrainer:
                         best_path.mkdir(parents=True, exist_ok=True)
                         unwrapped = accelerator.unwrap_model(model)
                         torch.save(unwrapped.state_dict(), best_path / "verifier.pt")
+                        (best_path / "decision_threshold.txt").write_text(
+                            f"{self.decision_threshold:.6f}\n"
+                        )
                         accelerator.print(
                             f"  ✓ New best model saved (val F1={best_val_f1:.4f})"
                         )
@@ -376,6 +512,9 @@ class VerifierTrainer:
             save_path.mkdir(parents=True, exist_ok=True)
             unwrapped = accelerator.unwrap_model(model)
             torch.save(unwrapped.state_dict(), save_path / "verifier.pt")
+            (save_path / "decision_threshold.txt").write_text(
+                f"{self.decision_threshold:.6f}\n"
+            )
             accelerator.print(
                 f"\n[Verifier] Final model saved to {save_path}\n"
                 f"[Verifier] Best val F1={best_val_f1:.4f} "
@@ -386,4 +525,6 @@ class VerifierTrainer:
             "history": metrics_history,
             "total_steps": global_step,
             "best_val_f1": best_val_f1,
+            "decision_threshold": self.decision_threshold,
+            "positive_class_weight": float(self.positive_class_weight or 1.0),
         }
