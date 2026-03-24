@@ -121,11 +121,13 @@ training:
     auto_class_balance: true
     positive_class_weight: null    # if null, use neg/pos estimated from train split
     max_class_weight: 5.0
-    use_focal_loss: false         # enable focal modulation on final BCE loss
+    use_focal_loss: true          # enable focal modulation on final BCE loss
     focal_gamma: 2.0              # higher => more focus on hard examples
-    focal_alpha: null             # optional [0,1] class-balance factor for focal
+    focal_alpha: 0.22             # alpha for SUCCESS class; (1-alpha)=0.78 upweights FAILURE
+    use_ldam: true                # LDAM margin loss — Cao et al., NeurIPS 2019
+    ldam_C: 0.5                   # margin scaling: Δ_j = C / n_j^(1/4); larger for minority
     decision_threshold: 0.5        # initial value; overridden by val tuning when enabled
-    tune_threshold_on_val: true
+    tune_threshold_on_val: true    # optimizes balanced accuracy (TPR×TNR)^0.5, not F1
 
   # Router training
   router:

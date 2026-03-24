@@ -17,7 +17,7 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import get_scheduler
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ def _binary_clf_metrics(
     precision = tp / (tp + fp + 1e-8)
     recall = tp / (tp + fn + 1e-8)
     f1 = 2 * precision * recall / (precision + recall + 1e-8)
+    tnr = tn / (tn + fp + 1e-8)  # true negative rate (specificity)
 
     # AUROC — sort-based, no sklearn dependency
     auroc = _compute_auroc(scores, labels)
@@ -52,6 +53,7 @@ def _binary_clf_metrics(
         "precision": precision.item(),
         "recall": recall.item(),
         "f1": f1.item(),
+        "tnr": tnr.item(),
         "auroc": auroc,
         "tp": tp.item(),
         "fp": fp.item(),
@@ -67,19 +69,63 @@ def _find_best_threshold(
     max_thr: float = 0.95,
     step: float = 0.01,
 ) -> tuple[float, float]:
-    """Grid-search threshold that maximizes F1 on provided scores/labels."""
+    """Grid-search threshold maximizing balanced accuracy (geometric mean of TPR and TNR).
+
+    Replaces F1 maximization, which is biased toward the majority class and allows
+    TN=0 to persist — a model predicting all-success achieves F1≈0.88 at 78% prevalence.
+    Balanced accuracy is 0 whenever TNR=0, directly penalizing the failure-collapse.
+    Reference: Davis & Goadrich, ICML 2006.
+    """
     best_thr = 0.5
-    best_f1 = -1.0
+    best_ba = -1.0
 
     n = int(round((max_thr - min_thr) / step))
     for i in range(n + 1):
         thr = min_thr + i * step
-        f1 = _binary_clf_metrics(scores, labels, threshold=thr)["f1"]
-        if f1 > best_f1:
-            best_f1 = f1
+        m = _binary_clf_metrics(scores, labels, threshold=thr)
+        tpr = m["recall"]          # TP / (TP + FN)
+        tnr = m["tnr"]             # TN / (TN + FP)
+        ba = (tpr * tnr) ** 0.5   # geometric mean — 0 if either class is fully missed
+        if ba > best_ba:
+            best_ba = ba
             best_thr = thr
 
-    return float(best_thr), float(best_f1)
+    return float(best_thr), float(best_ba)
+
+
+def _compute_pr_auc(scores: torch.Tensor, labels: torch.Tensor) -> float:
+    """Area under Precision-Recall curve (trapezoidal rule, no sklearn).
+
+    PR-AUC is the correct primary metric for imbalanced binary classification.
+    A random classifier achieves PR-AUC = prevalence (≈0.22 for failure class).
+    Unlike AUROC/F1, PR-AUC directly penalizes TN=0: when FP is constant and
+    TP is low, precision collapses regardless of threshold.
+    Reference: Davis & Goadrich, ICML 2006.
+    """
+    if labels.sum() == 0 or labels.sum() == len(labels):
+        return 0.0
+
+    thresholds = torch.linspace(0.0, 1.0, 101, device=scores.device)
+    precisions: list[float] = [1.0]
+    recalls: list[float] = [0.0]
+
+    for thr in thresholds:
+        preds = (scores >= thr).float()
+        tp = ((preds == 1) & (labels == 1)).sum().float()
+        fp = ((preds == 1) & (labels == 0)).sum().float()
+        fn = ((preds == 0) & (labels == 1)).sum().float()
+        precisions.append((tp / (tp + fp + 1e-8)).item())
+        recalls.append((tp / (tp + fn + 1e-8)).item())
+
+    precisions.append(0.0)
+    recalls.append(1.0)
+
+    pairs = sorted(zip(recalls, precisions))
+    pr_auc = 0.0
+    for i in range(1, len(pairs)):
+        dr = pairs[i][0] - pairs[i - 1][0]
+        pr_auc += 0.5 * (pairs[i][1] + pairs[i - 1][1]) * dr
+    return float(pr_auc)
 
 
 def _compute_auroc(scores: torch.Tensor, labels: torch.Tensor) -> float:
@@ -160,6 +206,16 @@ class VerifierTrainer:
         self.decision_threshold = float(self.config.get("decision_threshold", 0.5))
         self.tune_threshold_on_val = bool(self.config.get("tune_threshold_on_val", True))
 
+        # LDAM margin loss (Cao et al., NeurIPS 2019).
+        # Imposes per-class margins inversely proportional to n_j^(1/4),
+        # giving the minority (failure) class a larger required margin.
+        self.use_ldam = bool(self.config.get("use_ldam", False))
+        self.ldam_C = float(self.config.get("ldam_C", 0.5))
+
+        # Populated by _ensure_class_weight(); used for LDAM margin computation.
+        self._n_pos: float = 0.0
+        self._n_neg: float = 0.0
+
     def _ensure_class_weight(self):
         """Infer positive class weight from train dataset when requested."""
         if self.positive_class_weight is not None:
@@ -191,6 +247,9 @@ class VerifierTrainer:
             )
             return
 
+        self._n_pos = float(n_pos)
+        self._n_neg = float(n_neg)
+
         weight = n_neg / max(n_pos, 1e-8)
         weight = min(weight, self.max_class_weight)
         self.positive_class_weight = float(weight)
@@ -212,6 +271,26 @@ class VerifierTrainer:
 
         pos_w = float(self.positive_class_weight or 1.0)
 
+        # LDAM margin adjustment (Cao et al., NeurIPS 2019).
+        # Minority (failure) class gets a larger required margin: Δ_j = C / n_j^(1/4).
+        # Logit adjustment:  y=1 → z - Δ_pos  (harder to be confident about success)
+        #                    y=0 → z + Δ_neg  (must be more negative to classify as failure)
+        final_logits = outputs.get("final_logit")
+        if self.use_ldam and final_logits is not None and self._n_pos > 0 and self._n_neg > 0:
+            delta_pos = self.ldam_C / max(self._n_pos ** 0.25, 1e-8)
+            delta_neg = self.ldam_C / max(self._n_neg ** 0.25, 1e-8)
+            delta = torch.where(
+                batch["final_label"] > 0.5,
+                torch.full_like(final_logits, delta_pos),
+                torch.full_like(final_logits, delta_neg),
+            )
+            sign = 2.0 * batch["final_label"] - 1.0  # +1 for success, -1 for failure
+            final_scores_for_loss = torch.sigmoid(
+                final_logits - sign * delta
+            ).clamp(min=1e-6, max=1 - 1e-6)
+        else:
+            final_scores_for_loss = outputs["final_score"]
+
         # Final outcome loss (always computed)
         final_weights = torch.where(
             batch["final_label"] > 0.5,
@@ -219,14 +298,14 @@ class VerifierTrainer:
             torch.ones_like(batch["final_label"]),
         )
         final_bce = F.binary_cross_entropy(
-            outputs["final_score"],
+            final_scores_for_loss,
             batch["final_label"],
             weight=final_weights,
             reduction="none",
         )
 
         if self.use_focal_loss:
-            probs = outputs["final_score"].clamp(min=1e-6, max=1 - 1e-6)
+            probs = final_scores_for_loss  # already clamped above
             pt = torch.where(batch["final_label"] > 0.5, probs, 1.0 - probs)
             focal_factor = (1.0 - pt).pow(self.focal_gamma)
 
@@ -250,6 +329,9 @@ class VerifierTrainer:
         metrics["focal_gamma"] = float(self.focal_gamma)
         if self.focal_alpha is not None:
             metrics["focal_alpha"] = float(self.focal_alpha)
+        metrics["use_ldam"] = float(self.use_ldam)
+        if self.use_ldam:
+            metrics["ldam_C"] = self.ldam_C
 
         # Step-level loss (only for samples with step labels)
         if "step_score" in outputs and "has_step_label" in batch:
@@ -318,10 +400,27 @@ class VerifierTrainer:
         clf["n_samples"] = len(all_scores)
         clf["pos_rate"] = all_labels.float().mean().item()
         clf["threshold"] = float(tuned_thr)
-        clf["best_f1_threshold_sweep"] = float(tuned_f1)
+        clf["best_ba_threshold_sweep"] = float(tuned_f1)  # balanced accuracy at best threshold
+        clf["pr_auc"] = _compute_pr_auc(all_scores, all_labels)
 
         model.train()
         return clf
+
+    @staticmethod
+    def apply_tau_normalization(module: torch.nn.Module, tau: float = 0.5) -> None:
+        """Post-hoc tau-normalization on all Linear layers in a module.
+
+        Corrects minority-class weight under-norming without retraining.
+        After joint training on imbalanced data, ||w_failure|| << ||w_success||.
+        Dividing each weight row by norm^tau partially equalizes the norms.
+        tau=0 → no change; tau=1 → fully unit-normalized rows.
+        Reference: Kang et al., ICLR 2020.
+        """
+        for m in module.modules():
+            if isinstance(m, torch.nn.Linear):
+                with torch.no_grad():
+                    norms = m.weight.norm(dim=1, keepdim=True).clamp(min=1e-8)
+                    m.weight.div_(norms.pow(tau))
 
     def train(self, accelerator=None) -> dict[str, Any]:
         """Run verifier training with per-epoch validation."""
@@ -348,15 +447,46 @@ class VerifierTrainer:
             if eval_collate_fn is None:
                 eval_collate_fn = collate_fn
 
-        train_loader = DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=0,
-            pin_memory=False,
-            drop_last=True,
-            collate_fn=collate_fn,
-        )
+        # Class-balanced sampler (cRT — Kang et al., ICLR 2020).
+        # Each class is sampled with equal probability per batch, directly
+        # counteracting minority-class weight collapse in the MLP head.
+        examples = getattr(self.train_dataset, "examples", None)
+        if examples:
+            labels = [float(ex.get("final_label", 0.0)) for ex in examples]
+            n_pos = max(sum(labels), 1.0)
+            n_neg = max(len(labels) - n_pos, 1.0)
+            sample_weights = [
+                1.0 / n_pos if l > 0.5 else 1.0 / n_neg for l in labels
+            ]
+            sampler = WeightedRandomSampler(
+                sample_weights, num_samples=len(sample_weights), replacement=True
+            )
+            train_loader = DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                sampler=sampler,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=True,
+                collate_fn=collate_fn,
+            )
+            logger.info(
+                "Class-balanced sampler: %.0f pos (%.1f%%), %.0f neg (%.1f%%); "
+                "each class sampled at 50%% per batch",
+                n_pos, 100 * n_pos / len(labels),
+                n_neg, 100 * n_neg / len(labels),
+            )
+        else:
+            logger.warning("Dataset has no .examples — falling back to shuffle=True")
+            train_loader = DataLoader(
+                self.train_dataset,
+                batch_size=self.batch_size,
+                shuffle=True,
+                num_workers=0,
+                pin_memory=False,
+                drop_last=True,
+                collate_fn=collate_fn,
+            )
 
         eval_loader = None
         if self.eval_dataset is not None:
@@ -471,7 +601,9 @@ class VerifierTrainer:
                     f"F1={val_metrics['f1']:.3f}  "
                     f"P={val_metrics['precision']:.3f}  "
                     f"R={val_metrics['recall']:.3f}  "
+                    f"TNR={val_metrics['tnr']:.3f}  "
                     f"AUROC={val_metrics['auroc']:.3f}  "
+                    f"PR-AUC={val_metrics['pr_auc']:.3f}  "
                     f"Thr={val_metrics.get('threshold', self.decision_threshold):.3f}\n"
                     f"  TP={val_metrics['tp']:.0f}  FP={val_metrics['fp']:.0f}  "
                     f"FN={val_metrics['fn']:.0f}  TN={val_metrics['tn']:.0f}  "
@@ -517,9 +649,22 @@ class VerifierTrainer:
             )
             accelerator.print(
                 f"\n[Verifier] Final model saved to {save_path}\n"
-                f"[Verifier] Best val F1={best_val_f1:.4f} "
+                f"[Verifier] Best val balanced-accuracy={best_val_f1:.4f} "
                 f"(checkpoint at {self.output_dir / 'best'})"
             )
+
+            # Tau-normalization checkpoint (Kang et al., ICLR 2020).
+            # Corrects minority-class weight under-norming post-hoc without retraining.
+            import copy
+            tau_path = self.output_dir / "tau_norm"
+            tau_path.mkdir(parents=True, exist_ok=True)
+            tau_model = copy.deepcopy(unwrapped)
+            self.apply_tau_normalization(tau_model.final_head, tau=0.5)
+            torch.save(tau_model.state_dict(), tau_path / "verifier.pt")
+            (tau_path / "decision_threshold.txt").write_text(
+                f"{self.decision_threshold:.6f}\n"
+            )
+            accelerator.print(f"[Verifier] Tau-normalized checkpoint saved to {tau_path}")
 
         return {
             "history": metrics_history,
