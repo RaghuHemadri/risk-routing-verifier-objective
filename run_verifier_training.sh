@@ -37,6 +37,11 @@ VERIFIER_EPOCHS="${VERIFIER_EPOCHS:-5}"
 FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
 FOCAL_ALPHA="${FOCAL_ALPHA:-0.25}"
 FROM_BASE=false
+VERIFIER_FREEZE_BACKBONE="${VERIFIER_FREEZE_BACKBONE:-true}"
+VERIFIER_USE_LORA="${VERIFIER_USE_LORA:-true}"
+VERIFIER_LORA_R="${VERIFIER_LORA_R:-16}"
+VERIFIER_LORA_ALPHA="${VERIFIER_LORA_ALPHA:-32}"
+VERIFIER_LORA_DROPOUT="${VERIFIER_LORA_DROPOUT:-0.05}"
 
 SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
 VERIFIER_TRAIN_DATA="${SPLIT_DIR}/verifier_train.jsonl"
@@ -110,6 +115,8 @@ echo "  Dry run:     ${DRY_RUN}"
 echo "  Epochs:      ${VERIFIER_EPOCHS}"
 echo "  Variants:    focal + bce"
 echo "  Source:      $([[ ${FROM_BASE} == true ]] && echo 'pretrained base models' || echo 'merged BC checkpoints')"
+echo "  Freeze BB:   ${VERIFIER_FREEZE_BACKBONE}"
+echo "  Use LoRA:    ${VERIFIER_USE_LORA}"
 echo ""
 
 ERRORS=0
@@ -184,7 +191,11 @@ for tag in "${MODEL_TAGS[@]}"; do
     hf_id="${MODEL_HF_ID[$tag]}"
     bc_best="${BC_BASE}/${MODEL_BC_DIR[$tag]}/best"
     merged_dir="${MERGED_BASE}/${tag}"
-    base_output_dir="outputs/verifier/${BENCHMARK}_noisy_${tag}"
+    lora_tag=""
+    if [[ "${VERIFIER_USE_LORA}" == "true" ]]; then
+        lora_tag="_lora-r${VERIFIER_LORA_R}"
+    fi
+    base_output_dir="outputs/verifier/${BENCHMARK}_noisy_${tag}${lora_tag}"
     base_logfile="${LOGDIR}/verifier_${tag}.log"
 
     echo "════════════════════════════════════════════════════════"
@@ -270,6 +281,11 @@ print(f'    verifier.trained.backbone = {new_backbone}')
             "${QUANT_OVERRIDE}"
             "verifier.mode=trained"
             "verifier.trained.backbone=${BACKBONE_PATH}"
+            "verifier.trained.freeze_backbone=${VERIFIER_FREEZE_BACKBONE}"
+            "verifier.trained.lora.enabled=${VERIFIER_USE_LORA}"
+            "verifier.trained.lora.r=${VERIFIER_LORA_R}"
+            "verifier.trained.lora.alpha=${VERIFIER_LORA_ALPHA}"
+            "verifier.trained.lora.dropout=${VERIFIER_LORA_DROPOUT}"
             "training.verifier.epochs=${VERIFIER_EPOCHS}"
             "training.verifier.batch_size=4"
             "training.verifier.gradient_accumulation_steps=4"
