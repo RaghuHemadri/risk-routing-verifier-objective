@@ -49,8 +49,14 @@ VERIFIER_TRAIN_DATA="${SPLIT_DIR}/verifier_train.jsonl"
 VERIFIER_VAL_DATA="${SPLIT_DIR}/verifier_val.jsonl"
 VERIFIER_TEST_DATA="${SPLIT_DIR}/verifier_test.jsonl"
 
-QUANT_OVERRIDE="policy.quantization.load_in_4bit=false"
-COMMON_OVERRIDES="logging.wandb_mode=disabled training.verifier.use_ldam=true training.verifier.ldam_C=${LDAM_C}"
+QUANT_OVERRIDES=(
+    "policy.quantization.load_in_4bit=false"
+)
+COMMON_OVERRIDES=(
+    "logging.wandb_mode=disabled"
+    "training.verifier.use_ldam=true"
+    "training.verifier.ldam_C=${LDAM_C}"
+)
 
 BC_BASE="outputs/policy/${BENCHMARK}_noisy"
 MERGED_BASE="outputs/merged"
@@ -279,7 +285,7 @@ print(f'    verifier.trained.backbone = {new_backbone}')
         logfile="${LOGDIR}/verifier_${tag}_${variant}.log"
 
         OVERRIDES=(
-            "${QUANT_OVERRIDE}"
+            "${QUANT_OVERRIDES[@]}"
             "verifier.mode=trained"
             "verifier.trained.backbone=${BACKBONE_PATH}"
             "verifier.trained.freeze_backbone=${VERIFIER_FREEZE_BACKBONE}"
@@ -291,7 +297,7 @@ print(f'    verifier.trained.backbone = {new_backbone}')
             "training.verifier.batch_size=4"
             "training.verifier.gradient_accumulation_steps=4"
             "policy.max_seq_len=2048"
-            "${COMMON_OVERRIDES}"
+            "${COMMON_OVERRIDES[@]}"
         )
 
         if [[ "${variant}" == "focal" ]]; then
