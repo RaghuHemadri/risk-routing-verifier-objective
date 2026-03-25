@@ -330,6 +330,7 @@ class TrainedVerifier(BaseVerifier, nn.Module):
         dropout = config.get("dropout", 0.1)
         self.freeze_backbone = bool(config.get("freeze_backbone", True))
         self.use_lora = bool(config.get("lora", {}).get("enabled", False))
+        self.pool_last_k_tokens = config.get("pool_last_k_tokens", None)
 
         # Backbone encoder
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -477,10 +478,20 @@ class TrainedVerifier(BaseVerifier, nn.Module):
                 )
                 hidden = outputs.hidden_states[-1]
 
-        # Use last hidden state, mean-pooled over non-padding tokens.
+        # Use last hidden state mean pooling over either all non-padding tokens
+        # or the final K non-padding tokens when configured.
         # Keep pooling math in the same dtype as backbone activations to avoid
         # fp32/fp16 matmul mismatches in the verifier head.
-        mask = attention_mask.unsqueeze(-1).to(hidden.dtype)
+        token_mask = attention_mask.bool()
+        if self.pool_last_k_tokens is not None:
+            k = int(self.pool_last_k_tokens)
+            if k > 0:
+                lengths = token_mask.sum(dim=1, keepdim=True)
+                ordinals = torch.cumsum(token_mask.int(), dim=1)
+                start = (lengths - k + 1).clamp(min=1)
+                token_mask = token_mask & (ordinals >= start)
+
+        mask = token_mask.unsqueeze(-1).to(hidden.dtype)
         pooled = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-8)
         return pooled
 

@@ -126,7 +126,11 @@ def main():
         logger.info("=== Training verifier model ===")
         verifier = create_verifier(vcfg)
 
-        max_seq_len = cfg.policy.get("max_seq_len", 4096)
+        # Let the verifier backbone/tokenizer define sequence capacity.
+        max_seq_len = int(getattr(verifier.tokenizer, "model_max_length", 4096))
+        if max_seq_len >= 1_000_000:
+            max_seq_len = int(getattr(verifier.backbone.config, "max_position_embeddings", 4096))
+        logger.info("Using verifier max_seq_len=%d (from model/tokenizer)", max_seq_len)
         train_ds = VerifierDataset(
             tokenizer=verifier.tokenizer, max_seq_len=max_seq_len,
             episodes=splits["train"],

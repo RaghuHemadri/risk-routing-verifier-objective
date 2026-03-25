@@ -14,6 +14,7 @@
 #   bash run_verifier_training.sh              # run all 3 models
 #   bash run_verifier_training.sh --dry-run    # print commands only
 #   bash run_verifier_training.sh --gpus 2     # use 2 GPUs
+#   bash run_verifier_training.sh --pool-last-k 10  # pool verifier over last 10 tokens
 #
 # Prerequisites:
 #   - BC checkpoints exist under outputs/policy/humaneval_noisy/
@@ -36,7 +37,7 @@ DRY_RUN=false
 VERIFIER_EPOCHS="${VERIFIER_EPOCHS:-5}"
 VERIFIER_BATCH_SIZE="${VERIFIER_BATCH_SIZE:-1}"
 VERIFIER_GRAD_ACCUM="${VERIFIER_GRAD_ACCUM:-8}"
-VERIFIER_MAX_SEQ_LEN="${VERIFIER_MAX_SEQ_LEN:-2048}"
+VERIFIER_POOL_LAST_K="${VERIFIER_POOL_LAST_K:-10}"
 VERIFIER_NUM_WORKERS="${VERIFIER_NUM_WORKERS:-4}"
 VERIFIER_PIN_MEMORY="${VERIFIER_PIN_MEMORY:-true}"
 FOCAL_GAMMA="${FOCAL_GAMMA:-2.0}"
@@ -74,6 +75,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --dry-run)  DRY_RUN=true; shift ;;
         --gpus)     NUM_GPUS="$2"; shift 2 ;;
+        --pool-last-k) VERIFIER_POOL_LAST_K="$2"; shift 2 ;;
         --from-base) FROM_BASE=true; shift ;;
         --help|-h)
             head -24 "$0" | tail -21
@@ -128,7 +130,7 @@ echo "  Epochs:      ${VERIFIER_EPOCHS}"
 echo "  Batch size:  ${VERIFIER_BATCH_SIZE}"
 echo "  Grad accum:  ${VERIFIER_GRAD_ACCUM}"
 echo "  Eff. batch:  $(( VERIFIER_BATCH_SIZE * VERIFIER_GRAD_ACCUM ))"
-echo "  Max seq len: ${VERIFIER_MAX_SEQ_LEN}"
+echo "  Pool last K: ${VERIFIER_POOL_LAST_K}"
 echo "  Num workers: ${VERIFIER_NUM_WORKERS}"
 echo "  Pin memory:  ${VERIFIER_PIN_MEMORY}"
 echo "  Variants:    focal + bce"
@@ -304,12 +306,12 @@ print(f'    verifier.trained.backbone = {new_backbone}')
             "verifier.trained.lora.r=${VERIFIER_LORA_R}"
             "verifier.trained.lora.alpha=${VERIFIER_LORA_ALPHA}"
             "verifier.trained.lora.dropout=${VERIFIER_LORA_DROPOUT}"
+            "verifier.trained.pool_last_k_tokens=${VERIFIER_POOL_LAST_K}"
             "training.verifier.epochs=${VERIFIER_EPOCHS}"
             "training.verifier.batch_size=${VERIFIER_BATCH_SIZE}"
             "training.verifier.gradient_accumulation_steps=${VERIFIER_GRAD_ACCUM}"
             "training.verifier.num_workers=${VERIFIER_NUM_WORKERS}"
             "training.verifier.pin_memory=${VERIFIER_PIN_MEMORY}"
-            "policy.max_seq_len=${VERIFIER_MAX_SEQ_LEN}"
             "${COMMON_OVERRIDES[@]}"
         )
 
