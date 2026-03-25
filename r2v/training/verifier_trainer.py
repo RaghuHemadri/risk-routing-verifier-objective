@@ -534,6 +534,11 @@ class VerifierTrainer:
         if collate_fn is None and hasattr(self.train_dataset, 'dataset'):
             collate_fn = getattr(self.train_dataset.dataset, 'collate_fn', None)
 
+        use_workers = int(self.config.get("num_workers", 2))
+        use_pin_memory = bool(self.config.get("pin_memory", torch.cuda.is_available()))
+        use_persistent_workers = use_workers > 0
+        prefetch_factor = 2 if use_workers > 0 else None
+
         eval_collate_fn = None
         if self.eval_dataset is not None:
             eval_collate_fn = getattr(self.eval_dataset, 'collate_fn', None)
@@ -560,8 +565,10 @@ class VerifierTrainer:
                 self.train_dataset,
                 batch_size=self.batch_size,
                 sampler=sampler,
-                num_workers=0,
-                pin_memory=False,
+                num_workers=use_workers,
+                pin_memory=use_pin_memory,
+                persistent_workers=use_persistent_workers,
+                prefetch_factor=prefetch_factor,
                 drop_last=True,
                 collate_fn=collate_fn,
             )
@@ -577,8 +584,10 @@ class VerifierTrainer:
                 self.train_dataset,
                 batch_size=self.batch_size,
                 shuffle=True,
-                num_workers=0,
-                pin_memory=False,
+                num_workers=use_workers,
+                pin_memory=use_pin_memory,
+                persistent_workers=use_persistent_workers,
+                prefetch_factor=prefetch_factor,
                 drop_last=True,
                 collate_fn=collate_fn,
             )
@@ -589,8 +598,10 @@ class VerifierTrainer:
                 self.eval_dataset,
                 batch_size=self.batch_size,
                 shuffle=False,
-                num_workers=0,
-                pin_memory=False,
+                num_workers=use_workers,
+                pin_memory=use_pin_memory,
+                persistent_workers=use_persistent_workers,
+                prefetch_factor=prefetch_factor,
                 drop_last=False,
                 collate_fn=eval_collate_fn,
             )
@@ -627,6 +638,27 @@ class VerifierTrainer:
         else:
             model, optimizer, train_loader, scheduler = accelerator.prepare(*prepare_args)
 
+        # Runtime placement diagnostics to verify GPU usage by rank.
+        model_ref = accelerator.unwrap_model(model)
+        first_param = next(model_ref.parameters(), None)
+        model_device = str(first_param.device) if first_param is not None else "unknown"
+        accelerator.print(
+            "[Verifier][Device] "
+            f"rank={accelerator.process_index} "
+            f"local_rank={accelerator.local_process_index} "
+            f"device={accelerator.device} "
+            f"cuda_available={torch.cuda.is_available()} "
+            f"model_device={model_device}"
+        )
+        if torch.cuda.is_available():
+            dev_index = accelerator.local_process_index
+            accelerator.print(
+                "[Verifier][CUDA] "
+                f"rank={accelerator.process_index} "
+                f"gpu={dev_index} "
+                f"name={torch.cuda.get_device_name(dev_index)}"
+            )
+
         global_step = 0
         best_val_f1 = -1.0
         metrics_history = []
@@ -637,6 +669,14 @@ class VerifierTrainer:
             num_batches = 0
 
             for batch in train_loader:
+                if epoch == 0 and num_batches == 0:
+                    accelerator.print(
+                        "[Verifier][BatchDevice] "
+                        f"rank={accelerator.process_index} "
+                        f"input_ids={batch['input_ids'].device} "
+                        f"attention_mask={batch['attention_mask'].device} "
+                        f"final_label={batch['final_label'].device}"
+                    )
                 with accelerator.accumulate(model):
                     outputs = model(
                         input_ids=batch["input_ids"],
