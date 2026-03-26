@@ -11,11 +11,16 @@
 #   bash run_bc_training.sh --gpus 2      # use 2 GPUs
 #
 # Prerequisites:
-#   - BC static splits exist under data/trajectories/humaneval_noisy/
+#   - Noisy trajectories exist under data/trajectories/humaneval_noisy/
 #   - Environment activated (source ~/.venv/bin/activate)
 #   - source exports.sh (for HF token if needed)
 #
 # ══════════════════════════════════════════════════════════════
+
+# If invoked as `sh run_bc_training.sh`, re-exec under Bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
 
 set -euo pipefail
 
@@ -30,6 +35,7 @@ DRY_RUN=false
 BC_EPOCHS="${BC_EPOCHS:-5}"
 
 SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
+NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
 BC_TRAIN_DATA="${SPLIT_DIR}/bc_train.jsonl"
 BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
 
@@ -51,6 +57,49 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+ensure_bc_splits() {
+    if [[ -f "${BC_TRAIN_DATA}" && -f "${BC_VAL_DATA}" ]]; then
+        return
+    fi
+
+    echo "  BC splits not found. Generating static BC splits..."
+
+    if [[ ! -f "${NOISY_TRAJECTORIES}" ]]; then
+        echo "  ERROR: Missing trajectories for split generation: ${NOISY_TRAJECTORIES}"
+        exit 1
+    fi
+
+    SPLIT_CMD=(
+        "python" scripts/save_static_splits.py
+        --trajectories "${NOISY_TRAJECTORIES}"
+        --output-dir "${SPLIT_DIR}"
+        --prefix bc
+        --success-only
+        --max-perturbations-per-task 2
+        --data-fraction 0.4
+        --seed 42
+    )
+
+    echo "  Split generation command:"
+    echo "    ${SPLIT_CMD[*]}"
+
+    if ${DRY_RUN}; then
+        echo "  [DRY RUN] Skipping BC split generation"
+        return
+    fi
+
+    "${SPLIT_CMD[@]}"
+
+    for f in "${BC_TRAIN_DATA}" "${BC_VAL_DATA}"; do
+        if [[ ! -f "${f}" ]]; then
+            echo "  ERROR: Expected generated split missing: ${f}"
+            exit 1
+        fi
+    done
+
+    echo "  ✓ BC splits generated"
+}
 
 # ── Model definitions ────────────────────────────────────────
 # TAG | HF_MODEL_ID
@@ -101,13 +150,6 @@ echo ""
 
 ERRORS=0
 
-for f in "${BC_TRAIN_DATA}" "${BC_VAL_DATA}"; do
-    if [[ ! -f "${f}" ]]; then
-        echo "  ERROR: Missing BC split: ${f}"
-        ERRORS=1
-    fi
-done
-
 if [[ ! -f "${CONFIG_NOISY}" ]]; then
     echo "  ERROR: Missing config: ${CONFIG_NOISY}"
     ERRORS=1
@@ -118,6 +160,8 @@ if [[ ${ERRORS} -ne 0 ]]; then
     echo "  Fix the errors above before running."
     exit 1
 fi
+
+ensure_bc_splits
 
 echo ""
 echo "  Models to train (from pretrained backbones):"
@@ -173,7 +217,7 @@ for tag in "${MODEL_TAGS[@]}"; do
         )
     else
         CMD=(
-            python scripts/train_policy.py
+            "${PYTHON_BIN}" scripts/train_policy.py
             --config "${CONFIG_NOISY}"
             --output "${output_dir}"
             --stage bc

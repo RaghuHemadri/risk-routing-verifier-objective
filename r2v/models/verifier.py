@@ -557,5 +557,12 @@ def create_verifier(config: dict[str, Any]) -> BaseVerifier:
         return LLMJudgeVerifier(config.get("llm_judge", config))
     elif mode == "trained":
         return TrainedVerifier(config.get("trained", config))
+    elif mode == "heuristic":
+        from r2v.models.heuristic_verifier import HeuristicVerifier
+        hcfg = config.get("heuristic", config)
+        return HeuristicVerifier(
+            run_code=hcfg.get("run_code", True),
+            benchmark=hcfg.get("benchmark", None),
+        )
     else:
         raise ValueError(f"Unknown verifier mode: {mode}")
