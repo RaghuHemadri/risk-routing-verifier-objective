@@ -67,3 +67,5 @@ trainable params: 80,740,352 || all params: 7,696,356,864 || trainable%: 1.0491
 [2026-03-28 10:07:14] [r2v] [INFO] Prefetch prepared 1 batch(es) (queue=1)
 [2026-03-28 10:08:06] [r2v] [INFO] [shard 0] Batch 1/2469 (  0.0%)  |  0 pairs  |  0.3 steps/s  |  gen 52.20s  |  submit 0.002s  |  wait 0.00s  |  batch 52.20s  |  write_q=0  |  ETA 2149.0min
 [2026-03-28 10:09:20] [r2v] [INFO] [shard 0] Batch 2/2469 (  0.1%)  |  0 pairs  |  0.3 steps/s  |  gen 73.88s  |  submit 0.000s  |  wait 0.00s  |  batch 73.88s  |  write_q=0  |  ETA 2592.5min
+[2026-03-28 10:10:34] [r2v] [INFO] [shard 0] Batch 3/2469 (  0.1%)  |  16 pairs  |  0.2 steps/s  |  gen 73.90s  |  submit 0.000s  |  wait 0.00s  |  batch 73.90s  |  write_q=0  |  ETA 2739.7min
+[2026-03-28 10:10:48] [r2v] [INFO] [shard 0] Batch 4/2469 (  0.2%)  |  27 pairs  |  0.3 steps/s  |  gen 14.37s  |  submit 0.000s  |  wait 0.00s  |  batch 14.37s  |  write_q=0  |  ETA 2201.5min
