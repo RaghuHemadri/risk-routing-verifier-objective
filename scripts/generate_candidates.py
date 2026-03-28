@@ -61,21 +61,27 @@ import torch.nn.functional as F
 _keepalive_stop = threading.Event()
 
 
-def _gpu_keepalive(device, interval: float):
+def _gpu_keepalive(device, interval: float, dim: int = 2048):
     import torch
-    # Tiny periodic matmul to keep GPU from appearing idle to cluster watchdogs.
-    x = torch.randn((128, 128), device=device, dtype=torch.float16)
+    # Continuous heavy matmuls to keep GPU utilization visible to cluster watchdogs.
+    # A 2048x2048 FP16 matmul is ~17 GFLOP — large enough to register on SM
+    # utilization metrics while still leaving most GPU bandwidth for generation.
+    a = torch.randn((dim, dim), device=device, dtype=torch.float16)
+    b = torch.randn((dim, dim), device=device, dtype=torch.float16)
     while not _keepalive_stop.is_set():
         try:
-            _ = x @ x
+            torch.mm(a, b, out=a)
+            torch.cuda.synchronize(device)
         except Exception:
             pass
         _keepalive_stop.wait(interval)
 
 
-def start_gpu_keepalive(device, interval: float):
+def start_gpu_keepalive(device, interval: float, dim: int = 2048):
     _keepalive_stop.clear()
-    t = threading.Thread(target=_gpu_keepalive, args=(device, interval), daemon=True)
+    t = threading.Thread(
+        target=_gpu_keepalive, args=(device, interval, dim), daemon=True,
+    )
     t.start()
     return t
 
@@ -337,8 +343,14 @@ def parse_args():
     parser.add_argument(
         "--gpu-keepalive-interval",
         type=float,
-        default=1.5,
-        help="Seconds between tiny GPU keepalive kernels (0 to disable)",
+        default=0.5,
+        help="Seconds between GPU keepalive matmuls (0 to disable)",
+    )
+    parser.add_argument(
+        "--gpu-keepalive-dim",
+        type=int,
+        default=2048,
+        help="Matrix dimension for GPU keepalive matmuls (NxN FP16)",
     )
     parser.add_argument(
         "--pipeline-depth",
@@ -739,6 +751,18 @@ def main():
         policy.model.config.use_cache = True
     policy.model.eval()
 
+    # torch.compile: fuse kernels for higher SM utilisation during decode.
+    # "reduce-overhead" mode uses CUDA graphs, cutting kernel-launch latency.
+    try:
+        policy.model = _torch.compile(
+            policy.model,
+            mode="reduce-overhead",
+            fullgraph=False,
+        )
+        logger.info("Policy model compiled with torch.compile (reduce-overhead)")
+    except Exception as exc:
+        logger.warning(f"torch.compile failed, falling back to eager mode: {exc}")
+
     # Load verifier — force mode=trained when --verifier-path is given
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
@@ -766,10 +790,18 @@ def main():
         verifier.eval()
 
     if _torch.cuda.is_available() and args.gpu_keepalive_interval > 0:
-        start_gpu_keepalive(policy.model.device, args.gpu_keepalive_interval)
+        keepalive_dev = (
+            policy.model.device
+            if hasattr(policy.model, "device")
+            else next(policy.model.parameters()).device
+        )
+        start_gpu_keepalive(
+            keepalive_dev, args.gpu_keepalive_interval, args.gpu_keepalive_dim,
+        )
         logger.info(
-            "GPU keepalive enabled "
-            f"(interval={args.gpu_keepalive_interval:.2f}s)"
+            f"GPU keepalive enabled "
+            f"(interval={args.gpu_keepalive_interval:.2f}s, "
+            f"dim={args.gpu_keepalive_dim})"
         )
 
     # --------------- Load & shard trajectories (streamed) ---------------
