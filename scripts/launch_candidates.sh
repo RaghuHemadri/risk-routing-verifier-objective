@@ -18,16 +18,16 @@
 #       --K 5 --batch-size 8
 #
 # After all shards finish, merge:
-#   python scripts/generate_candidates.py --merge \
+#   python scripts/generate_candidates_heuristic.py --merge \
 #       --output data/candidates/gaia_noisy.jsonl
 
 set -euo pipefail
 
-NUM_GPUS="${1:?Usage: $0 <NUM_GPUS> [generate_candidates.py args...]}"
+NUM_GPUS="${1:?Usage: $0 <NUM_GPUS> [generate_candidates_heuristic.py args...]}"
 shift
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-GEN_SCRIPT="${SCRIPT_DIR}/generate_candidates.py"
+GEN_SCRIPT="${SCRIPT_DIR}/generate_candidates_heuristic.py"
 
 echo "=== Launching ${NUM_GPUS} candidate-generation workers ==="
 echo "Args: $@"
@@ -87,5 +87,5 @@ if [ -n "${OUTPUT}" ]; then
     echo "=== Done! Final output: ${OUTPUT} ==="
 else
     echo "Could not find --output arg; merge manually:"
-    echo "  python scripts/generate_candidates.py --merge --output <path>"
+    echo "  python scripts/generate_candidates_heuristic.py --merge --output <path>"
 fi
