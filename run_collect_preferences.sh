@@ -195,19 +195,11 @@ run_cmd() {
 
 START_TIME=$(date +%s)
 
-if [[ ${NUM_GPUS} -gt 1 ]]; then
-    # ── Multi-GPU: use launch_candidates.sh for sharded generation ──
-    run_cmd "Collecting preferences (${NUM_GPUS} GPUs, K=${K}, heuristic verifier)" \
-        bash scripts/launch_candidates.sh "${NUM_GPUS}" \
-            "${COMMON_ARGS[@]}" \
-        2>&1 | tee -a "${LOGFILE}"
-else
-    # ── Single GPU ──
-    run_cmd "Collecting preferences (single GPU, K=${K}, heuristic verifier)" \
-        python scripts/generate_candidates.py \
-            "${COMMON_ARGS[@]}" \
-        2>&1 | tee -a "${LOGFILE}"
-fi
+# Always use launch_candidates.sh (1 GPU = one shard, writes directly to --output; no merge).
+run_cmd "Collecting preferences (${NUM_GPUS} GPU(s), K=${K}, heuristic verifier)" \
+    bash scripts/launch_candidates.sh "${NUM_GPUS}" \
+        "${COMMON_ARGS[@]}" \
+    2>&1 | tee -a "${LOGFILE}"
 
 END_TIME=$(date +%s)
 ELAPSED=$(( END_TIME - START_TIME ))

@@ -6,7 +6,7 @@ benchmark: humaneval
 
 # Best-quality tuning for 2x H200 (bf16, multi-GPU)
 policy:
-  model_name: deepseek-ai/deepseek-coder-6.7b-instruct
+  model_name: Qwen/Qwen2.5-Coder-7B-Instruct
   max_seq_len: 4096
   lora:
     enabled: true

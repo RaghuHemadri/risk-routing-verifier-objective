@@ -14,58 +14,29 @@ nohup: ignoring input
   Max new tokens:  256
   Verifier:        heuristic (rule-based, no GPU needed)
   Dry run:         false
-  Log:             /scratch/rh3884/humaira/risk-routing-verifier-objective/logs/collect_preferences_20260328_100520.log
+  Log:             /scratch/rh3884/humaira/risk-routing-verifier-objective/logs/collect_preferences_20260328_104612.log
 
   ✓ Trajectories: data/trajectories/humaneval_noisy/trajectories.jsonl (4920 lines)
   ✓ Policy: outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final
   ✓ Config: configs/humaneval/noisy.yaml
 
 ════════════════════════════════════════════════════════
-  Collecting preferences (single GPU, K=5, heuristic verifier)
+  Collecting preferences (1 GPU(s), K=5, heuristic verifier)
 ════════════════════════════════════════════════════════
-$ python scripts/generate_candidates.py --config configs/humaneval/noisy.yaml --policy-path outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl --output data/candidates/humaneval_noisy_heuristic.jsonl --K 5 --batch-size 16 --max-new-tokens 256 --verifier-batch-size 8 --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval policy.model_name=Qwen/Qwen2.5-Coder-7B-Instruct
+$ bash scripts/launch_candidates.sh 1 --config configs/humaneval/noisy.yaml --policy-path outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl --output data/candidates/humaneval_noisy_heuristic.jsonl --K 5 --batch-size 16 --max-new-tokens 256 --verifier-batch-size 8 --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval policy.model_name=Qwen/Qwen2.5-Coder-7B-Instruct
 
+=== Launching 1 candidate-generation workers ===
+Args: --config configs/humaneval/noisy.yaml --policy-path outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl --output data/candidates/humaneval_noisy_heuristic.jsonl --K 5 --batch-size 16 --max-new-tokens 256 --verifier-batch-size 8 --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval policy.model_name=Qwen/Qwen2.5-Coder-7B-Instruct
+
+[GPU 0] Starting shard 0/1...
+[GPU 0] PID=1496141, log=generate_candidates_shard0.log
+
+All 1 workers launched. PIDs: 1496141
+Monitor progress:  tail -f generate_candidates_shard*.log
+
+[GPU 0] ✓ Completed (PID 1496141)
+
+=== All shards complete, merging... ===
 /ext3/miniforge3/envs/pt311/lib/python3.11/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (6.0.0.post1)/charset_normalizer (3.4.4) doesn't match a supported version!
   warnings.warn(
-[2026-03-28 10:06:16] [r2v] [INFO] Resuming: 358 episodes already completed in data/candidates/humaneval_noisy_heuristic.jsonl
-[2026-03-28 10:06:16] [r2v] [INFO] Loading policy from outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final
-`torch_dtype` is deprecated! Use `dtype` instead!
-Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:00<00:00,  6.32it/s]Loading checkpoint shards:  50%|█████     | 2/4 [00:00<00:00,  5.49it/s]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:00<00:00,  5.55it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:00<00:00,  7.30it/s]
-trainable params: 80,740,352 || all params: 7,696,356,864 || trainable%: 1.0491
-[2026-03-28 10:06:44] [r2v.models.policy] [INFO] PolicyModel initialized: Qwen/Qwen2.5-Coder-7B-Instruct, params=7,696,356,864, trainable=80,740,352
-/ext3/miniforge3/envs/pt311/lib/python3.11/site-packages/peft/tuners/tuners_utils.py:285: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
-  warnings.warn(
-[2026-03-28 10:07:13] [r2v] [INFO] Policy moved to CUDA for inference
-[2026-03-28 10:07:13] [r2v] [INFO] Policy model compiled with torch.compile (reduce-overhead)
-[2026-03-28 10:07:13] [r2v] [INFO] Loading verifier...
-[2026-03-28 10:07:13] [r2v] [INFO] GPU keepalive enabled (interval=0.50s, dim=2048)
-[2026-03-28 10:07:13] [r2v] [INFO] Starting shard scan (streaming pass for step/episode counts)...
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=200 episodes, steps=2137, scanned=558, rate=5994.9 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=400 episodes, steps=3380, scanned=758, rate=7320.5 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=600 episodes, steps=4741, scanned=958, rate=8352.8 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=800 episodes, steps=6973, scanned=1158, rate=8746.5 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=1000 episodes, steps=9092, scanned=1358, rate=9072.0 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=1200 episodes, steps=10488, scanned=1558, rate=9664.5 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=1400 episodes, steps=11736, scanned=1758, rate=10353.2 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=1600 episodes, steps=13919, scanned=1958, rate=10641.5 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=1800 episodes, steps=16066, scanned=2158, rate=10913.2 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=2000 episodes, steps=17607, scanned=2358, rate=11350.6 eps/s
-[2026-03-28 10:07:13] [r2v] [INFO] Shard scan progress: kept=2200 episodes, steps=18753, scanned=2558, rate=11794.5 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=2400 episodes, steps=20946, scanned=2758, rate=11761.8 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=2600 episodes, steps=23098, scanned=2958, rate=11733.7 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=2800 episodes, steps=24723, scanned=3158, rate=11914.7 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=3000 episodes, steps=25781, scanned=3358, rate=12253.9 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=3200 episodes, steps=27898, scanned=3558, rate=12227.9 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=3400 episodes, steps=30043, scanned=3758, rate=12171.7 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=3600 episodes, steps=31811, scanned=3958, rate=12253.4 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=3800 episodes, steps=32822, scanned=4158, rate=12550.0 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=4000 episodes, steps=34864, scanned=4358, rate=12574.1 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=4200 episodes, steps=37102, scanned=4558, rate=12540.3 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan progress: kept=4400 episodes, steps=38935, scanned=4758, rate=12617.9 eps/s
-[2026-03-28 10:07:14] [r2v] [INFO] Shard scan complete: kept=4562 episodes, steps=39492, scanned=4920, elapsed=0.4s
-[2026-03-28 10:07:14] [r2v] [INFO] Processing 39492 steps from 4562 episodes (skipped 358 done), K=5, batch_size=16, max_new_tokens=256, temp=0.7, compute_logprobs=False
-[2026-03-28 10:07:14] [r2v] [INFO] Prefetch prepared 1 batch(es) (queue=1)
-[2026-03-28 10:08:06] [r2v] [INFO] [shard 0] Batch 1/2469 (  0.0%)  |  0 pairs  |  0.3 steps/s  |  gen 52.20s  |  submit 0.002s  |  wait 0.00s  |  batch 52.20s  |  write_q=0  |  ETA 2149.0min
-[2026-03-28 10:09:20] [r2v] [INFO] [shard 0] Batch 2/2469 (  0.1%)  |  0 pairs  |  0.3 steps/s  |  gen 73.88s  |  submit 0.000s  |  wait 0.00s  |  batch 73.88s  |  write_q=0  |  ETA 2592.5min
-[2026-03-28 10:10:34] [r2v] [INFO] [shard 0] Batch 3/2469 (  0.1%)  |  16 pairs  |  0.2 steps/s  |  gen 73.90s  |  submit 0.000s  |  wait 0.00s  |  batch 73.90s  |  write_q=0  |  ETA 2739.7min
-[2026-03-28 10:10:48] [r2v] [INFO] [shard 0] Batch 4/2469 (  0.2%)  |  27 pairs  |  0.3 steps/s  |  gen 14.37s  |  submit 0.000s  |  wait 0.00s  |  batch 14.37s  |  write_q=0  |  ETA 2201.5min
+[2026-03-28 13:12:42] [r2v] [ERROR] No shard files found matching data/candidates/humaneval_noisy_heuristic.shard_*.jsonl
