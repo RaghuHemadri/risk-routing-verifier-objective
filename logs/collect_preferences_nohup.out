@@ -1,0 +1,42 @@
+nohup: ignoring input
+══════════════════════════════════════════════════════════
+  DPO Preference Data Collection (Heuristic Verifier)
+══════════════════════════════════════════════════════════
+
+  Benchmark:       humaneval
+  Config:          configs/humaneval/noisy.yaml
+  Policy:          outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final
+  Trajectories:    data/trajectories/humaneval_noisy/trajectories.jsonl
+  Output:          data/candidates/humaneval_noisy_heuristic.jsonl
+  GPUs:            1
+  K (candidates):  5
+  Batch size:      16
+  Max new tokens:  256
+  Verifier:        heuristic (rule-based, no GPU needed)
+  Dry run:         false
+  Log:             /scratch/rh3884/humaira/risk-routing-verifier-objective/logs/collect_preferences_20260328_104612.log
+
+  ✓ Trajectories: data/trajectories/humaneval_noisy/trajectories.jsonl (4920 lines)
+  ✓ Policy: outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final
+  ✓ Config: configs/humaneval/noisy.yaml
+
+════════════════════════════════════════════════════════
+  Collecting preferences (1 GPU(s), K=5, heuristic verifier)
+════════════════════════════════════════════════════════
+$ bash scripts/launch_candidates.sh 1 --config configs/humaneval/noisy.yaml --policy-path outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl --output data/candidates/humaneval_noisy_heuristic.jsonl --K 5 --batch-size 16 --max-new-tokens 256 --verifier-batch-size 8 --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval policy.model_name=Qwen/Qwen2.5-Coder-7B-Instruct
+
+=== Launching 1 candidate-generation workers ===
+Args: --config configs/humaneval/noisy.yaml --policy-path outputs/policy/humaneval_noisy_bc_qwen_coder_7b/final --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl --output data/candidates/humaneval_noisy_heuristic.jsonl --K 5 --batch-size 16 --max-new-tokens 256 --verifier-batch-size 8 --overrides policy.quantization.load_in_4bit=false logging.wandb_mode=disabled verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval policy.model_name=Qwen/Qwen2.5-Coder-7B-Instruct
+
+[GPU 0] Starting shard 0/1...
+[GPU 0] PID=1496141, log=generate_candidates_shard0.log
+
+All 1 workers launched. PIDs: 1496141
+Monitor progress:  tail -f generate_candidates_shard*.log
+
+[GPU 0] ✓ Completed (PID 1496141)
+
+=== All shards complete, merging... ===
+/ext3/miniforge3/envs/pt311/lib/python3.11/site-packages/requests/__init__.py:113: RequestsDependencyWarning: urllib3 (2.6.3) or chardet (6.0.0.post1)/charset_normalizer (3.4.4) doesn't match a supported version!
+  warnings.warn(
+[2026-03-28 13:12:42] [r2v] [ERROR] No shard files found matching data/candidates/humaneval_noisy_heuristic.shard_*.jsonl

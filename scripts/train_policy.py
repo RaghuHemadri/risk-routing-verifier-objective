@@ -58,7 +58,11 @@ def parse_args():
                         help="Pre-split BC train JSONL (static splitting)")
     parser.add_argument("--val-data", type=str, default=None,
                         help="Pre-split BC val JSONL (static splitting)")
-    parser.add_argument("--preference-data", type=str, help="Path to preference pairs JSONL")
+    parser.add_argument("--preference-data", type=str, help="Path to preference pairs JSONL (single file, needs runtime filtering)")
+    parser.add_argument("--pref-train-data", type=str, default=None,
+                        help="Pre-split preference train JSONL (static splitting)")
+    parser.add_argument("--pref-val-data", type=str, default=None,
+                        help="Pre-split preference val JSONL (static splitting)")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
     parser.add_argument(
         "--data-fraction", type=float, default=1.0,
@@ -179,8 +183,10 @@ def main():
 
     # ── Stage 2: DPO Preference Training ──
     if args.stage in ("preference", "all"):
+        use_static_pref = args.pref_train_data and Path(args.pref_train_data).exists()
         pref_path = args.preference_data or cfg.get("data", {}).get("preference_file", "")
-        if not pref_path or not Path(pref_path).exists():
+
+        if not use_static_pref and (not pref_path or not Path(pref_path).exists()):
             logger.warning("No preference data found, skipping DPO stage")
         else:
             logger.info("=== Stage 2: DPO Preference Training ===")
@@ -191,41 +197,62 @@ def main():
             else:
                 logger.info("DPO initialization: using base model weights (no BC checkpoint loaded)")
 
-            # Build train-split episode_id allowlist from trajectories
-            traj_path = args.trajectories or cfg.get("data", {}).get("trajectory_file", "")
-            train_episode_ids: set[str] | None = None
-            val_episode_ids: set[str] | None = None
-            if traj_path and Path(traj_path).exists():
-                max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
-                pref_splits = load_and_split(
-                    traj_path,
-                    max_perturbations_per_task=max_perturbations,
-                    seed=int(cfg.get("project", {}).get("seed", 42)),
-                )
-                train_episode_ids = {ep.episode_id for ep in pref_splits["train"]}
-                val_episode_ids = {ep.episode_id for ep in pref_splits["val"]}
-                logger.info(
-                    f"DPO split filter: {len(train_episode_ids)} train, "
-                    f"{len(val_episode_ids)} val episode IDs"
-                )
-
             max_seq_len = cfg.policy.get("max_seq_len", 4096)
             pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
             min_score_gap = float(pref_cfg.get("min_score_gap", 0.1))
-            pref_train_dataset = PreferenceDataset(
-                pref_path,
-                policy.tokenizer,
-                max_seq_len=max_seq_len,
-                min_score_gap=min_score_gap,
-                allowed_episode_ids=train_episode_ids,
-            )
-            pref_val_dataset = PreferenceDataset(
-                pref_path,
-                policy.tokenizer,
-                max_seq_len=max_seq_len,
-                min_score_gap=min_score_gap,
-                allowed_episode_ids=val_episode_ids,
-            ) if val_episode_ids else None
+
+            if use_static_pref:
+                logger.info("Loading static pre-split preference data files")
+                logger.info(f"  train: {args.pref_train_data}")
+                pref_train_dataset = PreferenceDataset(
+                    args.pref_train_data,
+                    policy.tokenizer,
+                    max_seq_len=max_seq_len,
+                    min_score_gap=min_score_gap,
+                )
+                pref_val_dataset = None
+                if args.pref_val_data and Path(args.pref_val_data).exists():
+                    logger.info(f"  val:   {args.pref_val_data}")
+                    pref_val_dataset = PreferenceDataset(
+                        args.pref_val_data,
+                        policy.tokenizer,
+                        max_seq_len=max_seq_len,
+                        min_score_gap=min_score_gap,
+                    )
+            else:
+                logger.info("Using runtime episode-ID filtering on %s", pref_path)
+                traj_path = args.trajectories or cfg.get("data", {}).get("trajectory_file", "")
+                train_episode_ids: set[str] | None = None
+                val_episode_ids: set[str] | None = None
+                if traj_path and Path(traj_path).exists():
+                    max_perturbations = int(cfg.get("data", {}).get("max_perturbations_per_task", 2))
+                    pref_splits = load_and_split(
+                        traj_path,
+                        max_perturbations_per_task=max_perturbations,
+                        seed=int(cfg.get("project", {}).get("seed", 42)),
+                    )
+                    train_episode_ids = {ep.episode_id for ep in pref_splits["train"]}
+                    val_episode_ids = {ep.episode_id for ep in pref_splits["val"]}
+                    logger.info(
+                        f"DPO split filter: {len(train_episode_ids)} train, "
+                        f"{len(val_episode_ids)} val episode IDs"
+                    )
+
+                pref_train_dataset = PreferenceDataset(
+                    pref_path,
+                    policy.tokenizer,
+                    max_seq_len=max_seq_len,
+                    min_score_gap=min_score_gap,
+                    allowed_episode_ids=train_episode_ids,
+                )
+                pref_val_dataset = PreferenceDataset(
+                    pref_path,
+                    policy.tokenizer,
+                    max_seq_len=max_seq_len,
+                    min_score_gap=min_score_gap,
+                    allowed_episode_ids=val_episode_ids,
+                ) if val_episode_ids else None
+
             logger.info(f"PreferenceDataset: {len(pref_train_dataset)} train pairs")
             if pref_val_dataset is not None:
                 logger.info(f"PreferenceDataset: {len(pref_val_dataset)} val pairs")
