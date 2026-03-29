@@ -63,6 +63,11 @@ VERIFIER_TRAIN_DATA="${SPLIT_DIR}/verifier_train.jsonl"
 VERIFIER_VAL_DATA="${SPLIT_DIR}/verifier_val.jsonl"
 VERIFIER_TEST_DATA="${SPLIT_DIR}/verifier_test.jsonl"
 
+# Preference/DPO splits (all tasks, all perturbations, aligned with BC)
+PREF_TRAIN_DATA="${SPLIT_DIR}/pref_train.jsonl"
+PREF_VAL_DATA="${SPLIT_DIR}/pref_val.jsonl"
+PREF_TEST_DATA="${SPLIT_DIR}/pref_test.jsonl"
+
 # ── Argument parsing ─────────────────────────────────────────
 FROM_STAGE=0
 ONLY_STAGE=0
@@ -263,6 +268,25 @@ if should_run 5; then
     echo "✓ Candidates: ${CANDIDATES_PATH}"
 fi
 
+# ── Stage 5b: Save static preference splits ─────────────────
+# All tasks, all perturbations, task-ID aligned with BC to prevent leakage.
+if should_run 5; then
+    if [[ -f "${PREF_TRAIN_DATA}" && -f "${PREF_VAL_DATA}" && -f "${PREF_TEST_DATA}" ]]; then
+        echo "✓ Preference splits already exist — skipping generation"
+        echo "  train: ${PREF_TRAIN_DATA}"
+        echo "  val:   ${PREF_VAL_DATA}"
+        echo "  test:  ${PREF_TEST_DATA}"
+    else
+        run_cmd "Stage 5b: Save static preference splits (all tasks, all perturbations, BC-aligned)" \
+            python scripts/save_preference_splits.py \
+                --trajectories "${NOISY_TRAJECTORIES}" \
+                --preference-data "${CANDIDATES_PATH}" \
+                --output-dir "${SPLIT_DIR}" \
+                --seed 42
+        echo "✓ Preference splits saved to ${SPLIT_DIR}"
+    fi
+fi
+
 # ── Stage 6: Train policy (DPO) ─────────────────────────────
 if should_run 6; then
     if [[ ${NUM_GPUS} -gt 1 ]]; then
@@ -272,7 +296,8 @@ if should_run 6; then
                 --config ${CONFIG_NOISY} \
                 --output outputs/policy/${BENCHMARK}_noisy \
                 --stage preference \
-                --preference-data "${CANDIDATES_PATH}" \
+                --pref-train-data "${PREF_TRAIN_DATA}" \
+                --pref-val-data "${PREF_VAL_DATA}" \
                 --overrides ${COMMON_OVERRIDES}
     else
         run_cmd "Stage 6: Train policy (DPO, single GPU)" \
@@ -280,7 +305,8 @@ if should_run 6; then
                 --config ${CONFIG_NOISY} \
                 --output outputs/policy/${BENCHMARK}_noisy \
                 --stage preference \
-                --preference-data "${CANDIDATES_PATH}" \
+                --pref-train-data "${PREF_TRAIN_DATA}" \
+                --pref-val-data "${PREF_VAL_DATA}" \
                 --overrides ${QUANT_OVERRIDE} ${COMMON_OVERRIDES}
     fi
     echo "✓ DPO policy: ${POLICY_PATH}"
