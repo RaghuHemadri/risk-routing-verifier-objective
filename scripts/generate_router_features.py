@@ -23,13 +23,17 @@ Merge shards after all GPUs finish:
 Resume after a crash (re-run the same command — skips completed steps):
     # Same command; already-written episode_ids are detected automatically.
 
-Features extracted per decision point:
+Features extracted per decision point (24-dim):
 - SLM entropy (H(π_θ))
-- Verifier score spread (max - min over K candidates)
+- Verifier score spread, mean, std, best, worst (over K candidates)
+- Action log-probability best, mean, std (over K candidates)
+- Candidate consistency (fraction sharing the same leading token)
+- Semantic entropy over K candidates (entropy over first-token cluster distribution)
 - Step count / horizon fraction
-- Perturbation-type indicator (one-hot)
 - Context length
-- Action log-probability
+- Goal length (task complexity proxy)
+- Benchmark one-hot (gaia / alfworld / humaneval / webarena, 4 dims)
+- Perturbation-type indicator (one-hot, 5 dims)
 """
 
 from __future__ import annotations
@@ -165,6 +169,58 @@ _PERT_TYPES = [
     "prompt_injection", "distractors",
 ]
 
+# ---- Benchmark one-hot encoding ---------------------------------------
+_BENCHMARKS = ["gaia", "alfworld", "humaneval", "webarena"]
+
+
+def _detect_benchmark(config_path: str | None) -> str | None:
+    """Infer benchmark name from the config file path."""
+    if not config_path:
+        return None
+    for bench in _BENCHMARKS:
+        if bench in config_path.lower():
+            return bench
+    return None
+
+
+def _benchmark_onehot(benchmark: str | None) -> list[float]:
+    """Encode benchmark as a 4-dim one-hot vector."""
+    one_hot = [0.0] * len(_BENCHMARKS)
+    if benchmark in _BENCHMARKS:
+        one_hot[_BENCHMARKS.index(benchmark)] = 1.0
+    return one_hot
+
+
+def _candidate_consistency(texts: list[str]) -> float:
+    """Fraction of K candidates sharing the most common leading token."""
+    from collections import Counter
+    if not texts:
+        return 1.0
+    first_tokens = [t.split()[0].lower() if t.strip() else "" for t in texts]
+    most_common_count = Counter(first_tokens).most_common(1)[0][1]
+    return most_common_count / len(first_tokens)
+
+
+def _semantic_entropy(texts: list[str]) -> float:
+    """Shannon entropy over first-token cluster distribution of K candidates.
+
+    Complements candidate_consistency: consistency gives the mode fraction,
+    semantic_entropy captures spread across *all* clusters.
+    e.g. [print, print, print, return, def] → H = -3/5*log(3/5) - 1/5*log(1/5)*2
+    """
+    from collections import Counter
+    if not texts:
+        return 0.0
+    first_tokens = [t.split()[0].lower() if t.strip() else "" for t in texts]
+    counts = Counter(first_tokens)
+    total = len(first_tokens)
+    entropy = 0.0
+    for count in counts.values():
+        p = count / total
+        if p > 0:
+            entropy -= p * np.log(p)
+    return float(entropy)
+
 
 def _perturbation_onehot(pert_type: str | None) -> list[float]:
     """Encode perturbation type as a 5-dim one-hot vector."""
@@ -179,28 +235,57 @@ def _perturbation_onehot(pert_type: str | None) -> list[float]:
 def _assemble_features(
     entropy: float,
     scores: list[float],
+    log_probs: list[float],
     step_idx: int,
     max_steps: int,
     context_len: int,
     pert_type: str | None,
+    candidate_texts: list[str],
+    benchmark: str | None,
+    goal: str,
 ) -> list[float]:
-    """Build the 13-dim feature vector from pre-computed components."""
+    """Build the 24-dim feature vector from pre-computed components.
+
+    Dims:
+      0        entropy
+      1-5      verifier scores: spread, mean, std, best, worst
+      6-8      log-prob stats: best, mean, std
+      9        candidate consistency (fraction with same leading token)
+      10       semantic entropy (entropy over first-token cluster distribution)
+      11       horizon fraction (step_idx / max_steps)
+      12       step number (absolute)
+      13       normalized context length
+      14       goal length (task complexity proxy)
+      15-18    benchmark one-hot (gaia, alfworld, humaneval, webarena)
+      19-23    perturbation one-hot (5 dims)
+    """
     features: list[float] = []
     # 1. SLM entropy
     features.append(entropy)
-    # 2. Verifier candidate scores
-    features.append(max(scores) - min(scores))   # spread
+    # 2. Verifier candidate scores (5 stats)
+    features.append(max(scores) - min(scores))    # spread
     features.append(float(np.mean(scores)))        # mean
-    features.append(float(np.std(scores)))          # std
-    features.append(max(scores))                    # best
-    # 3. Step features
+    features.append(float(np.std(scores)))         # std
+    features.append(max(scores))                   # best
+    features.append(min(scores))                   # worst
+    # 3. Action log-probability stats
+    features.append(max(log_probs))                # log_prob_best
+    features.append(float(np.mean(log_probs)))     # log_prob_mean
+    features.append(float(np.std(log_probs)))      # log_prob_std
+    # 4. Candidate diversity signals
+    features.append(_candidate_consistency(candidate_texts))
+    features.append(_semantic_entropy(candidate_texts))
+    # 5. Step features
     features.append(step_idx / max(max_steps, 1))  # horizon fraction
-    features.append(float(step_idx))                # absolute step
-    # 4. Context length (normalised)
-    features.append(context_len / 10000.0)
-    # 5. Perturbation one-hot
+    features.append(float(step_idx))               # absolute step
+    # 6. Context / task complexity
+    features.append(context_len / 10000.0)         # normalized context length
+    features.append(len(goal) / 1000.0)            # goal length (task complexity proxy)
+    # 7. Benchmark one-hot (4 dims)
+    features.extend(_benchmark_onehot(benchmark))
+    # 8. Perturbation one-hot (5 dims)
     features.extend(_perturbation_onehot(pert_type))
-    return features  # length 13
+    return features  # length 24
 
 
 # ================================================================
@@ -368,6 +453,9 @@ def main():
         f"(total {len(all_episodes)}, skipped {len(done_eids)} done)"
     )
 
+    benchmark = _detect_benchmark(args.config)
+    logger.info(f"Benchmark detected from config path: {benchmark!r}")
+
     max_steps = (
         cfg.get("inference", {}).get("step_limit", 15)
         if cfg.get("inference") else 15
@@ -409,6 +497,7 @@ def main():
                 "slm_success": slm_success,
                 "cost": cost,
                 "episode_id": episode.episode_id,
+                "benchmark": benchmark,
             })
 
             context += step.action.raw_text + "\n"
@@ -529,10 +618,14 @@ def main():
                 features = _assemble_features(
                     entropy=entropies[i],
                     scores=all_scores[i],
+                    log_probs=[c["log_prob"] for c in all_candidates[i]],
                     step_idx=item["step_idx"],
                     max_steps=max_steps,
                     context_len=len(item["context"]),
                     pert_type=item["pert_type"],
+                    candidate_texts=[c["text"] for c in all_candidates[i]],
+                    benchmark=item["benchmark"],
+                    goal=item["goal"],
                 )
                 record = {
                     "features": features,
