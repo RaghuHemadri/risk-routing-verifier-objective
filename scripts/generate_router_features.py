@@ -2,6 +2,9 @@
 """
 Generate router training features from collected trajectories.
 
+Uses vLLM for fast batched inference.  For each decision point, generates
+K candidate actions and computes a 24-dim feature vector.
+
 Single-GPU usage:
     python scripts/generate_router_features.py \
         --config configs/gaia/noisy.yaml \
@@ -24,7 +27,7 @@ Resume after a crash (re-run the same command — skips completed steps):
     # Same command; already-written episode_ids are detected automatically.
 
 Features extracted per decision point (24-dim):
-- SLM entropy (H(π_θ))
+- SLM entropy (H(π_θ))  [approximated from vLLM top-k logprobs]
 - Verifier score spread, mean, std, best, worst (over K candidates)
 - Action log-probability best, mean, std (over K candidates)
 - Candidate consistency (fraction sharing the same leading token)
@@ -41,22 +44,20 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import queue
+import math
 import sys
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from omegaconf import OmegaConf
 
 from r2v.data.trajectory import ActionSource, PerturbationType, TrajectoryStore
-from r2v.models.policy import PolicyModel
 from r2v.models.verifier import create_verifier
 from r2v.utils.config import load_config
 from r2v.utils.logging import setup_logging
@@ -70,11 +71,10 @@ def parse_args():
     parser.add_argument("--output", type=str, required=True)
     parser.add_argument("--K", type=int, default=5)
     parser.add_argument(
-        "--batch-size", type=int, default=4,
-        help="Micro-batch size for GPU batching. Increase for more GPU "
-             "utilisation; decrease if you hit OOM (default: 4).",
+        "--batch-size", type=int, default=32,
+        help="Number of prompts per vLLM generate() call.  vLLM handles "
+             "internal continuous-batching; larger values amortise overhead.",
     )
-    # Multi-GPU sharding
     parser.add_argument("--shard-id", type=int, default=0,
                         help="This worker's shard index (0-based)")
     parser.add_argument("--num-shards", type=int, default=1,
@@ -83,41 +83,49 @@ def parse_args():
                         help="Merge shard outputs instead of generating")
     parser.add_argument("--no-resume", action="store_true",
                         help="Do not resume; overwrite existing output")
+    parser.add_argument(
+        "--num-logprobs", type=int, default=20,
+        help="Top-k logprobs per generated token (used for entropy approx)",
+    )
+    parser.add_argument(
+        "--gpu-keepalive-interval",
+        type=float,
+        default=8.0,
+        help="Seconds between tiny GPU matmul kernels during CPU-heavy verifier "
+             "phases (0 disables). Helps HPC schedulers that kill low-util jobs.",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
 
 # ================================================================
-# GPU keepalive: periodic tiny forward passes to prevent HPC from
-# killing the job due to low GPU utilization during CPU-bound phases.
+# GPU keepalive (CPU-bound heuristic verifier leaves GPU idle)
 # ================================================================
 
 _keepalive_stop = threading.Event()
 
 
-def _gpu_keepalive(model, tokenizer, device, interval: float = 8.0):
-    """Background thread: run a tiny forward pass every *interval* seconds."""
-    dummy_ids = tokenizer("keepalive", return_tensors="pt")["input_ids"].to(device)
+def _gpu_keepalive(device: str, interval: float) -> None:
+    import torch
+
+    x = torch.randn((128, 128), device=device, dtype=torch.float16)
     while not _keepalive_stop.is_set():
         try:
-            with torch.no_grad():
-                model(dummy_ids)
+            _ = x @ x
         except Exception:
             pass
         _keepalive_stop.wait(interval)
 
 
-def _start_keepalive(model, tokenizer, device, interval: float = 8.0):
+def _start_gpu_keepalive(device: str, interval: float) -> None:
     _keepalive_stop.clear()
     t = threading.Thread(
-        target=_gpu_keepalive, args=(model, tokenizer, device, interval),
-        daemon=True,
+        target=_gpu_keepalive, args=(device, interval), daemon=True,
     )
     t.start()
-    return t
 
 
-def _stop_keepalive():
+def _stop_gpu_keepalive() -> None:
     _keepalive_stop.set()
 
 
@@ -163,18 +171,19 @@ def _merge_shards(output_path: str, logger):
     logger.info(f"Merged {len(shard_files)} shards -> {out} ({total} records)")
 
 
-# ---- Perturbation one-hot encoding ------------------------------------
+# ================================================================
+# Feature encoding helpers
+# ================================================================
+
 _PERT_TYPES = [
     None, "tool_flakiness", "partial_observability",
     "prompt_injection", "distractors",
 ]
 
-# ---- Benchmark one-hot encoding ---------------------------------------
 _BENCHMARKS = ["gaia", "alfworld", "humaneval", "webarena"]
 
 
 def _detect_benchmark(config_path: str | None) -> str | None:
-    """Infer benchmark name from the config file path."""
     if not config_path:
         return None
     for bench in _BENCHMARKS:
@@ -184,7 +193,6 @@ def _detect_benchmark(config_path: str | None) -> str | None:
 
 
 def _benchmark_onehot(benchmark: str | None) -> list[float]:
-    """Encode benchmark as a 4-dim one-hot vector."""
     one_hot = [0.0] * len(_BENCHMARKS)
     if benchmark in _BENCHMARKS:
         one_hot[_BENCHMARKS.index(benchmark)] = 1.0
@@ -193,7 +201,6 @@ def _benchmark_onehot(benchmark: str | None) -> list[float]:
 
 def _candidate_consistency(texts: list[str]) -> float:
     """Fraction of K candidates sharing the most common leading token."""
-    from collections import Counter
     if not texts:
         return 1.0
     first_tokens = [t.split()[0].lower() if t.strip() else "" for t in texts]
@@ -202,13 +209,7 @@ def _candidate_consistency(texts: list[str]) -> float:
 
 
 def _semantic_entropy(texts: list[str]) -> float:
-    """Shannon entropy over first-token cluster distribution of K candidates.
-
-    Complements candidate_consistency: consistency gives the mode fraction,
-    semantic_entropy captures spread across *all* clusters.
-    e.g. [print, print, print, return, def] → H = -3/5*log(3/5) - 1/5*log(1/5)*2
-    """
-    from collections import Counter
+    """Shannon entropy over first-token cluster distribution of K candidates."""
     if not texts:
         return 0.0
     first_tokens = [t.split()[0].lower() if t.strip() else "" for t in texts]
@@ -223,7 +224,6 @@ def _semantic_entropy(texts: list[str]) -> float:
 
 
 def _perturbation_onehot(pert_type: str | None) -> list[float]:
-    """Encode perturbation type as a 5-dim one-hot vector."""
     one_hot = [0.0] * len(_PERT_TYPES)
     if pert_type in _PERT_TYPES:
         one_hot[_PERT_TYPES.index(pert_type)] = 1.0
@@ -260,100 +260,312 @@ def _assemble_features(
       19-23    perturbation one-hot (5 dims)
     """
     features: list[float] = []
-    # 1. SLM entropy
     features.append(entropy)
-    # 2. Verifier candidate scores (5 stats)
     features.append(max(scores) - min(scores))    # spread
     features.append(float(np.mean(scores)))        # mean
     features.append(float(np.std(scores)))         # std
     features.append(max(scores))                   # best
     features.append(min(scores))                   # worst
-    # 3. Action log-probability stats
     features.append(max(log_probs))                # log_prob_best
     features.append(float(np.mean(log_probs)))     # log_prob_mean
     features.append(float(np.std(log_probs)))      # log_prob_std
-    # 4. Candidate diversity signals
     features.append(_candidate_consistency(candidate_texts))
     features.append(_semantic_entropy(candidate_texts))
-    # 5. Step features
     features.append(step_idx / max(max_steps, 1))  # horizon fraction
     features.append(float(step_idx))               # absolute step
-    # 6. Context / task complexity
     features.append(context_len / 10000.0)         # normalized context length
-    features.append(len(goal) / 1000.0)            # goal length (task complexity proxy)
-    # 7. Benchmark one-hot (4 dims)
+    features.append(len(goal) / 1000.0)            # goal length
     features.extend(_benchmark_onehot(benchmark))
-    # 8. Perturbation one-hot (5 dims)
     features.extend(_perturbation_onehot(pert_type))
     return features  # length 24
 
 
 # ================================================================
-# Prefetch iterator: tokenises the next batch on a CPU thread
-# while the GPU processes the current batch.
+# vLLM backend
 # ================================================================
 
-class _PrefetchIter:
-    """Yields ``(batch_items, entropy_tokens, gen_tokens)`` with one
-    batch pre-tokenised on a daemon thread ahead of consumption.
+def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
+    """Initialize vLLM engine with optional LoRA adapter.
 
-    * entropy_tokens — right-padded (default), used for the single
-      forward pass that computes next-token entropy.
-    * gen_tokens — **left-padded**, so that ``model.generate()`` appends
-      new tokens on the right for every sequence in the batch.
-
-    The background thread only touches the *tokenizer* (CPU-only);
-    all GPU work stays on the main thread, so there is no device
-    contention.
+    Returns dict with keys: llm, sampling_params_cls, lora_request, vocab_size.
     """
+    from vllm import LLM, SamplingParams
 
-    def __init__(self, items, batch_size, tokenizer, max_seq_len, max_new_tokens):
-        self._items = items
-        self._bs = batch_size
-        self._tok = tokenizer
-        self._max_seq = max_seq_len
-        self._max_new = max_new_tokens
-        self._q: queue.Queue = queue.Queue(maxsize=2)
-        self._thread = threading.Thread(target=self._produce, daemon=True)
-        self._thread.start()
+    lora_request = None
+    policy_dir = Path(policy_path)
+    is_lora_adapter = (policy_dir / "adapter_config.json").exists()
 
-    # ---- background producer ------------------------------------------
-    def _produce(self):
-        for start in range(0, len(self._items), self._bs):
-            batch = self._items[start : start + self._bs]
-            prompts = [f"{it['context']}\nAction:" for it in batch]
+    llm_kwargs: dict = {
+        "model": str(policy_path),
+        "trust_remote_code": True,
+    }
 
-            # Entropy forward pass — right-padding (default)
-            entropy_tok = self._tok(
-                prompts,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self._max_seq,
-                padding=True,
+    if is_lora_adapter:
+        base_model = str(policy_cfg.get("model_name", "")).strip()
+        if not base_model:
+            raise ValueError(
+                "policy.model_name must be set when policy-path is a LoRA adapter"
             )
+        llm_kwargs["model"] = base_model
+        llm_kwargs["enable_lora"] = True
+        lora_rank = int(policy_cfg.get("lora", {}).get("r", 64))
+        llm_kwargs["max_lora_rank"] = max(8, lora_rank)
 
-            # Generation — left-padding so new tokens are right-aligned
-            orig_side = self._tok.padding_side
-            self._tok.padding_side = "left"
-            gen_tok = self._tok(
-                prompts,
-                return_tensors="pt",
-                truncation=True,
-                max_length=self._max_seq - self._max_new,
-                padding=True,
-            )
-            self._tok.padding_side = orig_side
+        try:
+            from vllm.lora.request import LoRARequest
+        except Exception:
+            from vllm import LoRARequest  # type: ignore
 
-            self._q.put((batch, entropy_tok, gen_tok))
-        self._q.put(None)  # sentinel
+        lora_request = LoRARequest("policy_adapter", 1, str(policy_dir))
+        logger.info(
+            f"vLLM: base='{base_model}' + LoRA adapter='{policy_path}'"
+        )
+    else:
+        logger.info(f"vLLM: model='{policy_path}'")
 
-    def __iter__(self):
-        while True:
-            item = self._q.get()
-            if item is None:
-                break
-            yield item
+    llm = LLM(**llm_kwargs)
 
+    vocab_size = 152064  # Qwen2.5 default
+    try:
+        tokenizer = llm.get_tokenizer()
+        vocab_size = len(tokenizer)
+    except Exception:
+        pass
+
+    return {
+        "llm": llm,
+        "sampling_params_cls": SamplingParams,
+        "lora_request": lora_request,
+        "vocab_size": vocab_size,
+    }
+
+
+# ================================================================
+# Entropy approximation from vLLM top-k logprobs
+# ================================================================
+
+def _approx_entropy(logprobs_dict, vocab_size: int = 152064) -> float:
+    """Approximate next-token entropy from the top-k logprobs vLLM returns.
+
+    For tokens outside the top-k, remaining probability mass is assumed
+    uniform — this preserves relative ordering for the router while
+    avoiding a full forward pass over the vocabulary.
+    """
+    if not logprobs_dict:
+        return 0.0
+
+    probs = []
+    for logprob_obj in logprobs_dict.values():
+        lp = logprob_obj.logprob if hasattr(logprob_obj, "logprob") else float(logprob_obj)
+        probs.append(math.exp(lp))
+
+    probs_arr = np.array(probs, dtype=np.float64)
+    covered = float(probs_arr.sum())
+    remaining = max(0.0, 1.0 - covered)
+
+    entropy = float(-np.sum(probs_arr * np.log(probs_arr + 1e-30)))
+
+    n_other = vocab_size - len(probs)
+    if remaining > 1e-8 and n_other > 0:
+        p_other = remaining / n_other
+        entropy += -remaining * math.log(p_other + 1e-30)
+
+    return entropy
+
+
+# ================================================================
+# vLLM generation — candidates + entropy in one call
+# ================================================================
+
+def _generate_batch_vllm(
+    backend: dict,
+    prompts: list[str],
+    K: int,
+    gen_max_tokens: int,
+    gen_temperature: float,
+    num_logprobs: int = 20,
+) -> tuple[list[list[dict]], list[float]]:
+    """Generate K candidates per prompt using vLLM.
+
+    Returns
+    -------
+    all_candidates : list[list[dict]]
+        ``all_candidates[i]`` has K dicts with keys text, log_prob, num_tokens.
+    entropies : list[float]
+        Approximate next-token entropy per prompt (from first-token logprobs).
+    """
+    llm = backend["llm"]
+    SamplingParams = backend["sampling_params_cls"]
+    lora_request = backend["lora_request"]
+    vocab_size = backend["vocab_size"]
+
+    sampling_params = SamplingParams(
+        n=K,
+        temperature=gen_temperature,
+        top_p=0.95,
+        max_tokens=gen_max_tokens,
+        logprobs=num_logprobs,
+    )
+
+    kwargs: dict = {}
+    if lora_request is not None:
+        kwargs["lora_request"] = lora_request
+
+    outputs = llm.generate(prompts, sampling_params, **kwargs)
+
+    all_candidates: list[list[dict]] = []
+    entropies: list[float] = []
+
+    for req_out in outputs:
+        req_outputs = sorted(
+            req_out.outputs, key=lambda o: getattr(o, "index", 0)
+        )
+
+        candidates: list[dict] = []
+        for out in req_outputs[:K]:
+            text = (out.text or "").strip()
+            token_ids = getattr(out, "token_ids", None) or []
+            lp = float(getattr(out, "cumulative_logprob", 0.0) or 0.0)
+            candidates.append({
+                "text": text,
+                "log_prob": lp,
+                "num_tokens": len(token_ids),
+            })
+        while len(candidates) < K:
+            candidates.append({"text": "", "log_prob": 0.0, "num_tokens": 0})
+        all_candidates.append(candidates)
+
+        entropy = 0.0
+        if (req_outputs
+                and req_outputs[0].logprobs
+                and len(req_outputs[0].logprobs) > 0):
+            entropy = _approx_entropy(req_outputs[0].logprobs[0], vocab_size)
+        entropies.append(entropy)
+
+    while len(all_candidates) < len(prompts):
+        all_candidates.append(
+            [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
+        )
+        entropies.append(0.0)
+
+    return all_candidates, entropies
+
+
+# ================================================================
+# Diagnostics
+# ================================================================
+
+_DIAG_INTERVAL = 10
+
+
+def _make_diag_state() -> dict:
+    return {
+        "entropy_errors": 0,
+        "gen_errors": 0,
+        "verifier_errors": 0,
+        "all_entropies": [],
+        "all_v_means": [],
+        "all_v_spreads": [],
+        "all_lp_means": [],
+        "all_consistencies": [],
+        "all_successes": [],
+    }
+
+
+def _log_running_report(logger, diag: dict, steps_done: int, total: int):
+    ent = np.array(diag["all_entropies"])
+    vm  = np.array(diag["all_v_means"])
+    vs  = np.array(diag["all_v_spreads"])
+    lp  = np.array(diag["all_lp_means"])
+    con = np.array(diag["all_consistencies"])
+    suc = np.array(diag["all_successes"])
+
+    lines = [
+        f"  ── Running report ({steps_done}/{total} steps) ──",
+        f"  Entropy      : mean={ent.mean():.4f}  std={ent.std():.4f}  "
+        f"[{ent.min():.3f}, {np.median(ent):.3f}, {ent.max():.3f}]",
+        f"  V-score mean : mean={vm.mean():.4f}  std={vm.std():.4f}  "
+        f"[{vm.min():.3f}, {np.median(vm):.3f}, {vm.max():.3f}]",
+        f"  V-score spread: mean={vs.mean():.4f}  std={vs.std():.4f}",
+        f"  LogProb mean : mean={lp.mean():.4f}  std={lp.std():.4f}",
+        f"  Consistency  : mean={con.mean():.4f}  std={con.std():.4f}",
+    ]
+
+    succ_mask = suc == 1.0
+    fail_mask = suc == 0.0
+    if succ_mask.sum() > 0 and fail_mask.sum() > 0:
+        ent_s, ent_f = ent[succ_mask].mean(), ent[fail_mask].mean()
+        vm_s, vm_f   = vm[succ_mask].mean(),  vm[fail_mask].mean()
+        lines.append(
+            f"  Theory check : ent(fail)={ent_f:.4f} vs ent(succ)={ent_s:.4f}  "
+            f"{'OK' if ent_f > ent_s else 'UNEXPECTED'}  |  "
+            f"v_mean(succ)={vm_s:.4f} vs v_mean(fail)={vm_f:.4f}  "
+            f"{'OK' if vm_s > vm_f else 'UNEXPECTED'}"
+        )
+
+    errs = diag["entropy_errors"] + diag["gen_errors"] + diag["verifier_errors"]
+    if errs:
+        lines.append(
+            f"  Silent errors: entropy={diag['entropy_errors']}  "
+            f"gen={diag['gen_errors']}  verifier={diag['verifier_errors']}"
+        )
+
+    logger.info("\n".join(lines))
+
+
+def _theory_summary(diag: dict) -> str:
+    """One-line running theory check for the per-batch log.
+
+    Returns e.g. 'theory[3/5]: ent(F>S) OK | v(S>F) OK | spread(F>S) OK | cons(S>F) FAIL | se(F>S) OK'
+    or empty string if not enough data yet.
+    """
+    suc = np.array(diag["all_successes"])
+    if suc.sum() == 0 or (1 - suc).sum() == 0:
+        return ""
+
+    succ_mask = suc == 1.0
+    fail_mask = suc == 0.0
+
+    checks: list[str] = []
+    passed = 0
+    total = 0
+
+    ent = np.array(diag["all_entropies"])
+    ent_ok = ent[fail_mask].mean() > ent[succ_mask].mean()
+    checks.append(f"ent(F>S) {'OK' if ent_ok else 'FAIL'}")
+    passed += ent_ok
+    total += 1
+
+    vm = np.array(diag["all_v_means"])
+    vm_ok = vm[succ_mask].mean() > vm[fail_mask].mean()
+    checks.append(f"v(S>F) {'OK' if vm_ok else 'FAIL'}")
+    passed += vm_ok
+    total += 1
+
+    vs = np.array(diag["all_v_spreads"])
+    vs_ok = vs[fail_mask].mean() > vs[succ_mask].mean()
+    checks.append(f"spread(F>S) {'OK' if vs_ok else 'FAIL'}")
+    passed += vs_ok
+    total += 1
+
+    con = np.array(diag["all_consistencies"])
+    con_ok = con[succ_mask].mean() > con[fail_mask].mean()
+    checks.append(f"cons(S>F) {'OK' if con_ok else 'FAIL'}")
+    passed += con_ok
+    total += 1
+
+    lp = np.array(diag["all_lp_means"])
+    lp_ok = lp[succ_mask].mean() > lp[fail_mask].mean()
+    checks.append(f"lp(S>F) {'OK' if lp_ok else 'FAIL'}")
+    passed += lp_ok
+    total += 1
+
+    return f"theory[{passed}/{total}]: {' | '.join(checks)}"
+
+
+# ================================================================
+# Main
+# ================================================================
 
 def main():
     args = parse_args()
@@ -402,49 +614,43 @@ def main():
                 f"Resuming: {len(done_eids)} episodes already in {shard_output}"
             )
 
-    # ---- Load models -------------------------------------------------
-    logger.info("Loading policy...")
+    # ---- Load vLLM backend -------------------------------------------
+    logger.info("Initializing vLLM backend...")
     policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
-    policy = PolicyModel(policy_cfg)
-    policy.load(args.policy_path, for_inference=True)
-    if torch.cuda.is_available():
-        policy.model = policy.model.to("cuda")
-        logger.info(f"Policy moved to GPU: {next(policy.model.parameters()).device}")
-    policy.model.eval()
+    try:
+        backend = _init_vllm_backend(policy_cfg, args.policy_path, logger)
+    except Exception as exc:
+        logger.error(f"Failed to initialize vLLM backend: {exc}")
+        sys.exit(1)
+    logger.info(f"vLLM ready (vocab_size={backend['vocab_size']})")
 
-    if hasattr(policy.model, "gradient_checkpointing_disable"):
-        policy.model.gradient_checkpointing_disable()
-    policy.model.config.use_cache = True
-    logger.info("KV cache enabled (gradient checkpointing disabled for inference)")
+    keepalive_active = False
+    if args.gpu_keepalive_interval > 0:
+        try:
+            import torch
 
+            if torch.cuda.is_available():
+                _start_gpu_keepalive("cuda", args.gpu_keepalive_interval)
+                keepalive_active = True
+                logger.info(
+                    "GPU keepalive enabled "
+                    f"(interval={args.gpu_keepalive_interval:.1f}s)"
+                )
+        except Exception as exc:
+            logger.warning(f"Could not start GPU keepalive: {exc}")
+
+    # ---- Load verifier -----------------------------------------------
     logger.info("Loading verifier...")
     vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
     verifier = create_verifier(vcfg)
     if hasattr(verifier, "eval"):
         verifier.eval()
-    if torch.cuda.is_available():
-        if hasattr(verifier, "to"):
-            verifier = verifier.to("cuda")
-            logger.info("Verifier moved to GPU")
-        else:
-            raise RuntimeError(
-                "CUDA is available but verifier has no .to() method; "
-                "cannot guarantee GPU execution for launch_router_features."
-            )
-
-    # ---- Start GPU keepalive -----------------------------------------
-    if torch.cuda.is_available():
-        _start_keepalive(
-            policy.model, policy.tokenizer, policy.model.device, interval=8.0,
-        )
-        logger.info("GPU keepalive thread started (8 s interval)")
 
     # ---- Load & shard trajectories -----------------------------------
     store = TrajectoryStore(args.trajectories)
     all_episodes = store.load_episodes()
     episodes = all_episodes[args.shard_id :: args.num_shards]
 
-    # Filter out already-completed episodes on resume
     if done_eids:
         episodes = [ep for ep in episodes if ep.episode_id not in done_eids]
 
@@ -509,90 +715,73 @@ def main():
         f"(batch_size={args.batch_size})"
     )
 
-    # ---- Batched processing ------------------------------------------
+    # ---- Batched processing with vLLM --------------------------------
     t0 = time.time()
     total_features = 0
-    device = policy.model.device
-    pad_id = policy.tokenizer.pad_token_id
+    _diag = _make_diag_state()
 
-    prefetcher = _PrefetchIter(
-        all_items, args.batch_size,
-        policy.tokenizer, policy.max_seq_len, gen_max_tokens,
-    )
+    try:
+        _run_batches(
+            args, shard_output, file_mode, all_items, total_batches,
+            backend, verifier, K, gen_max_tokens, gen_temperature,
+            max_steps, t0, logger,
+        )
+    finally:
+        if keepalive_active:
+            _stop_gpu_keepalive()
+
+
+def _run_batches(
+    args,
+    shard_output: Path,
+    file_mode: str,
+    all_items: list[dict],
+    total_batches: int,
+    backend: dict,
+    verifier,
+    K: int,
+    gen_max_tokens: int,
+    gen_temperature: float,
+    max_steps: int,
+    t0: float,
+    logger,
+) -> None:
+    total_features = 0
+    _diag = _make_diag_state()
 
     with open(shard_output, file_mode) as f:
-        for batch_idx, (batch, entropy_tok, gen_tok) in enumerate(prefetcher):
+        for batch_idx in range(total_batches):
             batch_t0 = time.time()
+            start = batch_idx * args.batch_size
+            end = min(start + args.batch_size, len(all_items))
+            batch = all_items[start:end]
             B = len(batch)
 
-            # ---------- 1. Batched entropy ----------------------------
+            prompts = [f"{it['context']}\nAction:" for it in batch]
+
+            # ---------- 1+2. vLLM: candidates + entropy ---------------
+            gen_fallback = False
+            entropy_fallback = False
             try:
-                ent_ids  = entropy_tok["input_ids"].to(device)
-                ent_mask = entropy_tok["attention_mask"].to(device)
-                with torch.no_grad():
-                    ent_out = policy.model(
-                        input_ids=ent_ids, attention_mask=ent_mask,
-                    )
-                seq_lens = ent_mask.sum(dim=1) - 1
-                last_logits = ent_out.logits[
-                    torch.arange(B, device=device), seq_lens
-                ]
-                entropies = (
-                    torch.distributions.Categorical(logits=last_logits)
-                    .entropy()
-                    .tolist()
+                all_candidates, entropies = _generate_batch_vllm(
+                    backend, prompts, K=K,
+                    gen_max_tokens=gen_max_tokens,
+                    gen_temperature=gen_temperature,
+                    num_logprobs=args.num_logprobs,
                 )
-            except Exception:
-                entropies = [0.0] * B
-
-            # ---------- 2. Batched candidate generation ---------------
-            try:
-                gen_ids  = gen_tok["input_ids"].to(device)
-                gen_mask = gen_tok["attention_mask"].to(device)
-                with torch.no_grad():
-                    gen_out = policy.model.generate(
-                        input_ids=gen_ids,
-                        attention_mask=gen_mask,
-                        max_new_tokens=gen_max_tokens,
-                        num_return_sequences=K,
-                        temperature=gen_temperature,
-                        top_p=0.95,
-                        do_sample=True,
-                        pad_token_id=pad_id,
-                        return_dict_in_generate=True,
-                        output_scores=True,
-                    )
-                prompt_len = gen_ids.shape[1]
-                all_candidates: list[list[dict]] = []
-                for b in range(B):
-                    cands = []
-                    for k in range(K):
-                        idx = b * K + k
-                        gen_tokens = gen_out.sequences[idx, prompt_len:]
-                        gen_tokens = gen_tokens[gen_tokens != pad_id]
-                        text = policy.tokenizer.decode(
-                            gen_tokens, skip_special_tokens=True
-                        ).strip()
-
-                        lp = 0.0
-                        if gen_out.scores:
-                            for t, sc in enumerate(gen_out.scores):
-                                if t >= len(gen_tokens):
-                                    break
-                                lp += F.log_softmax(
-                                    sc[idx], dim=-1
-                                )[gen_tokens[t]].item()
-
-                        cands.append({
-                            "text": text,
-                            "log_prob": lp,
-                            "num_tokens": len(gen_tokens),
-                        })
-                    all_candidates.append(cands)
-            except Exception:
+            except Exception as exc:
                 all_candidates = [
                     [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
                 ] * B
+                entropies = [0.0] * B
+                gen_fallback = True
+                entropy_fallback = True
+                _diag["gen_errors"] += 1
+                _diag["entropy_errors"] += 1
+                if _diag["gen_errors"] <= 3:
+                    logger.warning(
+                        f"vLLM generation failed (batch {batch_idx}): {exc}"
+                    )
 
             # ---------- 3. Batched verifier scoring -------------------
             flat_ctx, flat_cand, flat_goal = [], [], []
@@ -602,12 +791,17 @@ def main():
                     flat_cand.append(c["text"])
                     flat_goal.append(batch[b]["goal"])
 
+            verifier_fallback = False
             try:
                 flat_scores = verifier.score_batch(
                     flat_ctx, flat_cand, flat_goal,
                 )
-            except Exception:
+            except Exception as exc:
                 flat_scores = [0.5] * len(flat_ctx)
+                verifier_fallback = True
+                _diag["verifier_errors"] += 1
+                if _diag["verifier_errors"] <= 3:
+                    logger.warning(f"Verifier failed (batch {batch_idx}): {exc}")
 
             all_scores = [
                 flat_scores[b * K : (b + 1) * K] for b in range(B)
@@ -637,14 +831,46 @@ def main():
                 f.write(json.dumps(record) + "\n")
                 total_features += 1
 
+                _diag["all_entropies"].append(entropies[i])
+                _diag["all_v_means"].append(float(np.mean(all_scores[i])))
+                _diag["all_v_spreads"].append(
+                    max(all_scores[i]) - min(all_scores[i])
+                )
+                _diag["all_lp_means"].append(
+                    float(np.mean([c["log_prob"] for c in all_candidates[i]]))
+                )
+                _diag["all_consistencies"].append(features[9])
+                _diag["all_successes"].append(item["slm_success"])
+
             # ---------- 5. Progress logging ---------------------------
             batch_elapsed = time.time() - batch_t0
             elapsed = time.time() - t0
             steps_done = total_features
             rate = steps_done / elapsed if elapsed > 0 else 0
-            remaining = len(all_items) - steps_done
-            eta = remaining / rate if rate > 0 else float("inf")
+            remaining_steps = len(all_items) - steps_done
+            eta = remaining_steps / rate if rate > 0 else float("inf")
             pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
+
+            batch_ent = entropies
+            batch_v = [float(np.mean(s)) for s in all_scores]
+            batch_v_spread = [max(s) - min(s) for s in all_scores]
+            fallback_flags = []
+            if entropy_fallback:
+                fallback_flags.append("ENT")
+            if gen_fallback:
+                fallback_flags.append("GEN")
+            if verifier_fallback:
+                fallback_flags.append("VER")
+            fb_str = (
+                f"  FALLBACK:[{','.join(fallback_flags)}]"
+                if fallback_flags else ""
+            )
+
+            theory_str = ""
+            if steps_done >= 64:
+                theory_str = _theory_summary(_diag)
+                if theory_str:
+                    theory_str = f"  |  {theory_str}"
 
             logger.info(
                 f"[shard {args.shard_id}] "
@@ -653,23 +879,39 @@ def main():
                 f"{steps_done}/{len(all_items)} steps  |  "
                 f"{rate:.1f} steps/s  |  "
                 f"batch {batch_elapsed:.2f}s  |  "
-                f"ETA {eta / 60:.1f}min"
+                f"ETA {eta / 60:.1f}min  |  "
+                f"ent={np.mean(batch_ent):.3f}±{np.std(batch_ent):.3f}  "
+                f"v_mean={np.mean(batch_v):.3f}  "
+                f"v_spread={np.mean(batch_v_spread):.3f}"
+                f"{fb_str}{theory_str}"
             )
 
-            # Flush every batch so progress is visible in log files
+            if (batch_idx + 1) % _DIAG_INTERVAL == 0 and _diag["all_entropies"]:
+                _log_running_report(logger, _diag, steps_done, len(all_items))
+
             f.flush()
 
     # ---- Cleanup -----------------------------------------------------
-    if torch.cuda.is_available():
-        _stop_keepalive()
-
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_features} feature vectors "
-        f"from {len(episodes)} episodes in {elapsed / 60:.1f}min "
+        f"from {num_episodes} episodes in {elapsed / 60:.1f}min "
         f"({total_features / max(elapsed, 1e-6):.1f} steps/s) "
         f"-> {shard_output}"
     )
+
+    if _diag["all_entropies"]:
+        _log_running_report(logger, _diag, total_features, len(all_items))
+        total_errs = (
+            _diag["entropy_errors"] + _diag["gen_errors"]
+            + _diag["verifier_errors"]
+        )
+        if total_errs:
+            logger.warning(
+                f"Total silent fallbacks: entropy={_diag['entropy_errors']}  "
+                f"gen={_diag['gen_errors']}  verifier={_diag['verifier_errors']}  "
+                f"({100 * total_errs / max(total_batches, 1):.1f}% of batches)"
+            )
 
 
 if __name__ == "__main__":
