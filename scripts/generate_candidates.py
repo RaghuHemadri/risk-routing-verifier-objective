@@ -230,19 +230,62 @@ class _PrefetchIter:
             yield item
 
 
-def iter_step_items(episodes):
-    """Yield step items lazily to avoid large pre-collection stalls/memory."""
+def build_context_index(store: TrajectoryStore) -> dict[str, dict[str, list[str]]]:
+    """First streaming pass: build a lightweight context index for consistency pairs.
+
+    Returns:
+        task_id -> {episode_id -> [context_at_step_0, context_at_step_1, ...]}
+
+    Only stores the accumulated context strings (not full Episode objects), so
+    memory usage equals roughly the raw text size of the trajectories file.
+    """
+    from collections import defaultdict
+    index: dict[str, dict[str, list[str]]] = defaultdict(dict)
+    for ep in store.iter_episodes():
+        task_id = ep.metadata.task_id if ep.metadata else ep.episode_id
+        contexts: list[str] = []
+        ctx = ""
+        for step in ep.steps:
+            ctx += step.observation.raw_text + "\n"
+            contexts.append(ctx)              # snapshot before action (matches iter_step_items)
+            ctx += step.action.raw_text + "\n"
+        index[task_id][ep.episode_id] = contexts
+    return dict(index)
+
+
+def iter_step_items(episodes, context_index: dict | None = None):
+    """Yield step items lazily to avoid large pre-collection stalls/memory.
+
+    If context_index is provided, each item also contains ``context_alt``:
+    the context at the same step from a different perturbation seed of the
+    same task.  Partner selection is deterministic (hash-based) so output is
+    reproducible across re-runs.
+    """
     for episode in episodes:
         goal = episode.metadata.goal if episode.metadata else ""
+        task_id = episode.metadata.task_id if episode.metadata else episode.episode_id
+
+        # Deterministic partner selection: sort peers by episode_id, pick via hash.
+        partner_contexts: list[str] | None = None
+        if context_index is not None:
+            task_eps = context_index.get(task_id, {})
+            peers = sorted(eid for eid in task_eps if eid != episode.episode_id)
+            if peers:
+                partner_eid = peers[hash(episode.episode_id) % len(peers)]
+                partner_contexts = task_eps[partner_eid]
+
         context = ""
         for step_idx, step in enumerate(episode.steps):
             context += step.observation.raw_text + "\n"
-            yield {
+            item: dict = {
                 "context": context,
                 "step_idx": step_idx,
                 "goal": goal,
                 "episode_id": episode.episode_id,
             }
+            if partner_contexts is not None and step_idx < len(partner_contexts):
+                item["context_alt"] = partner_contexts[step_idx]
+            yield item
             context += step.action.raw_text + "\n"
 
 
@@ -407,6 +450,11 @@ def parse_args():
         default=1024,
         help="Async writer flush interval in records",
     )
+    parser.add_argument(
+        "--no-consistency-pairs",
+        action="store_true",
+        help="Skip the context-index pass; omit context_alt from output (saves one streaming read)",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     parser.add_argument(
         "--scan-log-every-episodes",
@@ -557,6 +605,8 @@ def _score_and_write_batch(
                 "episode_id": item["episode_id"],
                 "step_idx": item["step_idx"],
             }
+            if "context_alt" in item:
+                pair["context_alt"] = item["context_alt"]
             if store_all_candidates:
                 pair["all_candidates"] = sorted(
                     scored, key=lambda x: x["verifier_score"], reverse=True
@@ -835,9 +885,27 @@ def main():
         f"compute_logprobs={args.compute_logprobs}"
     )
 
+    # --------------- First pass: build context index for consistency pairs ---------------
+    if not args.no_consistency_pairs:
+        logger.info("First pass: building context index for consistency pairs (streaming)...")
+        t_idx = time.time()
+        context_index = build_context_index(store)
+        n_tasks = len(context_index)
+        n_eps = sum(len(v) for v in context_index.values())
+        logger.info(
+            f"Context index built: {n_tasks} tasks, {n_eps} episodes "
+            f"in {time.time() - t_idx:.1f}s"
+        )
+    else:
+        context_index = None
+        logger.info("Skipping context index (--no-consistency-pairs)")
+
     # --------------- Prefetch iterator ---------------
     prefetcher = _PrefetchIter(
-        iter_step_items(iter_sharded_episodes(store, args.shard_id, args.num_shards, done_eids)), batch_size,
+        iter_step_items(
+            iter_sharded_episodes(store, args.shard_id, args.num_shards, done_eids),
+            context_index=context_index,
+        ), batch_size,
         policy.tokenizer, policy.max_seq_len, gen_max_tokens,
         tokenize_cache_size=args.tokenize_cache_size,
         prefetch_depth=args.prefetch_depth,
