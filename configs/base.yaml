@@ -112,6 +112,7 @@ training:
     enabled: true
     lambda_cons: 0.1
     num_tool_seeds: 2
+    temperature: 2.0
 
   # Verifier training
   verifier:

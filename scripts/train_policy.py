@@ -199,6 +199,8 @@ def main():
 
             max_seq_len = cfg.policy.get("max_seq_len", 4096)
             pref_cfg = OmegaConf.to_container(cfg.training.preference, resolve=True)
+            if hasattr(cfg.training, "consistency"):
+                pref_cfg["consistency"] = OmegaConf.to_container(cfg.training.consistency, resolve=True)
             min_score_gap = float(pref_cfg.get("min_score_gap", 0.1))
 
             if use_static_pref:
