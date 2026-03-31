@@ -49,6 +49,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -90,11 +91,31 @@ def parse_args():
     parser.add_argument(
         "--gpu-keepalive-interval",
         type=float,
-        default=8.0,
-        help="Seconds between tiny GPU matmul kernels during CPU-heavy verifier "
+        default=2.0,
+        help="Seconds between GPU matmul kernels during CPU-heavy verifier "
              "phases (0 disables). Helps HPC schedulers that kill low-util jobs.",
     )
     parser.add_argument("--overrides", nargs="*", default=[])
+    parser.add_argument(
+        "--two-phase", action="store_true", default=True,
+        help="Two-phase mode: generate all candidates first (GPU-heavy), "
+             "then score them (CPU-heavy). Maximizes GPU utilization "
+             "and prevents HPC schedulers from killing low-util jobs.",
+    )
+    parser.add_argument(
+        "--no-two-phase", action="store_false", dest="two_phase",
+        help="Disable two-phase mode; use pipelined GPU+CPU overlap.",
+    )
+    parser.add_argument(
+        "--generate-only", action="store_true", default=False,
+        help="Only run candidate generation (Phase 1). Keeps GPU at 100%%. "
+             "Skips verifier scoring entirely. Run --score-only later.",
+    )
+    parser.add_argument(
+        "--score-only", action="store_true", default=False,
+        help="Only run verifier scoring (Phase 2) from an existing candidate "
+             "cache. Does not load vLLM or use the GPU.",
+    )
     return parser.parse_args()
 
 
@@ -108,10 +129,15 @@ _keepalive_stop = threading.Event()
 def _gpu_keepalive(device: str, interval: float) -> None:
     import torch
 
-    x = torch.randn((128, 128), device=device, dtype=torch.float16)
+    # Large enough to actually register on nvidia-smi's utilization sampling
+    N = 2048
+    a = torch.randn((N, N), device=device, dtype=torch.float16)
+    b = torch.randn((N, N), device=device, dtype=torch.float16)
     while not _keepalive_stop.is_set():
         try:
-            _ = x @ x
+            for _ in range(4):
+                _ = a @ b
+            torch.cuda.synchronize()
         except Exception:
             pass
         _keepalive_stop.wait(interval)
@@ -615,17 +641,22 @@ def main():
             )
 
     # ---- Load vLLM backend -------------------------------------------
-    logger.info("Initializing vLLM backend...")
-    policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
-    try:
-        backend = _init_vllm_backend(policy_cfg, args.policy_path, logger)
-    except Exception as exc:
-        logger.error(f"Failed to initialize vLLM backend: {exc}")
-        sys.exit(1)
-    logger.info(f"vLLM ready (vocab_size={backend['vocab_size']})")
+    backend = None
+    if not args.score_only:
+        logger.info("Initializing vLLM backend...")
+        policy_cfg = OmegaConf.to_container(cfg.policy, resolve=True)
+        try:
+            backend = _init_vllm_backend(policy_cfg, args.policy_path, logger)
+        except Exception as exc:
+            logger.error(f"Failed to initialize vLLM backend: {exc}")
+            sys.exit(1)
+        logger.info(f"vLLM ready (vocab_size={backend['vocab_size']})")
+    else:
+        logger.info("--score-only: skipping vLLM backend (no GPU needed)")
 
     keepalive_active = False
-    if args.gpu_keepalive_interval > 0:
+    if args.gpu_keepalive_interval > 0 and not args.two_phase:
+        # In two-phase mode, the batch runner manages keepalive itself
         try:
             import torch
 
@@ -640,19 +671,28 @@ def main():
             logger.warning(f"Could not start GPU keepalive: {exc}")
 
     # ---- Load verifier -----------------------------------------------
-    logger.info("Loading verifier...")
-    vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
-    verifier = create_verifier(vcfg)
-    if hasattr(verifier, "eval"):
-        verifier.eval()
+    verifier = None
+    if not args.generate_only:
+        logger.info("Loading verifier...")
+        vcfg = OmegaConf.to_container(cfg.get("verifier", {}), resolve=True)
+        verifier = create_verifier(vcfg)
+        if hasattr(verifier, "eval"):
+            verifier.eval()
+    else:
+        logger.info("--generate-only: skipping verifier (GPU generation only)")
 
     # ---- Load & shard trajectories -----------------------------------
     store = TrajectoryStore(args.trajectories)
     all_episodes = store.load_episodes()
     episodes = all_episodes[args.shard_id :: args.num_shards]
 
-    if done_eids:
+    if done_eids and not args.two_phase:
         episodes = [ep for ep in episodes if ep.episode_id not in done_eids]
+    elif done_eids and args.two_phase:
+        logger.info(
+            f"Two-phase mode: keeping all {len(episodes)} episodes "
+            f"(Phase 2 resumes via output record count)"
+        )
 
     logger.info(
         f"[shard {args.shard_id}] {len(episodes)} episodes to process "
@@ -717,21 +757,94 @@ def main():
 
     # ---- Batched processing with vLLM --------------------------------
     t0 = time.time()
-    total_features = 0
-    _diag = _make_diag_state()
 
     try:
-        _run_batches(
-            args, shard_output, file_mode, all_items, total_batches,
-            backend, verifier, K, gen_max_tokens, gen_temperature,
-            max_steps, t0, logger,
-        )
+        if args.two_phase:
+            _run_batches_two_phase(
+                args, shard_output, file_mode, all_items, total_batches,
+                backend, verifier, K, gen_max_tokens, gen_temperature,
+                max_steps, t0, logger, len(episodes),
+                keepalive_interval=args.gpu_keepalive_interval,
+            )
+        else:
+            _run_batches_pipelined(
+                args, shard_output, file_mode, all_items, total_batches,
+                backend, verifier, K, gen_max_tokens, gen_temperature,
+                max_steps, t0, logger, len(episodes),
+            )
     finally:
         if keepalive_active:
             _stop_gpu_keepalive()
 
 
-def _run_batches(
+def _score_and_assemble(
+    verifier,
+    batch: list[dict],
+    all_candidates: list[list[dict]],
+    entropies: list[float],
+    K: int,
+    max_steps: int,
+    logger,
+    _diag: dict,
+    batch_idx: int,
+) -> tuple[list[dict], list[float], list[float], list[float], bool]:
+    """Run verifier scoring + feature assembly on a background thread.
+
+    Returns (records, batch_ent, batch_v, batch_v_spread, verifier_fallback).
+    """
+    B = len(batch)
+    flat_ctx, flat_cand, flat_goal = [], [], []
+    for b in range(B):
+        for c in all_candidates[b]:
+            flat_ctx.append(batch[b]["context"])
+            flat_cand.append(c["text"])
+            flat_goal.append(batch[b]["goal"])
+
+    verifier_fallback = False
+    try:
+        flat_scores = verifier.score_batch(flat_ctx, flat_cand, flat_goal)
+    except Exception as exc:
+        flat_scores = [0.5] * len(flat_ctx)
+        verifier_fallback = True
+        _diag["verifier_errors"] += 1
+        if _diag["verifier_errors"] <= 3:
+            logger.warning(f"Verifier failed (batch {batch_idx}): {exc}")
+
+    all_scores = [flat_scores[b * K : (b + 1) * K] for b in range(B)]
+
+    records: list[dict] = []
+    for i, item in enumerate(batch):
+        features = _assemble_features(
+            entropy=entropies[i],
+            scores=all_scores[i],
+            log_probs=[c["log_prob"] for c in all_candidates[i]],
+            step_idx=item["step_idx"],
+            max_steps=max_steps,
+            context_len=len(item["context"]),
+            pert_type=item["pert_type"],
+            candidate_texts=[c["text"] for c in all_candidates[i]],
+            benchmark=item["benchmark"],
+            goal=item["goal"],
+        )
+        records.append({
+            "features": features,
+            "slm_success": item["slm_success"],
+            "cost": item["cost"],
+            "episode_id": item["episode_id"],
+            "step_idx": item["step_idx"],
+            "_entropy": entropies[i],
+            "_v_mean": float(np.mean(all_scores[i])),
+            "_v_spread": max(all_scores[i]) - min(all_scores[i]),
+            "_lp_mean": float(np.mean([c["log_prob"] for c in all_candidates[i]])),
+            "_consistency": features[9],
+        })
+
+    batch_v = [float(np.mean(s)) for s in all_scores]
+    batch_v_spread = [max(s) - min(s) for s in all_scores]
+    return records, entropies, batch_v, batch_v_spread, verifier_fallback
+
+
+def _run_batches_pipelined(
     args,
     shard_output: Path,
     file_mode: str,
@@ -745,153 +858,124 @@ def _run_batches(
     max_steps: int,
     t0: float,
     logger,
+    num_episodes: int,
 ) -> None:
+    """Pipelined main loop: generates batch N+1 on GPU while scoring batch N on CPU."""
     total_features = 0
     _diag = _make_diag_state()
 
-    with open(shard_output, file_mode) as f:
-        for batch_idx in range(total_batches):
-            batch_t0 = time.time()
-            start = batch_idx * args.batch_size
-            end = min(start + args.batch_size, len(all_items))
-            batch = all_items[start:end]
-            B = len(batch)
+    scorer = ThreadPoolExecutor(max_workers=2)
+    pending: list[tuple[int, Future, bool, bool]] = []
 
-            prompts = [f"{it['context']}\nAction:" for it in batch]
+    def _drain_and_write(f, block: bool = False):
+        """Collect finished scoring futures and write results."""
+        nonlocal total_features
+        still_pending = []
+        for bid, fut, gen_fb, ent_fb in pending:
+            if block or fut.done():
+                records, batch_ent, batch_v, batch_v_spread, ver_fb = fut.result()
+                for rec in records:
+                    _diag["all_entropies"].append(rec.pop("_entropy"))
+                    _diag["all_v_means"].append(rec.pop("_v_mean"))
+                    _diag["all_v_spreads"].append(rec.pop("_v_spread"))
+                    _diag["all_lp_means"].append(rec.pop("_lp_mean"))
+                    _diag["all_consistencies"].append(rec.pop("_consistency"))
+                    _diag["all_successes"].append(rec["slm_success"])
+                    f.write(json.dumps(rec) + "\n")
+                    total_features += 1
 
-            # ---------- 1+2. vLLM: candidates + entropy ---------------
-            gen_fallback = False
-            entropy_fallback = False
-            try:
-                all_candidates, entropies = _generate_batch_vllm(
-                    backend, prompts, K=K,
-                    gen_max_tokens=gen_max_tokens,
-                    gen_temperature=gen_temperature,
-                    num_logprobs=args.num_logprobs,
+                elapsed = time.time() - t0
+                steps_done = total_features
+                rate = steps_done / elapsed if elapsed > 0 else 0
+                remaining = len(all_items) - steps_done
+                eta = remaining / rate if rate > 0 else float("inf")
+                pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
+
+                fb_flags = []
+                if ent_fb:
+                    fb_flags.append("ENT")
+                if gen_fb:
+                    fb_flags.append("GEN")
+                if ver_fb:
+                    fb_flags.append("VER")
+                fb_str = f"  FALLBACK:[{','.join(fb_flags)}]" if fb_flags else ""
+
+                theory_str = ""
+                if steps_done >= 64:
+                    ts = _theory_summary(_diag)
+                    if ts:
+                        theory_str = f"  |  {ts}"
+
+                logger.info(
+                    f"[shard {args.shard_id}] "
+                    f"Batch {bid + 1}/{total_batches} "
+                    f"({pct:5.1f}%)  |  "
+                    f"{steps_done}/{len(all_items)} steps  |  "
+                    f"{rate:.1f} steps/s  |  "
+                    f"ETA {eta / 60:.1f}min  |  "
+                    f"ent={np.mean(batch_ent):.3f}±{np.std(batch_ent):.3f}  "
+                    f"v_mean={np.mean(batch_v):.3f}  "
+                    f"v_spread={np.mean(batch_v_spread):.3f}"
+                    f"{fb_str}{theory_str}"
                 )
-            except Exception as exc:
-                all_candidates = [
-                    [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
-                ] * B
-                entropies = [0.0] * B
-                gen_fallback = True
-                entropy_fallback = True
-                _diag["gen_errors"] += 1
-                _diag["entropy_errors"] += 1
-                if _diag["gen_errors"] <= 3:
-                    logger.warning(
-                        f"vLLM generation failed (batch {batch_idx}): {exc}"
+
+                if (bid + 1) % _DIAG_INTERVAL == 0 and _diag["all_entropies"]:
+                    _log_running_report(logger, _diag, steps_done, len(all_items))
+
+                f.flush()
+            else:
+                still_pending.append((bid, fut, gen_fb, ent_fb))
+        pending[:] = still_pending
+
+    try:
+        with open(shard_output, file_mode) as f:
+            for batch_idx in range(total_batches):
+                start = batch_idx * args.batch_size
+                end = min(start + args.batch_size, len(all_items))
+                batch = all_items[start:end]
+                B = len(batch)
+
+                prompts = [f"{it['context']}\nAction:" for it in batch]
+
+                gen_fallback = False
+                entropy_fallback = False
+                try:
+                    all_candidates, entropies = _generate_batch_vllm(
+                        backend, prompts, K=K,
+                        gen_max_tokens=gen_max_tokens,
+                        gen_temperature=gen_temperature,
+                        num_logprobs=args.num_logprobs,
                     )
+                except Exception as exc:
+                    all_candidates = [
+                        [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
+                    ] * B
+                    entropies = [0.0] * B
+                    gen_fallback = True
+                    entropy_fallback = True
+                    _diag["gen_errors"] += 1
+                    _diag["entropy_errors"] += 1
+                    if _diag["gen_errors"] <= 3:
+                        logger.warning(
+                            f"vLLM generation failed (batch {batch_idx}): {exc}"
+                        )
 
-            # ---------- 3. Batched verifier scoring -------------------
-            flat_ctx, flat_cand, flat_goal = [], [], []
-            for b in range(B):
-                for c in all_candidates[b]:
-                    flat_ctx.append(batch[b]["context"])
-                    flat_cand.append(c["text"])
-                    flat_goal.append(batch[b]["goal"])
-
-            verifier_fallback = False
-            try:
-                flat_scores = verifier.score_batch(
-                    flat_ctx, flat_cand, flat_goal,
+                fut = scorer.submit(
+                    _score_and_assemble,
+                    verifier, batch, all_candidates, entropies, K,
+                    max_steps, logger, _diag, batch_idx,
                 )
-            except Exception as exc:
-                flat_scores = [0.5] * len(flat_ctx)
-                verifier_fallback = True
-                _diag["verifier_errors"] += 1
-                if _diag["verifier_errors"] <= 3:
-                    logger.warning(f"Verifier failed (batch {batch_idx}): {exc}")
+                pending.append((batch_idx, fut, gen_fallback, entropy_fallback))
 
-            all_scores = [
-                flat_scores[b * K : (b + 1) * K] for b in range(B)
-            ]
+                _drain_and_write(f, block=False)
 
-            # ---------- 4. Assemble features & write ------------------
-            for i, item in enumerate(batch):
-                features = _assemble_features(
-                    entropy=entropies[i],
-                    scores=all_scores[i],
-                    log_probs=[c["log_prob"] for c in all_candidates[i]],
-                    step_idx=item["step_idx"],
-                    max_steps=max_steps,
-                    context_len=len(item["context"]),
-                    pert_type=item["pert_type"],
-                    candidate_texts=[c["text"] for c in all_candidates[i]],
-                    benchmark=item["benchmark"],
-                    goal=item["goal"],
-                )
-                record = {
-                    "features": features,
-                    "slm_success": item["slm_success"],
-                    "cost": item["cost"],
-                    "episode_id": item["episode_id"],
-                    "step_idx": item["step_idx"],
-                }
-                f.write(json.dumps(record) + "\n")
-                total_features += 1
+                if len(pending) >= 3:
+                    _drain_and_write(f, block=True)
 
-                _diag["all_entropies"].append(entropies[i])
-                _diag["all_v_means"].append(float(np.mean(all_scores[i])))
-                _diag["all_v_spreads"].append(
-                    max(all_scores[i]) - min(all_scores[i])
-                )
-                _diag["all_lp_means"].append(
-                    float(np.mean([c["log_prob"] for c in all_candidates[i]]))
-                )
-                _diag["all_consistencies"].append(features[9])
-                _diag["all_successes"].append(item["slm_success"])
+            _drain_and_write(f, block=True)
+    finally:
+        scorer.shutdown(wait=True)
 
-            # ---------- 5. Progress logging ---------------------------
-            batch_elapsed = time.time() - batch_t0
-            elapsed = time.time() - t0
-            steps_done = total_features
-            rate = steps_done / elapsed if elapsed > 0 else 0
-            remaining_steps = len(all_items) - steps_done
-            eta = remaining_steps / rate if rate > 0 else float("inf")
-            pct = 100.0 * steps_done / len(all_items) if all_items else 100.0
-
-            batch_ent = entropies
-            batch_v = [float(np.mean(s)) for s in all_scores]
-            batch_v_spread = [max(s) - min(s) for s in all_scores]
-            fallback_flags = []
-            if entropy_fallback:
-                fallback_flags.append("ENT")
-            if gen_fallback:
-                fallback_flags.append("GEN")
-            if verifier_fallback:
-                fallback_flags.append("VER")
-            fb_str = (
-                f"  FALLBACK:[{','.join(fallback_flags)}]"
-                if fallback_flags else ""
-            )
-
-            theory_str = ""
-            if steps_done >= 64:
-                theory_str = _theory_summary(_diag)
-                if theory_str:
-                    theory_str = f"  |  {theory_str}"
-
-            logger.info(
-                f"[shard {args.shard_id}] "
-                f"Batch {batch_idx + 1}/{total_batches} "
-                f"({pct:5.1f}%)  |  "
-                f"{steps_done}/{len(all_items)} steps  |  "
-                f"{rate:.1f} steps/s  |  "
-                f"batch {batch_elapsed:.2f}s  |  "
-                f"ETA {eta / 60:.1f}min  |  "
-                f"ent={np.mean(batch_ent):.3f}±{np.std(batch_ent):.3f}  "
-                f"v_mean={np.mean(batch_v):.3f}  "
-                f"v_spread={np.mean(batch_v_spread):.3f}"
-                f"{fb_str}{theory_str}"
-            )
-
-            if (batch_idx + 1) % _DIAG_INTERVAL == 0 and _diag["all_entropies"]:
-                _log_running_report(logger, _diag, steps_done, len(all_items))
-
-            f.flush()
-
-    # ---- Cleanup -----------------------------------------------------
     elapsed = time.time() - t0
     logger.info(
         f"[shard {args.shard_id}] Done: {total_features} feature vectors "
@@ -912,6 +996,333 @@ def _run_batches(
                 f"gen={_diag['gen_errors']}  verifier={_diag['verifier_errors']}  "
                 f"({100 * total_errs / max(total_batches, 1):.1f}% of batches)"
             )
+
+
+def _run_batches_two_phase(
+    args,
+    shard_output: Path,
+    file_mode: str,
+    all_items: list[dict],
+    total_batches: int,
+    backend: dict,
+    verifier,
+    K: int,
+    gen_max_tokens: int,
+    gen_temperature: float,
+    max_steps: int,
+    t0: float,
+    logger,
+    num_episodes: int,
+    keepalive_interval: float,
+) -> None:
+    """Two-phase processing: generate all candidates (GPU), then score (CPU).
+
+    Phase 1 keeps the GPU at ~100% by running all vLLM generation back-to-back
+    without interleaving CPU-bound verifier scoring.  Candidates are streamed
+    to a cache JSONL file for crash-resume support.
+
+    Phase 2 reads the cache and scores every candidate with the verifier
+    (CPU-bound).  A GPU keepalive prevents HPC schedulers from killing the job.
+    """
+    _diag = _make_diag_state()
+    cache_path = shard_output.with_suffix(".gen_cache.jsonl")
+
+    if file_mode == "w" and not args.score_only:
+        cache_path.unlink(missing_ok=True)
+
+    if args.score_only and not cache_path.exists():
+        logger.error(
+            f"--score-only but candidate cache not found: {cache_path}\n"
+            f"Run --generate-only first to create it."
+        )
+        sys.exit(1)
+
+    # ── Phase 1: Generate all candidates (GPU at ~100%) ───────────
+    _stop_gpu_keepalive()
+
+    cached_batches = 0
+    cache_valid = False
+    if cache_path.exists():
+        with open(cache_path) as f:
+            header_line = f.readline()
+            try:
+                header = json.loads(header_line)
+                if (
+                    header.get("batch_size") == args.batch_size
+                    and header.get("total_items") == len(all_items)
+                    and header.get("K") == K
+                ):
+                    cache_valid = True
+                    cached_batches = sum(1 for _ in f)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        if not cache_valid:
+            logger.warning(
+                "Candidate cache parameters changed; regenerating"
+            )
+            cache_path.unlink()
+
+    if cached_batches >= total_batches:
+        logger.info(
+            f"[Phase 1] Candidate cache already complete "
+            f"({cached_batches}/{total_batches} batches)"
+        )
+    else:
+        if cached_batches > 0:
+            logger.info(
+                f"[Phase 1] Resuming generation from batch "
+                f"{cached_batches}/{total_batches}"
+            )
+        else:
+            logger.info(
+                f"[Phase 1] Generating candidates for {len(all_items)} steps "
+                f"in {total_batches} batches (GPU at ~100%)..."
+            )
+
+        t_gen = time.time()
+        mode = "a" if cached_batches > 0 else "w"
+
+        with open(cache_path, mode) as cf:
+            if mode == "w":
+                cf.write(
+                    json.dumps(
+                        {
+                            "batch_size": args.batch_size,
+                            "total_items": len(all_items),
+                            "K": K,
+                        }
+                    )
+                    + "\n"
+                )
+                cf.flush()
+
+            for batch_idx in range(cached_batches, total_batches):
+                start = batch_idx * args.batch_size
+                end = min(start + args.batch_size, len(all_items))
+                batch = all_items[start:end]
+                B = len(batch)
+                prompts = [f"{it['context']}\nAction:" for it in batch]
+
+                try:
+                    all_candidates, entropies = _generate_batch_vllm(
+                        backend,
+                        prompts,
+                        K=K,
+                        gen_max_tokens=gen_max_tokens,
+                        gen_temperature=gen_temperature,
+                        num_logprobs=args.num_logprobs,
+                    )
+                except Exception as exc:
+                    all_candidates = [
+                        [{"text": "", "log_prob": 0.0, "num_tokens": 0}] * K
+                    ] * B
+                    entropies = [0.0] * B
+                    _diag["gen_errors"] += 1
+                    if _diag["gen_errors"] <= 3:
+                        logger.warning(
+                            f"vLLM generation failed (batch {batch_idx}): {exc}"
+                        )
+
+                cf.write(
+                    json.dumps(
+                        {"candidates": all_candidates, "entropies": entropies}
+                    )
+                    + "\n"
+                )
+                cf.flush()
+
+                done = batch_idx + 1 - cached_batches
+                elapsed = time.time() - t_gen
+                rate = done / elapsed if elapsed > 0 else 0
+                remaining = total_batches - batch_idx - 1
+                eta = remaining / rate if rate > 0 else float("inf")
+                pct = 100.0 * (batch_idx + 1) / total_batches
+                logger.info(
+                    f"[Phase 1] Batch {batch_idx + 1}/{total_batches} "
+                    f"({pct:.1f}%) | {rate:.1f} batch/s | "
+                    f"ETA {eta / 60:.1f}min"
+                )
+
+        gen_elapsed = time.time() - t_gen
+        logger.info(
+            f"[Phase 1] Complete: {total_batches} batches generated "
+            f"in {gen_elapsed / 60:.1f}min"
+        )
+
+    if args.generate_only:
+        total_elapsed = time.time() - t0
+        logger.info(
+            f"[shard {args.shard_id}] --generate-only: Phase 1 done. "
+            f"{total_batches} batches ({len(all_items)} steps) cached "
+            f"in {total_elapsed / 60:.1f}min -> {cache_path}"
+        )
+        logger.info(
+            f"Run with --score-only to score candidates later (no GPU needed)."
+        )
+        if _diag["gen_errors"]:
+            logger.warning(
+                f"Generation fallbacks: {_diag['gen_errors']}/{total_batches} batches"
+            )
+        return
+
+    # ── Phase 2: Score candidates with verifier (CPU-heavy) ───────
+    logger.info(
+        f"[Phase 2] Scoring {len(all_items)} steps with verifier "
+        f"(CPU-heavy, GPU keepalive active)..."
+    )
+
+    if keepalive_interval > 0:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                _start_gpu_keepalive("cuda", keepalive_interval)
+                logger.info(
+                    f"[Phase 2] GPU keepalive enabled "
+                    f"(interval={keepalive_interval:.1f}s)"
+                )
+        except Exception:
+            pass
+
+    existing_records = 0
+    if shard_output.exists() and file_mode != "w":
+        with open(shard_output) as f:
+            existing_records = sum(1 for _ in f)
+
+    start_batch = 0
+    records_counted = 0
+    for bi in range(total_batches):
+        bs = bi * args.batch_size
+        be = min(bs + args.batch_size, len(all_items))
+        batch_len = be - bs
+        if records_counted + batch_len <= existing_records:
+            records_counted += batch_len
+            start_batch = bi + 1
+        else:
+            break
+
+    if start_batch > 0:
+        logger.info(
+            f"[Phase 2] Resuming from batch {start_batch}/{total_batches} "
+            f"({existing_records} records already written)"
+        )
+
+    total_features = existing_records
+    t_score = time.time()
+
+    out_mode = file_mode if start_batch == 0 else "a"
+
+    with open(shard_output, out_mode) as f, open(cache_path) as cache_f:
+        cache_f.readline()  # skip header
+
+        for line_idx, cache_line in enumerate(cache_f):
+            if line_idx < start_batch:
+                continue
+
+            batch_idx = line_idx
+            bs = batch_idx * args.batch_size
+            be = min(bs + args.batch_size, len(all_items))
+            batch = all_items[bs:be]
+
+            cache_entry = json.loads(cache_line)
+            all_candidates = cache_entry["candidates"]
+            entropies = cache_entry["entropies"]
+
+            records, batch_ent, batch_v, batch_v_spread, ver_fb = (
+                _score_and_assemble(
+                    verifier,
+                    batch,
+                    all_candidates,
+                    entropies,
+                    K,
+                    max_steps,
+                    logger,
+                    _diag,
+                    batch_idx,
+                )
+            )
+
+            for rec in records:
+                _diag["all_entropies"].append(rec.pop("_entropy"))
+                _diag["all_v_means"].append(rec.pop("_v_mean"))
+                _diag["all_v_spreads"].append(rec.pop("_v_spread"))
+                _diag["all_lp_means"].append(rec.pop("_lp_mean"))
+                _diag["all_consistencies"].append(rec.pop("_consistency"))
+                _diag["all_successes"].append(rec["slm_success"])
+                f.write(json.dumps(rec) + "\n")
+                total_features += 1
+
+            f.flush()
+
+            scored = total_features - existing_records
+            elapsed = time.time() - t_score
+            rate = scored / elapsed if elapsed > 0 else 0
+            remaining = len(all_items) - total_features
+            eta = remaining / rate if rate > 0 else float("inf")
+            pct = (
+                100.0 * total_features / len(all_items)
+                if all_items
+                else 100.0
+            )
+
+            fb_str = " FALLBACK:[VER]" if ver_fb else ""
+            theory_str = ""
+            if total_features >= 64:
+                ts = _theory_summary(_diag)
+                if ts:
+                    theory_str = f" | {ts}"
+
+            logger.info(
+                f"[Phase 2] Batch {batch_idx + 1}/{total_batches} "
+                f"({pct:.1f}%) | {total_features}/{len(all_items)} steps | "
+                f"{rate:.1f} steps/s | ETA {eta / 60:.1f}min | "
+                f"v_mean={np.mean(batch_v):.3f} "
+                f"v_spread={np.mean(batch_v_spread):.3f}"
+                f"{fb_str}{theory_str}"
+            )
+
+            if (
+                (batch_idx + 1) % _DIAG_INTERVAL == 0
+                and _diag["all_entropies"]
+            ):
+                _log_running_report(
+                    logger, _diag, total_features, len(all_items)
+                )
+
+    _stop_gpu_keepalive()
+
+    total_elapsed = time.time() - t0
+    logger.info(
+        f"[shard {args.shard_id}] Done: {total_features} feature vectors "
+        f"from {num_episodes} episodes in {total_elapsed / 60:.1f}min "
+        f"({total_features / max(total_elapsed, 1e-6):.1f} steps/s) "
+        f"-> {shard_output}"
+    )
+
+    if _diag["all_entropies"]:
+        _log_running_report(logger, _diag, total_features, len(all_items))
+        total_errs = (
+            _diag["entropy_errors"]
+            + _diag["gen_errors"]
+            + _diag["verifier_errors"]
+        )
+        if total_errs:
+            logger.warning(
+                f"Total silent fallbacks: entropy={_diag['entropy_errors']}  "
+                f"gen={_diag['gen_errors']}  "
+                f"verifier={_diag['verifier_errors']}  "
+                f"({100 * total_errs / max(total_batches, 1):.1f}% of batches)"
+            )
+
+    if not args.score_only:
+        try:
+            cache_path.unlink()
+            logger.info(f"Cleaned up candidate cache: {cache_path}")
+        except Exception:
+            pass
+    else:
+        logger.info(f"Keeping candidate cache (--score-only): {cache_path}")
 
 
 if __name__ == "__main__":

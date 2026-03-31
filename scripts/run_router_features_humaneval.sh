@@ -23,9 +23,10 @@ CONFIG="${CONFIG:-configs/humaneval/noisy.yaml}"
 OUTPUT="${OUTPUT:-data/router_features/humaneval_noisy_heuristic.jsonl}"
 K="${K:-5}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
-NUM_GPUS="${NUM_GPUS:-4}"
+NUM_GPUS="${NUM_GPUS:-1}"
 # Tiny periodic GPU matmul during CPU-heavy heuristic scoring (HPC low-util watchdogs)
-GPU_KEEPALIVE_INTERVAL="${GPU_KEEPALIVE_INTERVAL:-8}"
+GPU_KEEPALIVE_INTERVAL="${GPU_KEEPALIVE_INTERVAL:-2}"
+GENERATE_ONLY="${GENERATE_ONLY:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 
 # ── Colour helpers ────────────────────────────────────────────
@@ -106,6 +107,9 @@ echo -e "  Batch size:    ${BATCH_SIZE}  (vLLM continuous-batching)"
 echo -e "  Backend:       ${BOLD}vLLM${NC} (PagedAttention + continuous batching)"
 echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
 echo -e "  GPUs:          ${NUM_GPUS}"
+if [[ "$GENERATE_ONLY" == "true" ]]; then
+    echo -e "  Mode:          ${BOLD}GENERATE-ONLY${NC} (GPU at 100%, no scoring)"
+fi
 
 # Verifier override: force heuristic mode
 VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval"
@@ -179,6 +183,7 @@ if [[ "$NUM_GPUS" -gt 1 ]]; then
         --trajectories "$TRAJECTORIES" \
         --output "$OUTPUT" \
         --batch-size "$BATCH_SIZE" --K "$K" \
+        --gpu-keepalive-interval "$GPU_KEEPALIVE_INTERVAL" \
         --overrides \
             $VERIFIER_OVERRIDE \
             logging.wandb_mode=disabled
@@ -186,6 +191,9 @@ if [[ "$NUM_GPUS" -gt 1 ]]; then
     info "Merging shards..."
     python scripts/generate_router_features.py --merge --output "$OUTPUT"
 else
+    EXTRA_FLAGS=""
+    [[ "$GENERATE_ONLY" == "true" ]] && EXTRA_FLAGS="--generate-only"
+
     python scripts/generate_router_features.py \
         --config "$CONFIG" \
         --policy-path "$POLICY_PATH" \
@@ -193,6 +201,7 @@ else
         --output "$OUTPUT" \
         --batch-size "$BATCH_SIZE" --K "$K" \
         --gpu-keepalive-interval "$GPU_KEEPALIVE_INTERVAL" \
+        $EXTRA_FLAGS \
         --overrides \
             $VERIFIER_OVERRIDE \
             logging.wandb_mode=disabled
