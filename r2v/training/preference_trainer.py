@@ -23,6 +23,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import get_scheduler
 
+from r2v.training.consistency import ConsistencyRegularizer
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +60,13 @@ class PreferenceTrainer:
 
         # Reference model: frozen copy for DPO
         self.use_reference = self.config.get("use_reference_model", True)
+
+        # Consistency regularization (R-Drop style: two dropout views of chosen)
+        cons_cfg = self.config.get("consistency", {})
+        self.consistency_enabled = bool(cons_cfg.get("enabled", False))
+        self.lambda_cons = float(cons_cfg.get("lambda_cons", 0.1))
+        _cons_temp = float(cons_cfg.get("temperature", 2.0))
+        self.consistency_reg = ConsistencyRegularizer(temperature=_cons_temp) if self.consistency_enabled else None
 
     def compute_dpo_loss(
         self,
@@ -165,7 +174,7 @@ class PreferenceTrainer:
 
         for epoch in range(self.epochs):
             model.train()
-            epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0}
+            epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0, "cons_loss": 0.0}
             num_batches = 0
 
             for batch in train_loader:
@@ -183,9 +192,16 @@ class PreferenceTrainer:
                         )
                         bs = batch["chosen_input_ids"].size(0)
 
-                        policy_logps = self._compute_logps(
-                            model, concat_ids, concat_mask, concat_labels
-                        )
+                        if self.consistency_enabled:
+                            policy_logps, all_logits = self._compute_logps(
+                                model, concat_ids, concat_mask, concat_labels,
+                                return_logits=True,
+                            )
+                            chosen_logits_v1 = all_logits[:bs]
+                        else:
+                            policy_logps = self._compute_logps(
+                                model, concat_ids, concat_mask, concat_labels
+                            )
                         policy_chosen_logps = policy_logps[:bs]
                         policy_rejected_logps = policy_logps[bs:]
 
@@ -201,12 +217,21 @@ class PreferenceTrainer:
                             ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
                     else:
                         # Memory-safe path: separate chosen/rejected passes.
-                        policy_chosen_logps = self._compute_logps(
-                            model,
-                            batch["chosen_input_ids"],
-                            batch["chosen_attention_mask"],
-                            batch["chosen_labels"],
-                        )
+                        if self.consistency_enabled:
+                            policy_chosen_logps, chosen_logits_v1 = self._compute_logps(
+                                model,
+                                batch["chosen_input_ids"],
+                                batch["chosen_attention_mask"],
+                                batch["chosen_labels"],
+                                return_logits=True,
+                            )
+                        else:
+                            policy_chosen_logps = self._compute_logps(
+                                model,
+                                batch["chosen_input_ids"],
+                                batch["chosen_attention_mask"],
+                                batch["chosen_labels"],
+                            )
                         policy_rejected_logps = self._compute_logps(
                             model,
                             batch["rejected_input_ids"],
@@ -237,7 +262,25 @@ class PreferenceTrainer:
                         ref_chosen_logps, ref_rejected_logps,
                     )
 
-                    accelerator.backward(loss)
+                    if self.consistency_enabled:
+                        # Second forward pass on chosen — different dropout mask gives second view
+                        _, chosen_logits_v2 = self._compute_logps(
+                            model,
+                            batch["chosen_input_ids"],
+                            batch["chosen_attention_mask"],
+                            batch["chosen_labels"],
+                            return_logits=True,
+                        )
+                        shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
+                        cons_loss = self.consistency_reg(
+                            chosen_logits_v1, chosen_logits_v2, shift_mask, shift_mask
+                        )
+                        total_loss = loss + self.lambda_cons * cons_loss
+                        metrics["cons_loss"] = cons_loss.item()
+                    else:
+                        total_loss = loss
+
+                    accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(
                             trainable_params, self.max_grad_norm
@@ -259,6 +302,7 @@ class PreferenceTrainer:
                             f"Loss={avg['dpo_loss']:.4f} "
                             f"Acc={avg['accuracy']:.3f} "
                             f"Margin={avg['reward_margin']:.3f}"
+                            + (f" Cons={avg['cons_loss']:.4f}" if self.consistency_enabled else "")
                         )
 
             avg_metrics = {k: v / max(num_batches, 1) for k, v in epoch_metrics.items()}
@@ -272,9 +316,14 @@ class PreferenceTrainer:
         return {"history": metrics_history, "total_steps": global_step}
 
     def _compute_logps(
-        self, model, input_ids, attention_mask, labels
-    ) -> torch.Tensor:
-        """Compute per-sequence log probabilities."""
+        self, model, input_ids, attention_mask, labels, return_logits: bool = False
+    ):
+        """Compute per-sequence log probabilities.
+
+        Args:
+            return_logits: If True, also return shifted logits (batch, seq-1, vocab)
+                           for use in the consistency regularizer.
+        """
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
         logits = outputs.logits if hasattr(outputs, 'logits') else outputs["logits"]
 
@@ -290,4 +339,7 @@ class PreferenceTrainer:
         token_log_probs = target_logits - normalizer
 
         mask = (shift_labels != -100).float()
-        return (token_log_probs * mask).sum(dim=-1)
+        logps = (token_log_probs * mask).sum(dim=-1)
+        if return_logits:
+            return logps, shift_logits
+        return logps

@@ -43,7 +43,7 @@ ABLATION_SPECS = {
     },
     "no_consistency": {
         "description": "Remove consistency regularization",
-        "overrides": ["training.lambda_cons=0.0"],
+        "overrides": ["training.consistency.enabled=false"],
     },
     "no_verifier": {
         "description": "Random verifier scores (no learned verification)",
