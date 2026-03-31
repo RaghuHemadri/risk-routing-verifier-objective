@@ -156,6 +156,7 @@ class PreferenceExample:
     rejected_action: str      # a- (verifier-rejected)
     chosen_score: float
     rejected_score: float
+    context_alt: str | None = None  # same step, different perturbation seed
 
 
 class PreferenceDataset(Dataset):
@@ -229,6 +230,7 @@ class PreferenceDataset(Dataset):
                         rejected_action=rejected_action,
                         chosen_score=obj.get("chosen_score", 1.0),
                         rejected_score=obj.get("rejected_score", 0.0),
+                        context_alt=obj.get("context_alt"),
                     ))
                 elif "verifier_scores" in obj and "candidates" in obj:
                     # Schema 2: raw candidates — pick best/worst pair
@@ -253,6 +255,7 @@ class PreferenceDataset(Dataset):
                         rejected_action=rejected_action,
                         chosen_score=obj["verifier_scores"][best_idx],
                         rejected_score=obj["verifier_scores"][worst_idx],
+                        context_alt=obj.get("context_alt"),
                     ))
                 else:
                     self.stats["skipped_invalid_schema"] += 1
@@ -299,7 +302,7 @@ class PreferenceDataset(Dataset):
         num_mask_rejected = min(prompt_len, max(0, len(rejected_labels) - 1))
         rejected_labels[:num_mask_rejected] = [-100] * num_mask_rejected
 
-        return {
+        out = {
             "chosen_input_ids": chosen_enc["input_ids"],
             "chosen_attention_mask": chosen_enc["attention_mask"],
             "chosen_labels": chosen_labels,
@@ -308,12 +311,35 @@ class PreferenceDataset(Dataset):
             "rejected_labels": rejected_labels,
         }
 
+        if ex.context_alt is not None:
+            # Tokenize alt context + same chosen action to get alt_labels with correct offsets.
+            alt_prompt = f"{ex.context_alt}\nAction:"
+            alt_text = f"{alt_prompt} {ex.chosen_action}"
+            alt_enc = self.tokenizer(
+                alt_text, max_length=self.max_seq_len, truncation=True, padding=False,
+            )
+            alt_prompt_len = len(self.tokenizer(
+                alt_prompt, max_length=self.max_seq_len, truncation=True,
+            )["input_ids"])
+            alt_labels = list(alt_enc["input_ids"])
+            num_mask_alt = min(alt_prompt_len, max(0, len(alt_labels) - 1))
+            alt_labels[:num_mask_alt] = [-100] * num_mask_alt
+            out["alt_input_ids"] = alt_enc["input_ids"]
+            out["alt_attention_mask"] = alt_enc["attention_mask"]
+            out["alt_labels"] = alt_labels
+
+        return out
+
     @staticmethod
     def collate_fn(batch: list[dict]) -> dict[str, torch.Tensor]:
         """Dynamic padding for DPO pairs.
 
         Pads chosen and rejected to the SAME max length so they can be
         concatenated into a single forward pass (2× fewer kernel launches).
+
+        If any example has alt_input_ids (perturbed context pair from
+        generate_candidates), those are padded separately and included as
+        alt_input_ids / alt_attention_mask / alt_labels.
         """
         max_len = max(
             max(len(b["chosen_input_ids"]) for b in batch),
@@ -336,7 +362,32 @@ class PreferenceDataset(Dataset):
             result["rejected_attention_mask"].append(b["rejected_attention_mask"] + [0] * rj_pad)
             result["rejected_labels"].append(b["rejected_labels"] + [-100] * rj_pad)
 
-        return {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
+        tensors = {k: torch.tensor(v, dtype=torch.long) for k, v in result.items()}
+
+        # Include alt context tensors when any example has them.
+        if any("alt_input_ids" in b for b in batch):
+            alt_max_len = max(
+                len(b["alt_input_ids"]) if "alt_input_ids" in b else len(b["chosen_input_ids"])
+                for b in batch
+            )
+            alt_ids, alt_mask, alt_labs = [], [], []
+            for b in batch:
+                if "alt_input_ids" in b:
+                    pad = alt_max_len - len(b["alt_input_ids"])
+                    alt_ids.append(b["alt_input_ids"] + [0] * pad)
+                    alt_mask.append(b["alt_attention_mask"] + [0] * pad)
+                    alt_labs.append(b["alt_labels"] + [-100] * pad)
+                else:
+                    # No alt for this example — reuse chosen (R-Drop fallback per sample)
+                    pad = alt_max_len - len(b["chosen_input_ids"])
+                    alt_ids.append(b["chosen_input_ids"] + [0] * pad)
+                    alt_mask.append(b["chosen_attention_mask"] + [0] * pad)
+                    alt_labs.append(b["chosen_labels"] + [-100] * pad)
+            tensors["alt_input_ids"] = torch.tensor(alt_ids, dtype=torch.long)
+            tensors["alt_attention_mask"] = torch.tensor(alt_mask, dtype=torch.long)
+            tensors["alt_labels"] = torch.tensor(alt_labs, dtype=torch.long)
+
+        return tensors
 
 
 # ============================================================

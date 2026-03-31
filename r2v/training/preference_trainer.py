@@ -263,18 +263,34 @@ class PreferenceTrainer:
                     )
 
                     if self.consistency_enabled:
-                        # Second forward pass on chosen — different dropout mask gives second view
-                        _, chosen_logits_v2 = self._compute_logps(
-                            model,
-                            batch["chosen_input_ids"],
-                            batch["chosen_attention_mask"],
-                            batch["chosen_labels"],
-                            return_logits=True,
-                        )
-                        shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
-                        cons_loss = self.consistency_reg(
-                            chosen_logits_v1, chosen_logits_v2, shift_mask, shift_mask
-                        )
+                        if "alt_input_ids" in batch:
+                            # True perturbation consistency: same action, different perturbed context
+                            _, alt_logits = self._compute_logps(
+                                model,
+                                batch["alt_input_ids"],
+                                batch["alt_attention_mask"],
+                                batch["alt_labels"],
+                                return_logits=True,
+                            )
+                            chosen_shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
+                            alt_shift_mask = (batch["alt_labels"][:, 1:] != -100).float()
+                            cons_loss = self.consistency_reg(
+                                chosen_logits_v1, alt_logits,
+                                chosen_shift_mask, alt_shift_mask,
+                            )
+                        else:
+                            # R-Drop fallback: second dropout pass on chosen
+                            _, alt_logits = self._compute_logps(
+                                model,
+                                batch["chosen_input_ids"],
+                                batch["chosen_attention_mask"],
+                                batch["chosen_labels"],
+                                return_logits=True,
+                            )
+                            shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
+                            cons_loss = self.consistency_reg(
+                                chosen_logits_v1, alt_logits, shift_mask, shift_mask,
+                            )
                         total_loss = loss + self.lambda_cons * cons_loss
                         metrics["cons_loss"] = cons_loss.item()
                     else:
