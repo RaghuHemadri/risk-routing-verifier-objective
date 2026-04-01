@@ -145,6 +145,19 @@ class PreferenceTrainer:
             collate_fn=self.collate_fn,
         )
 
+        eval_loader = None
+        if self.eval_dataset is not None:
+            eval_loader = DataLoader(
+                self.eval_dataset,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=_use_workers,
+                pin_memory=True,
+                persistent_workers=_use_workers > 0,
+                prefetch_factor=2 if _use_workers > 0 else None,
+                collate_fn=self.collate_fn,
+            )
+
         trainable_params = [
             p for p in self.policy.model.parameters() if p.requires_grad
         ]
@@ -168,8 +181,11 @@ class PreferenceTrainer:
         )
         if ref_model:
             ref_model = accelerator.prepare(ref_model)
+        if eval_loader is not None:
+            eval_loader = accelerator.prepare(eval_loader)
 
         global_step = 0
+        best_eval_loss = float("inf")
         metrics_history = []
 
         for epoch in range(self.epochs):
@@ -323,13 +339,105 @@ class PreferenceTrainer:
 
             avg_metrics = {k: v / max(num_batches, 1) for k, v in epoch_metrics.items()}
             avg_metrics["epoch"] = epoch + 1
+
+            if eval_loader is not None:
+                eval_loss = self._evaluate(model, ref_model, eval_loader, accelerator)
+                if eval_loss is not None:
+                    avg_metrics["eval_loss"] = eval_loss
+                    accelerator.print(f"[DPO] Epoch {epoch+1} Eval Loss={eval_loss:.4f}")
+                    if eval_loss < best_eval_loss:
+                        best_eval_loss = eval_loss
+                        if accelerator.is_main_process:
+                            self._save_checkpoint(accelerator, model, "best", global_step)
+                else:
+                    accelerator.print("[DPO] Eval skipped due to OOM; continuing training")
+
             metrics_history.append(avg_metrics)
 
-        if accelerator.is_main_process:
-            save_path = self.output_dir / "final"
-            accelerator.save_state(str(save_path))
+            if accelerator.is_main_process:
+                self._save_checkpoint(accelerator, model, f"epoch_{epoch + 1}", global_step)
 
-        return {"history": metrics_history, "total_steps": global_step}
+        if accelerator.is_main_process:
+            self._save_checkpoint(accelerator, model, "final", global_step)
+
+        return {
+            "history": metrics_history,
+            "total_steps": global_step,
+            "best_eval_loss": best_eval_loss,
+        }
+
+    def _save_checkpoint(self, accelerator, model, name: str, step: int):
+        """Save checkpoint.
+
+        Epoch checkpoints (``epoch_*``) write the full Accelerate state
+        (model + optimizer + scheduler + RNG) so training can be resumed.
+
+        Best / final checkpoints write only the PEFT adapter weights,
+        adapter_config.json, and tokenizer — the minimal set needed to
+        reload via ``PeftModel.from_pretrained`` / ``AutoModelForCausalLM``.
+        """
+        save_path = self.output_dir / name
+        save_path.mkdir(parents=True, exist_ok=True)
+        if name.startswith("epoch_"):
+            accelerator.save_state(str(save_path))
+        else:
+            unwrapped = accelerator.unwrap_model(model)
+            unwrapped.save_pretrained(str(save_path))
+            self.policy.tokenizer.save_pretrained(str(save_path))
+        logger.info(f"[DPO] Saved checkpoint to {save_path} (step {step})")
+
+    @torch.no_grad()
+    def _evaluate(self, model, ref_model, eval_loader, accelerator) -> float | None:
+        """Run evaluation and return average DPO loss."""
+        model.eval()
+        total_loss = 0.0
+        num_batches = 0
+
+        for batch in eval_loader:
+            try:
+                policy_chosen_logps = self._compute_logps(
+                    model,
+                    batch["chosen_input_ids"],
+                    batch["chosen_attention_mask"],
+                    batch["chosen_labels"],
+                )
+                policy_rejected_logps = self._compute_logps(
+                    model,
+                    batch["rejected_input_ids"],
+                    batch["rejected_attention_mask"],
+                    batch["rejected_labels"],
+                )
+
+                if ref_model is not None:
+                    ref_chosen_logps = self._compute_logps(
+                        ref_model,
+                        batch["chosen_input_ids"],
+                        batch["chosen_attention_mask"],
+                        batch["chosen_labels"],
+                    )
+                    ref_rejected_logps = self._compute_logps(
+                        ref_model,
+                        batch["rejected_input_ids"],
+                        batch["rejected_attention_mask"],
+                        batch["rejected_labels"],
+                    )
+                else:
+                    ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
+                    ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+
+                loss, _ = self.compute_dpo_loss(
+                    policy_chosen_logps, policy_rejected_logps,
+                    ref_chosen_logps, ref_rejected_logps,
+                )
+                total_loss += loss.item()
+                num_batches += 1
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                model.train()
+                return None
+
+        model.train()
+        return total_loss / max(num_batches, 1)
 
     def _compute_logps(
         self, model, input_ids, attention_mask, labels, return_logits: bool = False
