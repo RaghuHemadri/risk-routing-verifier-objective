@@ -25,7 +25,7 @@ cd "$(dirname "$0")"
 BENCHMARK=humaneval
 CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
 
-NUM_GPUS=${NUM_GPUS:-2}
+NUM_GPUS=${NUM_GPUS:-1}
 
 COMMON_OVERRIDES="logging.wandb_mode=disabled"
 QUANT_OVERRIDE="policy.quantization.load_in_4bit=false"

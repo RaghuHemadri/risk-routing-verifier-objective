@@ -289,7 +289,20 @@ class BCTrainer:
         return total_loss / max(num_batches, 1)
 
     def _save_checkpoint(self, accelerator, name: str, step: int):
-        """Save model checkpoint."""
+        """Save checkpoint.
+
+        Epoch checkpoints (``epoch_*``) write the full Accelerate state
+        (model + optimizer + scheduler + RNG) so training can be resumed.
+
+        Best / final checkpoints write only the PEFT adapter weights,
+        adapter_config.json, and tokenizer — the minimal set needed to
+        reload via ``PeftModel.from_pretrained`` / ``AutoModelForCausalLM``.
+        """
         save_path = self.output_dir / name
-        accelerator.save_state(str(save_path))
+        save_path.mkdir(parents=True, exist_ok=True)
+        if name.startswith("epoch_"):
+            accelerator.save_state(str(save_path))
+        else:
+            self.policy.model.save_pretrained(str(save_path))
+            self.policy.tokenizer.save_pretrained(str(save_path))
         logger.info(f"[BC] Saved checkpoint to {save_path} (step {step})")
