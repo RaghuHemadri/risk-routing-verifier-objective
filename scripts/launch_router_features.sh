@@ -30,13 +30,23 @@ shift
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GEN_SCRIPT="${SCRIPT_DIR}/generate_router_features.py"
 
-echo "=== Launching ${NUM_GPUS} router-feature workers ==="
+# Derive a run tag from --output so log names are unique per model/run.
+RUN_TAG="router_features"
+ARGS_ARRAY=("$@")
+for ((j=0; j<${#ARGS_ARRAY[@]}; j++)); do
+    if [[ "${ARGS_ARRAY[$j]}" == "--output" ]] && ((j+1 < ${#ARGS_ARRAY[@]})); then
+        RUN_TAG="$(basename "${ARGS_ARRAY[$((j+1))]}" .jsonl)"
+        break
+    fi
+done
+
+echo "=== Launching ${NUM_GPUS} router-feature workers (${RUN_TAG}) ==="
 echo "Args: $@"
 echo ""
 
 PIDS=()
 for ((i=0; i<NUM_GPUS; i++)); do
-    LOG="generate_router_features_shard${i}.log"
+    LOG="${RUN_TAG}_shard${i}.log"
     echo "[GPU ${i}] Starting shard ${i}/${NUM_GPUS} -> ${LOG}"
     CUDA_VISIBLE_DEVICES=${i} python "${GEN_SCRIPT}" \
         --shard-id ${i} \
@@ -49,7 +59,7 @@ done
 
 echo ""
 echo "All ${NUM_GPUS} workers launched.  PIDs: ${PIDS[*]}"
-echo "Monitor progress:  tail -f generate_router_features_shard*.log"
+echo "Monitor progress:  tail -f ${RUN_TAG}_shard*.log"
 echo ""
 
 # Wait for all workers

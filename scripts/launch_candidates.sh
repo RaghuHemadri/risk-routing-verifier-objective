@@ -29,26 +29,37 @@ shift
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GEN_SCRIPT="${SCRIPT_DIR}/generate_candidates_heuristic.py"
 
-echo "=== Launching ${NUM_GPUS} candidate-generation workers ==="
+# Derive a run tag from --output so log names are unique per model/run.
+RUN_TAG="candidates"
+ARGS_ARRAY=("$@")
+for ((j=0; j<${#ARGS_ARRAY[@]}; j++)); do
+    if [[ "${ARGS_ARRAY[$j]}" == "--output" ]] && ((j+1 < ${#ARGS_ARRAY[@]})); then
+        RUN_TAG="$(basename "${ARGS_ARRAY[$((j+1))]}" .jsonl)"
+        break
+    fi
+done
+
+echo "=== Launching ${NUM_GPUS} candidate-generation workers (${RUN_TAG}) ==="
 echo "Args: $@"
 echo ""
 
 PIDS=()
 
 for ((i=0; i<NUM_GPUS; i++)); do
+    LOG="${RUN_TAG}_shard${i}.log"
     echo "[GPU ${i}] Starting shard ${i}/${NUM_GPUS}..."
     CUDA_VISIBLE_DEVICES=${i} python "${GEN_SCRIPT}" \
         --shard-id ${i} \
         --num-shards ${NUM_GPUS} \
         "$@" \
-        > "generate_candidates_shard${i}.log" 2>&1 &
+        > "${LOG}" 2>&1 &
     PIDS+=($!)
-    echo "[GPU ${i}] PID=${PIDS[-1]}, log=generate_candidates_shard${i}.log"
+    echo "[GPU ${i}] PID=${PIDS[-1]}, log=${LOG}"
 done
 
 echo ""
 echo "All ${NUM_GPUS} workers launched. PIDs: ${PIDS[*]}"
-echo "Monitor progress:  tail -f generate_candidates_shard*.log"
+echo "Monitor progress:  tail -f ${RUN_TAG}_shard*.log"
 echo ""
 
 # Wait for all workers

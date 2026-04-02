@@ -15,9 +15,9 @@ Supports:
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
-
 import os
+from pathlib import Path
+from typing import Any, Optional
 
 import torch
 import torch.nn as nn
@@ -279,19 +279,74 @@ class PolicyModel(nn.Module):
         self.model.save_pretrained(path)
         self.tokenizer.save_pretrained(path)
 
+    def _is_accelerate_state_dir(self, path: str) -> bool:
+        """Detect an Accelerate save_state checkpoint (not a PEFT adapter)."""
+        p = Path(path)
+        has_model = (p / "model.safetensors").exists() or (p / "pytorch_model.bin").exists()
+        has_adapter = (p / "adapter_config.json").exists()
+        has_state_artifacts = any(
+            (p / f).exists()
+            for f in ("optimizer.bin", "optimizer.pt", "scheduler.bin",
+                      "random_states_0.pkl")
+        )
+        return has_model and not has_adapter and has_state_artifacts
+
+    def _load_from_accelerate_state(self, path: str):
+        """Load LoRA weights from a raw Accelerate save_state checkpoint.
+
+        The state dict contains the full PEFT model (base + LoRA) with keys
+        like ``base_model.model.*.lora_A.default.weight``.  We load this
+        directly into the current PEFT model via ``load_state_dict``.
+        """
+        from safetensors.torch import load_file
+
+        p = Path(path)
+        sf = p / "model.safetensors"
+        if sf.exists():
+            state_dict = load_file(str(sf))
+        else:
+            state_dict = torch.load(
+                str(p / "pytorch_model.bin"), map_location="cpu"
+            )
+
+        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+        if missing:
+            logger.info(
+                f"Accelerate state load: {len(missing)} missing keys "
+                f"(expected for base-layer weights when LoRA is applied)"
+            )
+        if unexpected:
+            logger.warning(
+                f"Accelerate state load: {len(unexpected)} unexpected keys: "
+                f"{unexpected[:5]}..."
+            )
+        logger.info(f"Loaded model weights from Accelerate state: {path}")
+
     def load(self, path: str, for_inference: bool = False):
         """Load model weights from checkpoint.
+
+        Supports three checkpoint formats:
+        1. PEFT adapter directory (adapter_config.json + adapter_model.safetensors)
+        2. Full HF model directory (config.json + model weights)
+        3. Accelerate save_state directory (model.safetensors + optimizer.bin etc.)
 
         Args:
             path: Checkpoint directory.
             for_inference: If True, switch to eval mode immediately after load.
         """
         from peft import PeftModel
+
         if hasattr(self.model, 'peft_config'):
-            # Load LoRA weights
-            self.model = PeftModel.from_pretrained(
-                self.model.base_model.model, path, is_trainable=True
-            )
+            if self._is_accelerate_state_dir(path):
+                logger.info(
+                    f"Detected Accelerate state checkpoint at {path}; "
+                    "loading full state dict into PEFT model"
+                )
+                self._load_from_accelerate_state(path)
+            else:
+                self.model = PeftModel.from_pretrained(
+                    self.model.base_model.model, path, is_trainable=True
+                )
         else:
             self.model = AutoModelForCausalLM.from_pretrained(path)
 

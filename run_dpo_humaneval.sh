@@ -25,7 +25,7 @@ cd "$(dirname "$0")"
 BENCHMARK=humaneval
 CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
 
-NUM_GPUS=${NUM_GPUS:-1}
+NUM_GPUS=${NUM_GPUS:-2}
 
 COMMON_OVERRIDES="logging.wandb_mode=disabled"
 QUANT_OVERRIDE="policy.quantization.load_in_4bit=false"
@@ -118,7 +118,7 @@ ARGS=(
     --stage preference
     --resume "${BC_RESUME}"
     --pref-train-data "${PREF_TRAIN_DATA}"
-    --pref-val-data "${PREF_VAL_DATA}"
+    # --pref-val-data "${PREF_VAL_DATA}"  # validation disabled for now
     --overrides
     "${QUANT_OVERRIDE}"
     "${COMMON_OVERRIDES}"
