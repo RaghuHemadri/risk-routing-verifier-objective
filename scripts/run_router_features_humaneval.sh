@@ -27,6 +27,7 @@ NUM_GPUS="${NUM_GPUS:-1}"
 # Tiny periodic GPU matmul during CPU-heavy heuristic scoring (HPC low-util watchdogs)
 GPU_KEEPALIVE_INTERVAL="${GPU_KEEPALIVE_INTERVAL:-2}"
 GENERATE_ONLY="${GENERATE_ONLY:-false}"
+SCORE_ONLY="${SCORE_ONLY:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 
 # ── Colour helpers ────────────────────────────────────────────
@@ -109,10 +110,13 @@ echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
 echo -e "  GPUs:          ${NUM_GPUS}"
 if [[ "$GENERATE_ONLY" == "true" ]]; then
     echo -e "  Mode:          ${BOLD}GENERATE-ONLY${NC} (GPU at 100%, no scoring)"
+elif [[ "$SCORE_ONLY" == "true" ]]; then
+    echo -e "  Mode:          ${BOLD}SCORE-ONLY${NC} (CPU scoring from cached candidates)"
 fi
 
 # Verifier override: force heuristic mode
 VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval"
+EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
 # ── Sanity probe: load 1 trajectory and print stats ──────────
 header "Trajectory sanity check"
@@ -175,6 +179,10 @@ echo ""
 
 START_TIME=$(date +%s)
 
+PHASE_FLAGS=""
+[[ "$GENERATE_ONLY" == "true" ]] && PHASE_FLAGS="--generate-only"
+[[ "$SCORE_ONLY" == "true" ]]    && PHASE_FLAGS="--score-only"
+
 if [[ "$NUM_GPUS" -gt 1 ]]; then
     info "Multi-GPU mode: ${NUM_GPUS} workers"
     bash scripts/launch_router_features.sh "$NUM_GPUS" \
@@ -184,16 +192,17 @@ if [[ "$NUM_GPUS" -gt 1 ]]; then
         --output "$OUTPUT" \
         --batch-size "$BATCH_SIZE" --K "$K" \
         --gpu-keepalive-interval "$GPU_KEEPALIVE_INTERVAL" \
+        $PHASE_FLAGS \
         --overrides \
             $VERIFIER_OVERRIDE \
+            $EXTRA_OVERRIDES \
             logging.wandb_mode=disabled
 
-    info "Merging shards..."
-    python scripts/generate_router_features.py --merge --output "$OUTPUT"
+    if [[ "$GENERATE_ONLY" != "true" ]]; then
+        info "Merging shards..."
+        python scripts/generate_router_features.py --merge --output "$OUTPUT"
+    fi
 else
-    EXTRA_FLAGS=""
-    [[ "$GENERATE_ONLY" == "true" ]] && EXTRA_FLAGS="--generate-only"
-
     python scripts/generate_router_features.py \
         --config "$CONFIG" \
         --policy-path "$POLICY_PATH" \
@@ -201,9 +210,10 @@ else
         --output "$OUTPUT" \
         --batch-size "$BATCH_SIZE" --K "$K" \
         --gpu-keepalive-interval "$GPU_KEEPALIVE_INTERVAL" \
-        $EXTRA_FLAGS \
+        $PHASE_FLAGS \
         --overrides \
             $VERIFIER_OVERRIDE \
+            $EXTRA_OVERRIDES \
             logging.wandb_mode=disabled
 fi
 

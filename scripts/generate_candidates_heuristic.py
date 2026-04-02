@@ -430,6 +430,7 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
     dict
         {"llm", "sampling_params_cls", "lora_request", "model_ref"}
     """
+    import os
     from vllm import LLM, SamplingParams
 
     lora_request = None
@@ -465,6 +466,18 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         )
     else:
         logger.info(f"vLLM loading model from '{policy_path}'")
+
+    # Gemma 2 uses tanh logit soft-capping in attention, which the default
+    # FLASH_ATTN (FA3) backend may not support.  Switch to FLASHINFER.
+    resolved_model = llm_kwargs["model"].lower()
+    if "gemma-2" in resolved_model or "gemma2" in resolved_model:
+        current_backend = os.environ.get("VLLM_ATTENTION_BACKEND", "")
+        if current_backend.upper() != "FLASHINFER":
+            logger.info(
+                "Gemma 2 detected — setting VLLM_ATTENTION_BACKEND=FLASHINFER "
+                "(required for tanh softcapping support)"
+            )
+            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
 
     llm = LLM(**llm_kwargs)
     return {
