@@ -26,7 +26,7 @@ Merge shards after all GPUs finish:
 Resume after a crash (re-run the same command — skips completed steps):
     # Same command; already-written episode_ids are detected automatically.
 
-Features extracted per decision point (24-dim):
+Features extracted per decision point (15-dim):
 - SLM entropy (H(π_θ))  [approximated from vLLM top-k logprobs]
 - Verifier score spread, mean, std, best, worst (over K candidates)
 - Action log-probability best, mean, std (over K candidates)
@@ -35,8 +35,8 @@ Features extracted per decision point (24-dim):
 - Step count / horizon fraction
 - Context length
 - Goal length (task complexity proxy)
-- Benchmark one-hot (gaia / alfworld / humaneval / webarena, 4 dims)
-- Perturbation-type indicator (one-hot, 5 dims)
+- Benchmark one-hot and perturbation one-hot are currently commented out
+    (former indices 15-23 in the 24-dim schema)
 """
 
 from __future__ import annotations
@@ -270,7 +270,7 @@ def _assemble_features(
     benchmark: str | None,
     goal: str,
 ) -> list[float]:
-    """Build the 24-dim feature vector from pre-computed components.
+        """Build the 15-dim feature vector from pre-computed components.
 
     Dims:
       0        entropy
@@ -282,8 +282,7 @@ def _assemble_features(
       12       step number (absolute)
       13       normalized context length
       14       goal length (task complexity proxy)
-      15-18    benchmark one-hot (gaia, alfworld, humaneval, webarena)
-      19-23    perturbation one-hot (5 dims)
+            15-23    reserved (benchmark one-hot + perturbation one-hot commented out)
     """
     features: list[float] = []
     features.append(entropy)
@@ -301,9 +300,9 @@ def _assemble_features(
     features.append(float(step_idx))               # absolute step
     features.append(context_len / 10000.0)         # normalized context length
     features.append(len(goal) / 1000.0)            # goal length
-    features.extend(_benchmark_onehot(benchmark))
-    features.extend(_perturbation_onehot(pert_type))
-    return features  # length 24
+    # features.extend(_benchmark_onehot(benchmark))
+    # features.extend(_perturbation_onehot(pert_type))
+    return features  # length 15
 
 
 # ================================================================

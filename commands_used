@@ -137,4 +137,4 @@ python scripts/evaluate.py \
   --router-path outputs/router/humaneval_noisy_tuned/router_final.pt \
   --output outputs/eval/humaneval_noisy_threshold_sweep \
   --methods r2v slm_only llm_only entropy_router \
-  --router-threshold-sweep 0.05 0.1 0.12 0.14 0.16 0.18 0.2 0.25 0.3
+  --router-threshold-sweep 0.04 0.05 0.06 0.07 0.08 0.09 0.10 0.105 0.11 0.115 0.12
