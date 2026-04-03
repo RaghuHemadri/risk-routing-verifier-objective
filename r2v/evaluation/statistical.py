@@ -82,7 +82,12 @@ def paired_mcnemar_test(
 
     # Use exact binomial test for small samples
     if n_discordant < 25:
-        p_value = stats.binom_test(b_not_a, n_discordant, 0.5)
+        # SciPy >= 1.7: stats.binomtest(...).pvalue
+        # SciPy < 1.7: stats.binom_test(...)
+        if hasattr(stats, "binomtest"):
+            p_value = stats.binomtest(b_not_a, n_discordant, 0.5).pvalue
+        else:
+            p_value = stats.binom_test(b_not_a, n_discordant, 0.5)
         statistic = float(b_not_a)
     else:
         # Chi-squared approximation (with continuity correction)

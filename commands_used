@@ -123,7 +123,7 @@ bash scripts/launch_router_features.sh 4 \
 
 python scripts/train_router.py \
   --config configs/humaneval/noisy.yaml \
-  --features data/router_features/humaneval_noisy.jsonl \
+  --features data/router_features_old/humaneval_noisy_heuristic_qwen.jsonl \
   --output outputs/router/humaneval_noisy_tuned \
   --overrides \
     training.router.cost_llm=20 \
@@ -132,9 +132,9 @@ python scripts/train_router.py \
 
 python scripts/evaluate.py \
   --config configs/humaneval/noisy.yaml \
-  --features data/router_features/humaneval_noisy.jsonl \
+  --features data/router_features_old/humaneval_noisy_heuristic_qwen.jsonl \
   --trajectories data/trajectories/humaneval_noisy/trajectories.jsonl \
-  --router-path outputs/router/humaneval_noisy/router_final.pt \
+  --router-path outputs/router/humaneval_noisy_tuned/router_final.pt \
   --output outputs/eval/humaneval_noisy_threshold_sweep \
   --methods r2v slm_only llm_only entropy_router \
   --router-threshold-sweep 0.05 0.1 0.12 0.14 0.16 0.18 0.2 0.25 0.3
