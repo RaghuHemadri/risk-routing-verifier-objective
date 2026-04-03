@@ -145,10 +145,10 @@ def group_by_episode(records: list[dict]) -> dict[str, list[dict]]:
 # Router loading
 # ============================================================
 
-def load_router(router_path: str, cfg) -> tuple[Router, float]:
+def load_router(router_path: str, cfg) -> tuple[Router, float, np.ndarray, np.ndarray]:
     """Load trained router from checkpoint.
 
-    Returns (router, temperature) tuple.
+    Returns (router, temperature, feature_mean, feature_std) tuple.
     """
     ckpt = torch.load(router_path, map_location="cpu", weights_only=False)
     input_dim = ckpt.get("input_dim", 13)
@@ -169,7 +169,9 @@ def load_router(router_path: str, cfg) -> tuple[Router, float]:
     router.eval()
 
     temperature = ckpt.get("temperature", 1.0)
-    return router, temperature
+    feature_mean = np.array(ckpt["feature_mean"], dtype=np.float32) if "feature_mean" in ckpt else np.zeros(input_dim, dtype=np.float32)
+    feature_std = np.array(ckpt["feature_std"], dtype=np.float32) if "feature_std" in ckpt else np.ones(input_dim, dtype=np.float32)
+    return router, temperature, feature_mean, feature_std
 
 
 # ============================================================
@@ -183,6 +185,8 @@ def evaluate_episode_r2v(
     threshold: float,
     cost_slm: float,
     cost_llm: float,
+    feature_mean: "np.ndarray",
+    feature_std: "np.ndarray",
 ) -> dict:
     """Evaluate one episode under R2V routing.
 
@@ -192,9 +196,9 @@ def evaluate_episode_r2v(
     - Cost is the sum of per-step routing costs.
     """
     slm_success = steps[0]["slm_success"]
-    features = torch.tensor(
-        [s["features"] for s in steps], dtype=torch.float32
-    )
+    raw = np.array([s["features"] for s in steps], dtype=np.float32)
+    normed = (raw - feature_mean) / feature_std
+    features = torch.tensor(normed, dtype=torch.float32)
 
     with torch.no_grad():
         # Get raw logits → apply temperature → sigmoid
@@ -386,13 +390,16 @@ def main():
 
     # ── Load router (if evaluating R2V) ──
     router, temperature = None, 1.0
+    feature_mean = feature_std = None
     if any(m == "r2v" or m.startswith("r2v@") for m in eval_methods):
         if args.router_path is None:
             logger.error("--router-path required for R2V evaluation")
             sys.exit(1)
         logger.info(f"Loading router from {args.router_path}...")
-        router, temperature = load_router(args.router_path, cfg)
+        router, temperature, feature_mean, feature_std = load_router(args.router_path, cfg)
         logger.info(f"  Temperature: {temperature:.4f}")
+        if feature_mean is not None:
+            logger.info("  Feature normalization stats loaded from checkpoint")
         if args.router_threshold_sweep:
             logger.info(
                 "  Threshold sweep: "
@@ -424,6 +431,7 @@ def main():
                 res = evaluate_episode_r2v(
                     steps, router, temperature,
                     threshold, cost_slm, cost_llm,
+                    feature_mean, feature_std,
                 )
             elif base_method == "slm_only":
                 res = evaluate_episode_slm_only(steps, cost_slm)
@@ -491,9 +499,9 @@ def main():
             all_labels = []
             for ep_id, steps in ep_groups.items():
                 slm_success = steps[0]["slm_success"]
-                features = torch.tensor(
-                    [s["features"] for s in steps], dtype=torch.float32
-                )
+                raw = np.array([s["features"] for s in steps], dtype=np.float32)
+                normed = (raw - feature_mean) / feature_std
+                features = torch.tensor(normed, dtype=torch.float32)
                 with torch.no_grad():
                     logits = router.mlp(features).squeeze(-1)
                     scaled = logits / max(temperature, 0.01)

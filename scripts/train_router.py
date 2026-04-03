@@ -129,7 +129,8 @@ def main():
     logger.info(f"  Mean cost: {sum(ex.cost for ex in all_examples) / len(all_examples):.3f}")
 
     train_dataset = RouterDataset(train_examples)
-    val_dataset = RouterDataset(val_examples)
+    # Val/test must use training-set normalization stats to avoid leakage.
+    val_dataset = RouterDataset(val_examples, mean=train_dataset.mean, std=train_dataset.std)
 
     # Create router — Router takes a config dict, not keyword args.
     # Override input_features to match actual feature dimensionality from data.
@@ -174,6 +175,8 @@ def main():
         "temperature": calibrated_temperature,
         "input_dim": input_dim,
         "config": config_to_dict(cfg),
+        "feature_mean": train_dataset.mean.tolist(),
+        "feature_std": train_dataset.std.tolist(),
     }, output_dir / "router_final.pt")
 
     logger.info(f"Router saved to {output_dir / 'router_final.pt'}")
