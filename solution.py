@@ -1,13 +1,18 @@
+def parse_nested_parens(paren_string: str) -> List[int]:
+    groups = paren_string.split()
+    results = []
+    for group in groups:
+        max_depth = 0
+        current_depth = 0
+        for char in group:
+            if char == '('
+                current_depth += 1
+                if current_depth > max_depth:
+                    max_depth = current_depth
+            elif char == ')'
+                current_depth -= 1
+        results.append(max_depth)
+    return results
 
-def words_in_sentence(sentence):
-    def is_prime(n):
-        if n < 2:
-            return False
-        for i in range(2, int(n**0.5) + 1):
-            if n % i == 0:
-                return False
-        return True
-
-    words = sentence.split()
-    prime_words = [word for word in words if is_prime(len(word))]
-    return " ".join(prime_words)
+property_test = parse_nested_parens('(()()) ((())) () ((())()())')
+assert property_test == [2, 3, 1, 3]
