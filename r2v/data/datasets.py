@@ -15,6 +15,7 @@ import random
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -508,16 +509,28 @@ class RouterExample:
 class RouterDataset(Dataset):
     """Dataset for training the risk-calibrated router."""
 
-    def __init__(self, examples: list[RouterExample]):
+    def __init__(
+        self,
+        examples: list[RouterExample],
+        *,
+        mean: Optional[np.ndarray] = None,
+        std: Optional[np.ndarray] = None,
+    ):
         self.examples = examples
+        feats = np.array([e.features for e in examples], dtype=np.float32)
+        # Compute normalization stats from this dataset, or accept externally
+        # supplied stats (val/test sets must use training-set stats).
+        self.mean: np.ndarray = mean if mean is not None else feats.mean(axis=0)
+        self.std: np.ndarray = std if std is not None else feats.std(axis=0).clip(min=1e-6)
 
     def __len__(self) -> int:
         return len(self.examples)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         ex = self.examples[idx]
+        normed = (np.array(ex.features, dtype=np.float32) - self.mean) / self.std
         return {
-            "features": torch.tensor(ex.features, dtype=torch.float32),
+            "features": torch.tensor(normed, dtype=torch.float32),
             "label": torch.tensor(ex.label, dtype=torch.float32),
             "success": torch.tensor(ex.success, dtype=torch.float32),
             "perturbation_seed": torch.tensor(ex.perturbation_seed, dtype=torch.long),
