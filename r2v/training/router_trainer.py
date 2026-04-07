@@ -166,7 +166,8 @@ class RouterTrainer:
                     self._save("best")
 
         # Post-hoc temperature scaling on eval set
-        if eval_loader:
+        # Skip when router.temperature_scaling=false (no_temp_scaling ablation)
+        if eval_loader and self.config.get("temperature_scaling", True):
             self._calibrate(eval_loader, device)
 
         self._save("final")

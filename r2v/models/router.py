@@ -139,8 +139,8 @@ class RouterLoss(nn.Module):
         self.cost_llm = config.get("cost_llm", 50.0)
         self.lagrangian_lr = config.get("lagrangian_lr", 0.01)
 
-        # Calibration loss weights
-        self.brier_weight = 1.0
+        # Calibration loss weights (brier_weight=0.0 disables calibration loss)
+        self.brier_weight = float(config.get("brier_weight", 1.0))
         self.ece_weight = 0.5
 
     def forward(
