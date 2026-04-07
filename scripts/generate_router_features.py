@@ -270,7 +270,7 @@ def _assemble_features(
     benchmark: str | None,
     goal: str,
 ) -> list[float]:
-        """Build the 15-dim feature vector from pre-computed components.
+    """Build the 15-dim feature vector from pre-computed components.
 
     Dims:
       0        entropy

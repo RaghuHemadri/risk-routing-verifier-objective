@@ -37,6 +37,7 @@ from r2v.utils.results import AblationResult, ResultsBundle, ResultsManager
 
 
 ABLATION_SPECS = {
+    # ── Existing ablations ──────────────────────────────────────────────────
     "no_preference": {
         "description": "Remove DPO preference distillation (BC-only policy)",
         "overrides": ["training.lambda_pref=0.0"],
@@ -60,6 +61,191 @@ ABLATION_SPECS = {
     "no_self_correction": {
         "description": "Disable self-correction loop",
         "overrides": ["inference.max_self_correct=0"],
+    },
+
+    # ── TIER 1: CVaR hyperparameter sensitivity (RQ1) ───────────────────────
+    # Chow et al. ICML 2017; reviewers will ask "how sensitive is α?"
+    "cvar_alpha_0.1": {
+        "description": "CVaR α=0.1 (focus on worst 10% of seeds)",
+        "overrides": ["training.router.cvar_alpha=0.1"],
+        "retrain": "router",
+    },
+    "cvar_alpha_0.3": {
+        "description": "CVaR α=0.3 (focus on worst 30% of seeds)",
+        "overrides": ["training.router.cvar_alpha=0.3"],
+        "retrain": "router",
+    },
+    "cvar_alpha_0.5": {
+        "description": "CVaR α=0.5 (average over worst half of seeds)",
+        "overrides": ["training.router.cvar_alpha=0.5"],
+        "retrain": "router",
+    },
+    "cvar_eps_0.1": {
+        "description": "CVaR ε=0.1 (tight failure constraint)",
+        "overrides": ["training.router.cvar_epsilon=0.1"],
+        "retrain": "router",
+    },
+    "cvar_eps_0.2": {
+        "description": "CVaR ε=0.2",
+        "overrides": ["training.router.cvar_epsilon=0.2"],
+        "retrain": "router",
+    },
+    "cvar_eps_0.4": {
+        "description": "CVaR ε=0.4 (loose failure constraint)",
+        "overrides": ["training.router.cvar_epsilon=0.4"],
+        "retrain": "router",
+    },
+
+    # ── TIER 1: CVaR vs worst-case loss (RQ1) ──────────────────────────────
+    # Justifies CVaR over simple min-max (RouteLLM, FrugalGPT use average-case)
+    "worst_case_loss": {
+        "description": "Worst-case (min-max) loss instead of CVaR",
+        "overrides": ["training.router.robust_objective=worst_case"],
+        "retrain": "router",
+    },
+
+    # ── TIER 1: Feature group ablations (RQ2) ──────────────────────────────
+    # RouterBench (Hu et al. 2024) shows feature importance is critical
+    # Features: 0=entropy, 1=spread, 2=mean, 3=std, 4=best,
+    #           5=horizon_frac, 6=step_num, 7=ctx_len,
+    #           8=flakiness, 9=partial_obs, 10=injection, 11=distractors, 12=none
+    "feat_verifier_only": {
+        "description": "Verifier + entropy features only (mask horizon, context, perturbation type)",
+        "overrides": ["router.feature_mask=[0,1,2,3,4]"],
+        "retrain": "router",
+        "feature_mask": [0, 1, 2, 3, 4],
+    },
+    "feat_no_perturbation_type": {
+        "description": "Remove perturbation type one-hot features (8-12)",
+        "overrides": ["router.feature_mask=[0,1,2,3,4,5,6,7]"],
+        "retrain": "router",
+        "feature_mask": list(range(8)),
+    },
+    "feat_no_horizon": {
+        "description": "Remove horizon/step-progress features (5-6)",
+        "overrides": ["router.feature_mask=[0,1,2,3,4,7,8,9,10,11,12]"],
+        "retrain": "router",
+        "feature_mask": [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12],
+    },
+    "feat_entropy_only": {
+        "description": "Entropy only (single feature); minimal-signal router",
+        "overrides": ["router.feature_mask=[0]"],
+        "retrain": "router",
+        "feature_mask": [0],
+    },
+    "feat_no_verifier": {
+        "description": "Remove verifier score features (1-4); entropy+step+context only",
+        "overrides": ["router.feature_mask=[0,5,6,7,8,9,10,11,12]"],
+        "retrain": "router",
+        "feature_mask": [0, 5, 6, 7, 8, 9, 10, 11, 12],
+    },
+    "feat_best_score_only": {
+        "description": "Best verifier score only instead of all 4 verifier stats",
+        "overrides": ["router.feature_mask=[0,4,5,6,7,8,9,10,11,12]"],
+        "retrain": "router",
+        "feature_mask": [0, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    },
+
+    # ── TIER 2: Calibration ablations ──────────────────────────────────────
+    "no_brier_loss": {
+        "description": "Remove Brier calibration loss from router objective",
+        "overrides": ["training.router.brier_weight=0.0"],
+        "retrain": "router",
+    },
+    "no_temp_scaling": {
+        "description": "No post-hoc temperature scaling (fixed T=1.0)",
+        "overrides": ["router.temperature_scaling=false"],
+        "retrain": "router",
+    },
+
+    # ── TIER 2: Policy training ablations (RQ4) ────────────────────────────
+    # These require GPU-hours for policy retraining
+    "dpo_beta_0.05": {
+        "description": "DPO β=0.05 (weaker preference signal)",
+        "overrides": ["training.preference.beta=0.05"],
+        "retrain": "policy",
+    },
+    "dpo_beta_0.2": {
+        "description": "DPO β=0.2",
+        "overrides": ["training.preference.beta=0.2"],
+        "retrain": "policy",
+    },
+    "dpo_beta_0.5": {
+        "description": "DPO β=0.5 (strong preference signal)",
+        "overrides": ["training.preference.beta=0.5"],
+        "retrain": "policy",
+    },
+    "consistency_lambda_0.05": {
+        "description": "Consistency regularization λ=0.05",
+        "overrides": ["training.consistency.lambda=0.05"],
+        "retrain": "policy",
+    },
+    "consistency_lambda_0.5": {
+        "description": "Consistency regularization λ=0.5 (strong)",
+        "overrides": ["training.consistency.lambda=0.5"],
+        "retrain": "policy",
+    },
+    "no_bc_warmup": {
+        "description": "DPO from scratch (skip BC warmup stage)",
+        "overrides": ["training.skip_bc=true"],
+        "retrain": "policy",
+    },
+
+    # ── TIER 3: Cost ratio sensitivity (RQ3) ───────────────────────────────
+    # Tests Pareto frontier robustness to cost assumptions
+    "cost_ratio_10": {
+        "description": "Cost ratio c_LLM/c_SLM=10 (lower LLM premium)",
+        "overrides": ["training.router.cost_llm=10.0"],
+        "retrain": "router",
+    },
+    "cost_ratio_25": {
+        "description": "Cost ratio c_LLM/c_SLM=25",
+        "overrides": ["training.router.cost_llm=25.0"],
+        "retrain": "router",
+    },
+    "cost_ratio_100": {
+        "description": "Cost ratio c_LLM/c_SLM=100 (very expensive LLM)",
+        "overrides": ["training.router.cost_llm=100.0"],
+        "retrain": "router",
+    },
+
+    # ── TIER 3: Router architecture ─────────────────────────────────────────
+    "router_shallow": {
+        "description": "Shallow router MLP: single hidden layer [128]",
+        "overrides": ["router.hidden_dims=[128]"],
+        "retrain": "router",
+    },
+    "router_deep": {
+        "description": "Deep router MLP: three hidden layers [256, 128, 64]",
+        "overrides": ["router.hidden_dims=[256,128,64]"],
+        "retrain": "router",
+    },
+
+    # ── TIER 2: Held-out perturbation type (RQ4 — generalization) ──────────
+    # AgentBench (Liu et al. ICLR 2024) OOD generalization ablations
+    "generalize_no_flakiness": {
+        "description": "Router trained without tool_flakiness; tested on all types",
+        "overrides": ["router.held_out_perturbation=tool_flakiness"],
+        "retrain": "router",
+        "held_out_perturbation": "tool_flakiness",
+    },
+    "generalize_no_injection": {
+        "description": "Router trained without prompt_injection; tested on all types",
+        "overrides": ["router.held_out_perturbation=prompt_injection"],
+        "retrain": "router",
+        "held_out_perturbation": "prompt_injection",
+    },
+    "generalize_no_partial_obs": {
+        "description": "Router trained without partial_observability; tested on all types",
+        "overrides": ["router.held_out_perturbation=partial_observability"],
+        "retrain": "router",
+        "held_out_perturbation": "partial_observability",
+    },
+    "generalize_no_distractors": {
+        "description": "Router trained without distractors; tested on all types",
+        "overrides": ["router.held_out_perturbation=distractors"],
+        "retrain": "router",
+        "held_out_perturbation": "distractors",
     },
 }
 

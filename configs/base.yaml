@@ -142,6 +142,8 @@ training:
     cvar_alpha: 0.2         # Tail probability for CVaR
     cvar_epsilon: 0.3       # Max allowable CVaR failure rate
     lagrangian_lr: 0.01     # Learning rate for Lagrange multiplier
+    brier_weight: 1.0       # Calibration loss weight; 0.0 disables (no_brier_loss ablation)
+    temperature_scaling: true  # Post-hoc temperature scaling; false = no_temp_scaling ablation
     cost_slm: 1.0
     cost_llm: 50.0
 

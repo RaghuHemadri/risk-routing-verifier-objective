@@ -72,7 +72,8 @@ def parse_args():
     parser.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3],
                         help="Perturbation seeds to evaluate (for robustness)")
     parser.add_argument("--methods", nargs="+",
-                        default=["r2v", "slm_only", "llm_only", "entropy_router"])
+                        default=["r2v", "slm_only", "llm_only", "entropy_router",
+                                 "oracle_router", "heuristic_router"])
     parser.add_argument("--router-threshold", type=float, default=0.5)
     parser.add_argument(
         "--router-threshold-sweep", type=float, nargs="+", default=None,
@@ -83,6 +84,16 @@ def parse_args():
     )
     parser.add_argument("--entropy-threshold", type=float, default=2.0,
                         help="Entropy threshold for entropy_router baseline")
+    parser.add_argument("--verifier-threshold", type=float, default=0.5,
+                        help="Best-verifier-score threshold for verifier_router baseline")
+    parser.add_argument(
+        "--feature-mask", type=int, nargs="+", default=None,
+        help=(
+            "Indices of features to KEEP (all others zeroed). "
+            "E.g., --feature-mask 0 1 2 3 4 keeps only entropy+verifier stats. "
+            "Used for inference-time feature ablation without router retraining."
+        ),
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -187,6 +198,7 @@ def evaluate_episode_r2v(
     cost_llm: float,
     feature_mean: "np.ndarray",
     feature_std: "np.ndarray",
+    feature_mask: list[int] | None = None,
 ) -> dict:
     """Evaluate one episode under R2V routing.
 
@@ -194,10 +206,20 @@ def evaluate_episode_r2v(
     - If any step is routed to LLM and slm_success=0 → episode success = 1
       (LLM assumed to fix the failing trajectory).
     - Cost is the sum of per-step routing costs.
+
+    Args:
+        feature_mask: If set, indices of features to KEEP; all others are zeroed.
+            Used for inference-time feature ablation (feat_* ablations).
     """
     slm_success = steps[0]["slm_success"]
     raw = np.array([s["features"] for s in steps], dtype=np.float32)
     normed = (raw - feature_mean) / feature_std
+    if feature_mask is not None:
+        mask = np.zeros(normed.shape[1], dtype=np.float32)
+        for idx in feature_mask:
+            if idx < normed.shape[1]:
+                mask[idx] = 1.0
+        normed = normed * mask
     features = torch.tensor(normed, dtype=torch.float32)
 
     with torch.no_grad():
@@ -288,6 +310,116 @@ def evaluate_episode_entropy_router(
         "success": success,
         "cost": cost,
         "llm_call_rate": llm_call_rate,
+        "llm_steps": llm_steps,
+        "total_steps": len(steps),
+    }
+
+
+def evaluate_episode_oracle_router(
+    steps: list[dict],
+    cost_slm: float,
+    cost_llm: float,
+) -> dict:
+    """Oracle router: routes to LLM exactly when SLM would fail.
+
+    Uses ground-truth slm_success — impossible in deployment, but establishes
+    the theoretical ceiling for any routing strategy at the same LLM call rate.
+    """
+    slm_success = steps[0]["slm_success"]
+    # Oracle: route ALL steps to LLM iff episode would fail under SLM
+    llm_steps = 0 if slm_success >= 0.5 else len(steps)
+    slm_steps = len(steps) - llm_steps
+
+    cost = slm_steps * cost_slm + llm_steps * cost_llm
+    return {
+        "success": 1.0,  # oracle always achieves success (by construction)
+        "cost": cost,
+        "llm_call_rate": llm_steps / max(len(steps), 1),
+        "llm_steps": llm_steps,
+        "total_steps": len(steps),
+    }
+
+
+def evaluate_episode_heuristic_router(
+    steps: list[dict],
+    cost_slm: float,
+    cost_llm: float,
+    entropy_threshold: float = 2.5,
+    verifier_mean_threshold: float = 0.4,
+) -> dict:
+    """Rule-based heuristic router using entropy and verifier score.
+
+    Feature layout (from generate_router_features.py):
+      0: entropy
+      1: verifier_score_spread
+      2: verifier_score_mean
+      3: verifier_score_std
+      4: verifier_score_best
+      5: horizon_fraction
+      ...
+
+    Escalates to LLM when entropy is high OR verifier mean is low.
+    This is the training-free baseline that tests whether a learned
+    router adds value over hand-crafted heuristics.
+    """
+    slm_success = steps[0]["slm_success"]
+    decisions = []
+    for s in steps:
+        feats = s["features"]
+        entropy = feats[0] if len(feats) > 0 else 0.0
+        verifier_mean = feats[2] if len(feats) > 2 else 1.0
+        escalate = (entropy > entropy_threshold) or (verifier_mean < verifier_mean_threshold)
+        decisions.append(1.0 if escalate else 0.0)
+
+    llm_steps = int(sum(decisions))
+    slm_steps = len(steps) - llm_steps
+
+    if slm_success >= 0.5:
+        success = 1.0
+    else:
+        success = 1.0 if llm_steps > 0 else 0.0
+
+    cost = slm_steps * cost_slm + llm_steps * cost_llm
+    return {
+        "success": success,
+        "cost": cost,
+        "llm_call_rate": llm_steps / max(len(steps), 1),
+        "llm_steps": llm_steps,
+        "total_steps": len(steps),
+    }
+
+
+def evaluate_episode_verifier_router(
+    steps: list[dict],
+    verifier_threshold: float,
+    cost_slm: float,
+    cost_llm: float,
+) -> dict:
+    """Verifier-score-only router: escalates when best verifier score < threshold.
+
+    Feature 4 = verifier_score_best. Tests whether the verifier signal alone
+    (without entropy or step features) is sufficient for good routing.
+    """
+    slm_success = steps[0]["slm_success"]
+    decisions = []
+    for s in steps:
+        feats = s["features"]
+        best_score = feats[4] if len(feats) > 4 else 1.0
+        decisions.append(1.0 if best_score < verifier_threshold else 0.0)
+
+    llm_steps = int(sum(decisions))
+    slm_steps = len(steps) - llm_steps
+
+    if slm_success >= 0.5:
+        success = 1.0
+    else:
+        success = 1.0 if llm_steps > 0 else 0.0
+
+    cost = slm_steps * cost_slm + llm_steps * cost_llm
+    return {
+        "success": success,
+        "cost": cost,
+        "llm_call_rate": llm_steps / max(len(steps), 1),
         "llm_steps": llm_steps,
         "total_steps": len(steps),
     }
@@ -432,6 +564,7 @@ def main():
                     steps, router, temperature,
                     threshold, cost_slm, cost_llm,
                     feature_mean, feature_std,
+                    feature_mask=args.feature_mask,
                 )
             elif base_method == "slm_only":
                 res = evaluate_episode_slm_only(steps, cost_slm)
@@ -440,6 +573,14 @@ def main():
             elif base_method == "entropy_router":
                 res = evaluate_episode_entropy_router(
                     steps, args.entropy_threshold, cost_slm, cost_llm,
+                )
+            elif base_method == "oracle_router":
+                res = evaluate_episode_oracle_router(steps, cost_slm, cost_llm)
+            elif base_method == "heuristic_router":
+                res = evaluate_episode_heuristic_router(steps, cost_slm, cost_llm)
+            elif base_method == "verifier_router":
+                res = evaluate_episode_verifier_router(
+                    steps, args.verifier_threshold, cost_slm, cost_llm,
                 )
             else:
                 logger.warning(f"Unknown method: {base_method}, skipping")
