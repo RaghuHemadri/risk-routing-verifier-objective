@@ -79,7 +79,27 @@ if [ ${FAILED} -gt 0 ]; then
     exit 1
 fi
 
-# Auto-merge
+# Generate-only writes *.shard_NNN.gen_cache.jsonl (no per-shard feature JSONL yet).
+# Merging only applies to scored *.shard_NNN.jsonl files (full run or after --score-only).
+GENERATE_ONLY=0
+for a in "$@"; do
+    if [[ "$a" == "--generate-only" ]]; then
+        GENERATE_ONLY=1
+        break
+    fi
+done
+
+if [[ "${GENERATE_ONLY}" -eq 1 ]]; then
+    echo ""
+    echo "=== Generate-only finished (no merge). Candidate caches:"
+    echo "    ${RUN_TAG}.shard_*.gen_cache.jsonl"
+    echo "Run CPU scoring:  bash run_score_cpu.sh --model <shortname>"
+    echo "Then merge runs automatically after --score-only, or:"
+    echo "  python scripts/generate_router_features.py --merge --output <same --output path>"
+    exit 0
+fi
+
+# Auto-merge (full two-phase or post-scoring shard outputs)
 echo ""
 echo "=== All shards complete, merging... ==="
 

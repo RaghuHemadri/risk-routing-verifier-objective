@@ -97,6 +97,27 @@ if [[ $ERRORS -gt 0 ]]; then
     exit 1
 fi
 
+# ── Score-only: how many candidate caches exist (from prior generate phase) ──
+NUM_SCORE_SHARDS=0
+if [[ "$SCORE_ONLY" == "true" ]]; then
+    OUT_DIR="$(dirname "$OUTPUT")"
+    OUTPUT_STEM="$(basename "$OUTPUT" .jsonl)"
+    shopt -s nullglob
+    CACHE_SHARD_FILES=( "$OUT_DIR/${OUTPUT_STEM}.shard_"*.gen_cache.jsonl )
+    shopt -u nullglob
+    if (( ${#CACHE_SHARD_FILES[@]} > 0 )); then
+        NUM_SCORE_SHARDS=${#CACHE_SHARD_FILES[@]}
+    elif [[ -f "$OUT_DIR/${OUTPUT_STEM}.gen_cache.jsonl" ]]; then
+        NUM_SCORE_SHARDS=1
+    else
+        err "Score-only: no candidate cache found. Expected either:"
+        err "  $OUT_DIR/${OUTPUT_STEM}.shard_*.gen_cache.jsonl"
+        err "  or  $OUT_DIR/${OUTPUT_STEM}.gen_cache.jsonl"
+        err "Run GPU generate-only (pipeline stage 4) first."
+        exit 1
+    fi
+fi
+
 # ── Print run config ─────────────────────────────────────────
 header "Run configuration"
 echo -e "  Policy:        ${BOLD}${POLICY_PATH}${NC}"
@@ -104,14 +125,23 @@ echo -e "  Trajectories:  ${TRAJECTORIES}"
 echo -e "  Config:        ${CONFIG}"
 echo -e "  Output:        ${OUTPUT}"
 echo -e "  K (candidates):${K}"
-echo -e "  Batch size:    ${BATCH_SIZE}  (vLLM continuous-batching)"
-echo -e "  Backend:       ${BOLD}vLLM${NC} (PagedAttention + continuous batching)"
-echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
-echo -e "  GPUs:          ${NUM_GPUS}"
-if [[ "$GENERATE_ONLY" == "true" ]]; then
+echo -e "  Batch size:    ${BATCH_SIZE}"
+if [[ "$SCORE_ONLY" == "true" ]]; then
+    echo -e "  Backend:       ${BOLD}none${NC} (score-only: no vLLM)"
+    echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
+    echo -e "  Mode:          ${BOLD}SCORE-ONLY${NC} (sequential CPU; one process per cache shard)"
+    echo -e "  Cache shards:  ${NUM_SCORE_SHARDS}  (auto-detected; logs stream here, no *_shard*.log)"
+elif [[ "$GENERATE_ONLY" == "true" ]]; then
+    echo -e "  Batch note:    ${BATCH_SIZE}  (vLLM continuous-batching)"
+    echo -e "  Backend:       ${BOLD}vLLM${NC} (PagedAttention + continuous batching)"
+    echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
+    echo -e "  GPUs / launch: ${NUM_GPUS}  (multi-GPU uses scripts/launch_router_features.sh)"
     echo -e "  Mode:          ${BOLD}GENERATE-ONLY${NC} (GPU at 100%, no scoring)"
-elif [[ "$SCORE_ONLY" == "true" ]]; then
-    echo -e "  Mode:          ${BOLD}SCORE-ONLY${NC} (CPU scoring from cached candidates)"
+else
+    echo -e "  Batch note:    ${BATCH_SIZE}  (vLLM continuous-batching)"
+    echo -e "  Backend:       ${BOLD}vLLM${NC} (PagedAttention + continuous batching)"
+    echo -e "  Verifier:      ${BOLD}heuristic${NC} (rule-based, execution-backed)"
+    echo -e "  GPUs / launch: ${NUM_GPUS}"
 fi
 
 # Verifier override: force heuristic mode
@@ -159,15 +189,38 @@ print(f'  Estimated time:  ~{n_steps * 1.5 / 60:.0f}-{n_steps * 3.0 / 60:.0f} mi
 
 if [[ "$DRY_RUN" == "true" ]]; then
     header "DRY RUN — would execute the following"
-    echo "python scripts/generate_router_features.py \\"
-    echo "    --config $CONFIG \\"
-    echo "    --policy-path $POLICY_PATH \\"
-    echo "    --trajectories $TRAJECTORIES \\"
-    echo "    --output $OUTPUT \\"
-    echo "    --batch-size $BATCH_SIZE --K $K \\"
-    echo "    --gpu-keepalive-interval $GPU_KEEPALIVE_INTERVAL \\"
-    echo "    --overrides $VERIFIER_OVERRIDE \\"
-    echo "        logging.wandb_mode=disabled"
+    if [[ "$SCORE_ONLY" == "true" ]]; then
+        echo "# Sequential CPU score-only (${NUM_SCORE_SHARDS} cache shard(s), stdout only):"
+        for ((s = 0; s < NUM_SCORE_SHARDS; s++)); do
+            echo "python scripts/generate_router_features.py \\"
+            [[ "${ROUTER_NO_RESUME:-}" == "true" ]] && echo "    --no-resume \\"
+            echo "    --config $CONFIG \\"
+            echo "    --policy-path $POLICY_PATH \\"
+            echo "    --trajectories $TRAJECTORIES \\"
+            echo "    --output $OUTPUT \\"
+            echo "    --batch-size $BATCH_SIZE --K $K \\"
+            echo "    --gpu-keepalive-interval $GPU_KEEPALIVE_INTERVAL \\"
+            echo "    --shard-id $s --num-shards $NUM_SCORE_SHARDS \\"
+            echo "    --score-only \\"
+            echo "    --overrides $VERIFIER_OVERRIDE \\"
+            echo "        $EXTRA_OVERRIDES logging.wandb_mode=disabled"
+            echo ""
+        done
+        if (( NUM_SCORE_SHARDS > 1 )); then
+            echo "python scripts/generate_router_features.py --merge --output \"$OUTPUT\""
+        fi
+    else
+        echo "python scripts/generate_router_features.py \\"
+        [[ "$GENERATE_ONLY" == "true" ]] && echo "    --generate-only \\"
+        echo "    --config $CONFIG \\"
+        echo "    --policy-path $POLICY_PATH \\"
+        echo "    --trajectories $TRAJECTORIES \\"
+        echo "    --output $OUTPUT \\"
+        echo "    --batch-size $BATCH_SIZE --K $K \\"
+        echo "    --gpu-keepalive-interval $GPU_KEEPALIVE_INTERVAL \\"
+        echo "    --overrides $VERIFIER_OVERRIDE \\"
+        echo "        $EXTRA_OVERRIDES logging.wandb_mode=disabled"
+    fi
     exit 0
 fi
 
@@ -183,9 +236,37 @@ PHASE_FLAGS=""
 [[ "$GENERATE_ONLY" == "true" ]] && PHASE_FLAGS="--generate-only"
 [[ "$SCORE_ONLY" == "true" ]]    && PHASE_FLAGS="--score-only"
 
-if [[ "$NUM_GPUS" -gt 1 ]]; then
+RESUME_FLAG=()
+[[ "${ROUTER_NO_RESUME:-}" == "true" ]] && RESUME_FLAG=(--no-resume)
+
+if [[ "$SCORE_ONLY" == "true" ]]; then
+    info "Score-only: running ${NUM_SCORE_SHARDS} scorer(s) sequentially on CPU (single log stream)"
+    for ((s = 0; s < NUM_SCORE_SHARDS; s++)); do
+        info "── Scoring cache shard ${s}/${NUM_SCORE_SHARDS} (shard-id ${s}) ──"
+        python scripts/generate_router_features.py \
+            "${RESUME_FLAG[@]}" \
+            --config "$CONFIG" \
+            --policy-path "$POLICY_PATH" \
+            --trajectories "$TRAJECTORIES" \
+            --output "$OUTPUT" \
+            --batch-size "$BATCH_SIZE" --K "$K" \
+            --gpu-keepalive-interval "$GPU_KEEPALIVE_INTERVAL" \
+            --shard-id "$s" \
+            --num-shards "$NUM_SCORE_SHARDS" \
+            $PHASE_FLAGS \
+            --overrides \
+                $VERIFIER_OVERRIDE \
+                $EXTRA_OVERRIDES \
+                logging.wandb_mode=disabled
+    done
+    if (( NUM_SCORE_SHARDS > 1 )); then
+        info "Merging per-shard feature files → $OUTPUT"
+        python scripts/generate_router_features.py --merge --output "$OUTPUT"
+    fi
+elif [[ "$NUM_GPUS" -gt 1 ]]; then
     info "Multi-GPU mode: ${NUM_GPUS} workers"
     bash scripts/launch_router_features.sh "$NUM_GPUS" \
+        "${RESUME_FLAG[@]}" \
         --config "$CONFIG" \
         --policy-path "$POLICY_PATH" \
         --trajectories "$TRAJECTORIES" \
@@ -204,6 +285,7 @@ if [[ "$NUM_GPUS" -gt 1 ]]; then
     fi
 else
     python scripts/generate_router_features.py \
+        "${RESUME_FLAG[@]}" \
         --config "$CONFIG" \
         --policy-path "$POLICY_PATH" \
         --trajectories "$TRAJECTORIES" \

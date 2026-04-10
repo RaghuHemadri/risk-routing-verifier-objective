@@ -54,10 +54,13 @@ DPO_EPOCHS="${DPO_EPOCHS:-}"
 DPO_BATCH_SIZE="${DPO_BATCH_SIZE:-1}"
 DPO_GRAD_ACCUM="${DPO_GRAD_ACCUM:-32}"
 DPO_BETA="${DPO_BETA:-}"
+DPO_GPU_KEEPALIVE_INTERVAL="${DPO_GPU_KEEPALIVE_INTERVAL:-0}"
 
 PREF_K="${PREF_K:-5}"
 PREF_BATCH_SIZE="${PREF_BATCH_SIZE:-16}"
 PREF_MAX_NEW_TOKENS="${PREF_MAX_NEW_TOKENS:-256}"
+PREF_CONSISTENCY_PAIRS="${PREF_CONSISTENCY_PAIRS:-true}"
+PREF_GPU_KEEPALIVE_INTERVAL="${PREF_GPU_KEEPALIVE_INTERVAL:-0}"
 
 ROUTER_BATCH_SIZE="${ROUTER_BATCH_SIZE:-32}"
 ROUTER_K="${ROUTER_K:-5}"
@@ -87,8 +90,11 @@ while [[ $# -gt 0 ]]; do
         --dpo-batch-size)    DPO_BATCH_SIZE="$2"; shift 2 ;;
         --dpo-grad-accum)    DPO_GRAD_ACCUM="$2"; shift 2 ;;
         --dpo-beta)          DPO_BETA="$2"; shift 2 ;;
+        --dpo-gpu-keepalive-interval) DPO_GPU_KEEPALIVE_INTERVAL="$2"; shift 2 ;;
         --pref-K)            PREF_K="$2"; shift 2 ;;
         --pref-batch-size)   PREF_BATCH_SIZE="$2"; shift 2 ;;
+        --pref-consistency-pairs) PREF_CONSISTENCY_PAIRS="$2"; shift 2 ;;
+        --pref-gpu-keepalive-interval) PREF_GPU_KEEPALIVE_INTERVAL="$2"; shift 2 ;;
         --router-batch-size) ROUTER_BATCH_SIZE="$2"; shift 2 ;;
         --help|-h)
             head -32 "$0" | tail -30
@@ -127,6 +133,16 @@ fi
 MODEL_HF="${HF_ID[${MODEL_SHORT}]}"
 MODEL_TAG="${BC_DIR_TAG[${MODEL_SHORT}]}"
 
+# On some HPC schedulers, low GPU util can trigger job termination during
+# CPU-heavy preference scoring. Use a conservative keepalive default for qwen14
+# unless explicitly overridden by env/flag.
+if [[ "${MODEL_SHORT}" == "qwen14" && "${PREF_GPU_KEEPALIVE_INTERVAL}" == "0" ]]; then
+    PREF_GPU_KEEPALIVE_INTERVAL="0.2"
+fi
+if [[ "${MODEL_SHORT}" == "qwen14" && "${DPO_GPU_KEEPALIVE_INTERVAL}" == "0" ]]; then
+    DPO_GPU_KEEPALIVE_INTERVAL="0.2"
+fi
+
 # ── Derived paths (all tagged by model short name) ────────────
 SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
 NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
@@ -136,17 +152,19 @@ BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
 BC_OUTPUT="outputs/policy/${BENCHMARK}_noisy_bc_${MODEL_TAG}"
 BC_CHECKPOINT="${BC_OUTPUT}/final"
 
-CANDIDATES_FILE="data/candidates/${BENCHMARK}_noisy_heuristic_${MODEL_SHORT}.jsonl"
+CANDIDATES_FILE="data/candidates/${BENCHMARK}_noisy_dpo_prefs_heuristic_${MODEL_SHORT}.jsonl"
 
 PREF_PREFIX="pref_${MODEL_SHORT}"
 PREF_TRAIN_DATA="${SPLIT_DIR}/${PREF_PREFIX}_train.jsonl"
 PREF_VAL_DATA="${SPLIT_DIR}/${PREF_PREFIX}_val.jsonl"
 PREF_TEST_DATA="${SPLIT_DIR}/${PREF_PREFIX}_test.jsonl"
+PREF_VAL_HALF_DATA="${SPLIT_DIR}/${PREF_PREFIX}_val_half.jsonl"
+PREF_VAL_REST_DATA="${SPLIT_DIR}/${PREF_PREFIX}_val_rest.jsonl"
 
 DPO_OUTPUT="outputs/policy/${BENCHMARK}_noisy_dpo_${MODEL_SHORT}"
 DPO_CHECKPOINT="${DPO_OUTPUT}/final"
 
-ROUTER_FEATURES_FILE="data/router_features/${BENCHMARK}_noisy_heuristic_${MODEL_SHORT}.jsonl"
+ROUTER_FEATURES_FILE="data/router_features/${BENCHMARK}_noisy_router_features_heuristic_${MODEL_SHORT}.jsonl"
 
 LOGDIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOGDIR}"
@@ -218,6 +236,43 @@ ensure_pref_splits() {
     echo "  ✓ Preference splits saved"
 }
 
+ensure_pref_val_half_split() {
+    if [[ -f "${PREF_VAL_HALF_DATA}" && -f "${PREF_VAL_REST_DATA}" ]]; then
+        echo "  ✓ Preference val 50/50 split already exists (${MODEL_SHORT})"
+        return
+    fi
+    if [[ ! -f "${PREF_VAL_DATA}" ]]; then
+        echo "  ERROR: Preference val data missing: ${PREF_VAL_DATA}"
+        exit 1
+    fi
+    echo "  Creating deterministic 50/50 split from preference val data..."
+    python - "${PREF_VAL_DATA}" "${PREF_VAL_HALF_DATA}" "${PREF_VAL_REST_DATA}" <<'PY'
+import random
+import sys
+
+src, out_a, out_b = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, "r", encoding="utf-8") as f:
+    rows = [ln for ln in f if ln.strip()]
+
+rng = random.Random(42)
+idxs = list(range(len(rows)))
+rng.shuffle(idxs)
+cut = len(rows) // 2
+keep = set(idxs[:cut])
+
+with open(out_a, "w", encoding="utf-8") as fa, open(out_b, "w", encoding="utf-8") as fb:
+    for i, row in enumerate(rows):
+        if i in keep:
+            fa.write(row)
+        else:
+            fb.write(row)
+
+print(f"split_val_total={len(rows)} val_half={cut} val_rest={len(rows)-cut}")
+PY
+    echo "  ✓ Wrote val-half: ${PREF_VAL_HALF_DATA}"
+    echo "  ✓ Wrote val-rest: ${PREF_VAL_REST_DATA}"
+}
+
 # ── Banner ────────────────────────────────────────────────────
 echo ""
 echo "=========================================================="
@@ -235,7 +290,10 @@ echo "  ── Training params ──"
 echo "  BC epochs:       ${BC_EPOCHS}"
 echo "  LoRA r/alpha:    ${LORA_R} / ${LORA_ALPHA}"
 echo "  DPO batch/accum: ${DPO_BATCH_SIZE} / ${DPO_GRAD_ACCUM}"
+echo "  DPO GPU keepalive: ${DPO_GPU_KEEPALIVE_INTERVAL}s"
 echo "  Pref K:          ${PREF_K}"
+echo "  Pref consistency pairs: ${PREF_CONSISTENCY_PAIRS}"
+echo "  Pref GPU keepalive: ${PREF_GPU_KEEPALIVE_INTERVAL}s"
 echo "  Router batch:    ${ROUTER_BATCH_SIZE}"
 echo ""
 echo "  ── Key paths ──"
@@ -348,6 +406,7 @@ if should_run 2; then
         --K "${PREF_K}"
         --batch-size "${PREF_BATCH_SIZE}"
         --max-new-tokens "${PREF_MAX_NEW_TOKENS}"
+        --gpu-keepalive-interval "${PREF_GPU_KEEPALIVE_INTERVAL}"
         --overrides
             "${QUANT_OVERRIDE}"
             "${COMMON_OVERRIDES}"
@@ -356,6 +415,9 @@ if should_run 2; then
             "verifier.heuristic.benchmark=humaneval"
             "policy.model_name=${MODEL_HF}"
     )
+    if [[ "${PREF_CONSISTENCY_PAIRS}" == "false" ]]; then
+        PREF_ARGS+=(--no-consistency-pairs)
+    fi
 
     START_T=$(date +%s)
     PREF_RC=0
@@ -389,6 +451,7 @@ if should_run 3; then
     # 3a. Ensure preference splits exist
     if [[ ${DRY_RUN} == false ]]; then
         ensure_pref_splits
+        ensure_pref_val_half_split
     fi
 
     LOGFILE="${LOGDIR}/dpo_${MODEL_SHORT}.log"
@@ -400,7 +463,7 @@ if should_run 3; then
         --stage preference
         --resume "${BC_CHECKPOINT}"
         --pref-train-data "${PREF_TRAIN_DATA}"
-        # --pref-val-data "${PREF_VAL_DATA}"
+        --pref-val-data "${PREF_VAL_HALF_DATA}"
         --overrides
             "${QUANT_OVERRIDE}"
             "${COMMON_OVERRIDES}"
@@ -410,9 +473,12 @@ if should_run 3; then
             "training.preference.batch_size=${DPO_BATCH_SIZE}"
             "training.preference.gradient_accumulation_steps=${DPO_GRAD_ACCUM}"
             "training.preference.concat_pairs=false"
+            "training.preference.gpu_keepalive_interval=${DPO_GPU_KEEPALIVE_INTERVAL}"
     )
     [[ -n "${DPO_EPOCHS}" ]] && DPO_ARGS+=("training.preference.epochs=${DPO_EPOCHS}")
     [[ -n "${DPO_BETA}" ]]   && DPO_ARGS+=("training.preference.beta=${DPO_BETA}")
+
+    export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
     START_T=$(date +%s)
     DPO_RC=0

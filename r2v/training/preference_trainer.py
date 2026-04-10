@@ -15,6 +15,7 @@ training signal, converting verifier scores into dense preference pairs.
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ class PreferenceTrainer:
         self.grad_accum_steps = self.config.get("gradient_accumulation_steps", 16)
         self.lr = self.config.get("learning_rate", 5e-6)
         self.max_grad_norm = self.config.get("max_grad_norm", 1.0)
+        self.gpu_keepalive_interval = float(self.config.get("gpu_keepalive_interval", 0.0))
         # Memory-safe by default: separate chosen/rejected passes.
         self.concat_pairs = self.config.get("concat_pairs", False)
 
@@ -67,6 +69,39 @@ class PreferenceTrainer:
         self.lambda_cons = float(cons_cfg.get("lambda_cons", 0.1))
         _cons_temp = float(cons_cfg.get("temperature", 2.0))
         self.consistency_reg = ConsistencyRegularizer(temperature=_cons_temp) if self.consistency_enabled else None
+        self._keepalive_stop = threading.Event()
+        self._keepalive_thread: threading.Thread | None = None
+
+    def _start_gpu_keepalive(self):
+        if self.gpu_keepalive_interval <= 0 or not torch.cuda.is_available():
+            return
+        if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+            return
+        self._keepalive_stop.clear()
+
+        def _worker():
+            device = torch.device("cuda")
+            a = torch.randn((512, 512), device=device, dtype=torch.float16)
+            b = torch.randn((512, 512), device=device, dtype=torch.float16)
+            while not self._keepalive_stop.is_set():
+                try:
+                    _ = a @ b
+                    torch.cuda.synchronize()
+                except Exception:
+                    break
+                self._keepalive_stop.wait(self.gpu_keepalive_interval)
+
+        self._keepalive_thread = threading.Thread(target=_worker, daemon=True)
+        self._keepalive_thread.start()
+        logger.info(
+            "[DPO] GPU keepalive enabled (interval=%.2fs)", self.gpu_keepalive_interval
+        )
+
+    def _stop_gpu_keepalive(self):
+        self._keepalive_stop.set()
+        if self._keepalive_thread is not None:
+            self._keepalive_thread.join(timeout=2.0)
+            self._keepalive_thread = None
 
     def compute_dpo_loss(
         self,
@@ -185,185 +220,194 @@ class PreferenceTrainer:
             eval_loader = accelerator.prepare(eval_loader)
 
         global_step = 0
-        best_eval_loss = float("inf")
+        best_eval_acc = float("-inf")
         metrics_history = []
 
-        for epoch in range(self.epochs):
-            model.train()
-            epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0, "cons_loss": 0.0}
-            num_batches = 0
+        self._start_gpu_keepalive()
+        try:
+            for epoch in range(self.epochs):
+                model.train()
+                epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0, "cons_loss": 0.0}
+                num_batches = 0
 
-            for batch in train_loader:
-                with accelerator.accumulate(model):
-                    if self.concat_pairs:
-                        # Faster path, but uses higher peak memory.
-                        concat_ids = torch.cat(
-                            [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
-                        )
-                        concat_mask = torch.cat(
-                            [batch["chosen_attention_mask"], batch["rejected_attention_mask"]], dim=0
-                        )
-                        concat_labels = torch.cat(
-                            [batch["chosen_labels"], batch["rejected_labels"]], dim=0
-                        )
-                        bs = batch["chosen_input_ids"].size(0)
-
-                        if self.consistency_enabled:
-                            policy_logps, all_logits = self._compute_logps(
-                                model, concat_ids, concat_mask, concat_labels,
-                                return_logits=True,
+                for batch in train_loader:
+                    with accelerator.accumulate(model):
+                        if self.concat_pairs:
+                            # Faster path, but uses higher peak memory.
+                            concat_ids = torch.cat(
+                                [batch["chosen_input_ids"], batch["rejected_input_ids"]], dim=0
                             )
-                            chosen_logits_v1 = all_logits[:bs]
-                        else:
-                            policy_logps = self._compute_logps(
-                                model, concat_ids, concat_mask, concat_labels
+                            concat_mask = torch.cat(
+                                [batch["chosen_attention_mask"], batch["rejected_attention_mask"]], dim=0
                             )
-                        policy_chosen_logps = policy_logps[:bs]
-                        policy_rejected_logps = policy_logps[bs:]
+                            concat_labels = torch.cat(
+                                [batch["chosen_labels"], batch["rejected_labels"]], dim=0
+                            )
+                            bs = batch["chosen_input_ids"].size(0)
 
-                        if ref_model is not None:
-                            with torch.no_grad():
-                                ref_logps = self._compute_logps(
-                                    ref_model, concat_ids, concat_mask, concat_labels
+                            if self.consistency_enabled:
+                                policy_logps, all_logits = self._compute_logps(
+                                    model, concat_ids, concat_mask, concat_labels,
+                                    return_logits=True,
                                 )
-                                ref_chosen_logps = ref_logps[:bs]
-                                ref_rejected_logps = ref_logps[bs:]
-                        else:
-                            ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
-                            ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
-                    else:
-                        # Memory-safe path: separate chosen/rejected passes.
-                        if self.consistency_enabled:
-                            policy_chosen_logps, chosen_logits_v1 = self._compute_logps(
-                                model,
-                                batch["chosen_input_ids"],
-                                batch["chosen_attention_mask"],
-                                batch["chosen_labels"],
-                                return_logits=True,
-                            )
-                        else:
-                            policy_chosen_logps = self._compute_logps(
-                                model,
-                                batch["chosen_input_ids"],
-                                batch["chosen_attention_mask"],
-                                batch["chosen_labels"],
-                            )
-                        policy_rejected_logps = self._compute_logps(
-                            model,
-                            batch["rejected_input_ids"],
-                            batch["rejected_attention_mask"],
-                            batch["rejected_labels"],
-                        )
+                                chosen_logits_v1 = all_logits[:bs]
+                            else:
+                                policy_logps = self._compute_logps(
+                                    model, concat_ids, concat_mask, concat_labels
+                                )
+                            policy_chosen_logps = policy_logps[:bs]
+                            policy_rejected_logps = policy_logps[bs:]
 
-                        if ref_model is not None:
-                            with torch.no_grad():
-                                ref_chosen_logps = self._compute_logps(
-                                    ref_model,
+                            if ref_model is not None:
+                                with torch.no_grad():
+                                    ref_logps = self._compute_logps(
+                                        ref_model, concat_ids, concat_mask, concat_labels
+                                    )
+                                    ref_chosen_logps = ref_logps[:bs]
+                                    ref_rejected_logps = ref_logps[bs:]
+                            else:
+                                ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
+                                ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+                        else:
+                            # Memory-safe path: separate chosen/rejected passes.
+                            if self.consistency_enabled:
+                                policy_chosen_logps, chosen_logits_v1 = self._compute_logps(
+                                    model,
+                                    batch["chosen_input_ids"],
+                                    batch["chosen_attention_mask"],
+                                    batch["chosen_labels"],
+                                    return_logits=True,
+                                )
+                            else:
+                                policy_chosen_logps = self._compute_logps(
+                                    model,
                                     batch["chosen_input_ids"],
                                     batch["chosen_attention_mask"],
                                     batch["chosen_labels"],
                                 )
-                                ref_rejected_logps = self._compute_logps(
-                                    ref_model,
-                                    batch["rejected_input_ids"],
-                                    batch["rejected_attention_mask"],
-                                    batch["rejected_labels"],
+                            policy_rejected_logps = self._compute_logps(
+                                model,
+                                batch["rejected_input_ids"],
+                                batch["rejected_attention_mask"],
+                                batch["rejected_labels"],
+                            )
+
+                            if ref_model is not None:
+                                with torch.no_grad():
+                                    ref_chosen_logps = self._compute_logps(
+                                        ref_model,
+                                        batch["chosen_input_ids"],
+                                        batch["chosen_attention_mask"],
+                                        batch["chosen_labels"],
+                                    )
+                                    ref_rejected_logps = self._compute_logps(
+                                        ref_model,
+                                        batch["rejected_input_ids"],
+                                        batch["rejected_attention_mask"],
+                                        batch["rejected_labels"],
+                                    )
+                            else:
+                                ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
+                                ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+
+                        loss, metrics = self.compute_dpo_loss(
+                            policy_chosen_logps, policy_rejected_logps,
+                            ref_chosen_logps, ref_rejected_logps,
+                        )
+
+                        if self.consistency_enabled:
+                            if "alt_input_ids" in batch:
+                                # True perturbation consistency: same action, different perturbed context
+                                _, alt_logits = self._compute_logps(
+                                    model,
+                                    batch["alt_input_ids"],
+                                    batch["alt_attention_mask"],
+                                    batch["alt_labels"],
+                                    return_logits=True,
                                 )
+                                chosen_shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
+                                alt_shift_mask = (batch["alt_labels"][:, 1:] != -100).float()
+                                cons_loss = self.consistency_reg(
+                                    chosen_logits_v1, alt_logits,
+                                    chosen_shift_mask, alt_shift_mask,
+                                )
+                            else:
+                                # R-Drop fallback: second dropout pass on chosen
+                                _, alt_logits = self._compute_logps(
+                                    model,
+                                    batch["chosen_input_ids"],
+                                    batch["chosen_attention_mask"],
+                                    batch["chosen_labels"],
+                                    return_logits=True,
+                                )
+                                shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
+                                cons_loss = self.consistency_reg(
+                                    chosen_logits_v1, alt_logits, shift_mask, shift_mask,
+                                )
+                            total_loss = loss + self.lambda_cons * cons_loss
+                            metrics["cons_loss"] = cons_loss.item()
                         else:
-                            ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
-                            ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
+                            total_loss = loss
 
-                    loss, metrics = self.compute_dpo_loss(
-                        policy_chosen_logps, policy_rejected_logps,
-                        ref_chosen_logps, ref_rejected_logps,
-                    )
+                        accelerator.backward(total_loss)
+                        if accelerator.sync_gradients:
+                            accelerator.clip_grad_norm_(
+                                trainable_params, self.max_grad_norm
+                            )
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
 
-                    if self.consistency_enabled:
-                        if "alt_input_ids" in batch:
-                            # True perturbation consistency: same action, different perturbed context
-                            _, alt_logits = self._compute_logps(
-                                model,
-                                batch["alt_input_ids"],
-                                batch["alt_attention_mask"],
-                                batch["alt_labels"],
-                                return_logits=True,
-                            )
-                            chosen_shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
-                            alt_shift_mask = (batch["alt_labels"][:, 1:] != -100).float()
-                            cons_loss = self.consistency_reg(
-                                chosen_logits_v1, alt_logits,
-                                chosen_shift_mask, alt_shift_mask,
-                            )
-                        else:
-                            # R-Drop fallback: second dropout pass on chosen
-                            _, alt_logits = self._compute_logps(
-                                model,
-                                batch["chosen_input_ids"],
-                                batch["chosen_attention_mask"],
-                                batch["chosen_labels"],
-                                return_logits=True,
-                            )
-                            shift_mask = (batch["chosen_labels"][:, 1:] != -100).float()
-                            cons_loss = self.consistency_reg(
-                                chosen_logits_v1, alt_logits, shift_mask, shift_mask,
-                            )
-                        total_loss = loss + self.lambda_cons * cons_loss
-                        metrics["cons_loss"] = cons_loss.item()
-                    else:
-                        total_loss = loss
+                    for k, v in metrics.items():
+                        epoch_metrics[k] = epoch_metrics.get(k, 0) + v
+                    num_batches += 1
 
-                    accelerator.backward(total_loss)
                     if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(
-                            trainable_params, self.max_grad_norm
-                        )
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                        global_step += 1
+                        if global_step % 10 == 0:
+                            avg = {k: v / num_batches for k, v in epoch_metrics.items()}
+                            accelerator.print(
+                                f"[DPO] Epoch {epoch+1} Step {global_step} "
+                                f"Loss={avg['dpo_loss']:.4f} "
+                                f"Acc={avg['accuracy']:.3f} "
+                                f"Margin={avg['reward_margin']:.3f}"
+                                + (f" Cons={avg['cons_loss']:.4f}" if self.consistency_enabled else "")
+                            )
 
-                for k, v in metrics.items():
-                    epoch_metrics[k] = epoch_metrics.get(k, 0) + v
-                num_batches += 1
+                avg_metrics = {k: v / max(num_batches, 1) for k, v in epoch_metrics.items()}
+                avg_metrics["epoch"] = epoch + 1
 
-                if accelerator.sync_gradients:
-                    global_step += 1
-                    if global_step % 10 == 0:
-                        avg = {k: v / num_batches for k, v in epoch_metrics.items()}
+                if eval_loader is not None:
+                    eval_metrics = self._evaluate(model, ref_model, eval_loader, accelerator)
+                    if eval_metrics is not None:
+                        eval_loss = float(eval_metrics["eval_loss"])
+                        eval_acc = float(eval_metrics["eval_accuracy"])
+                        avg_metrics["eval_loss"] = eval_loss
+                        avg_metrics["eval_accuracy"] = eval_acc
                         accelerator.print(
-                            f"[DPO] Epoch {epoch+1} Step {global_step} "
-                            f"Loss={avg['dpo_loss']:.4f} "
-                            f"Acc={avg['accuracy']:.3f} "
-                            f"Margin={avg['reward_margin']:.3f}"
-                            + (f" Cons={avg['cons_loss']:.4f}" if self.consistency_enabled else "")
+                            f"[DPO] Epoch {epoch+1} Eval Loss={eval_loss:.4f} Eval Acc={eval_acc:.4f}"
                         )
+                        if eval_acc > best_eval_acc:
+                            best_eval_acc = eval_acc
+                            if accelerator.is_main_process:
+                                self._save_checkpoint(accelerator, model, "best", global_step)
+                    else:
+                        accelerator.print("[DPO] Eval skipped due to OOM; continuing training")
 
-            avg_metrics = {k: v / max(num_batches, 1) for k, v in epoch_metrics.items()}
-            avg_metrics["epoch"] = epoch + 1
+                metrics_history.append(avg_metrics)
 
-            if eval_loader is not None:
-                eval_loss = self._evaluate(model, ref_model, eval_loader, accelerator)
-                if eval_loss is not None:
-                    avg_metrics["eval_loss"] = eval_loss
-                    accelerator.print(f"[DPO] Epoch {epoch+1} Eval Loss={eval_loss:.4f}")
-                    if eval_loss < best_eval_loss:
-                        best_eval_loss = eval_loss
-                        if accelerator.is_main_process:
-                            self._save_checkpoint(accelerator, model, "best", global_step)
-                else:
-                    accelerator.print("[DPO] Eval skipped due to OOM; continuing training")
-
-            metrics_history.append(avg_metrics)
+                if accelerator.is_main_process:
+                    self._save_checkpoint(accelerator, model, f"epoch_{epoch + 1}", global_step)
 
             if accelerator.is_main_process:
-                self._save_checkpoint(accelerator, model, f"epoch_{epoch + 1}", global_step)
-
-        if accelerator.is_main_process:
-            self._save_checkpoint(accelerator, model, "final", global_step)
+                self._save_checkpoint(accelerator, model, "final", global_step)
+        finally:
+            self._stop_gpu_keepalive()
 
         return {
             "history": metrics_history,
             "total_steps": global_step,
-            "best_eval_loss": best_eval_loss,
+            "best_eval_accuracy": best_eval_acc,
         }
 
     def _save_checkpoint(self, accelerator, model, name: str, step: int):
@@ -387,10 +431,11 @@ class PreferenceTrainer:
         logger.info(f"[DPO] Saved checkpoint to {save_path} (step {step})")
 
     @torch.no_grad()
-    def _evaluate(self, model, ref_model, eval_loader, accelerator) -> float | None:
-        """Run evaluation and return average DPO loss."""
+    def _evaluate(self, model, ref_model, eval_loader, accelerator) -> dict[str, float] | None:
+        """Run evaluation and return average DPO loss + preference accuracy."""
         model.eval()
         total_loss = 0.0
+        total_acc = 0.0
         num_batches = 0
 
         for batch in eval_loader:
@@ -425,11 +470,12 @@ class PreferenceTrainer:
                     ref_chosen_logps = torch.zeros_like(policy_chosen_logps)
                     ref_rejected_logps = torch.zeros_like(policy_rejected_logps)
 
-                loss, _ = self.compute_dpo_loss(
+                loss, metrics = self.compute_dpo_loss(
                     policy_chosen_logps, policy_rejected_logps,
                     ref_chosen_logps, ref_rejected_logps,
                 )
                 total_loss += loss.item()
+                total_acc += float(metrics["accuracy"])
                 num_batches += 1
             except torch.OutOfMemoryError:
                 torch.cuda.empty_cache()
@@ -437,7 +483,11 @@ class PreferenceTrainer:
                 return None
 
         model.train()
-        return total_loss / max(num_batches, 1)
+        denom = max(num_batches, 1)
+        return {
+            "eval_loss": total_loss / denom,
+            "eval_accuracy": total_acc / denom,
+        }
 
     def _compute_logps(
         self, model, input_ids, attention_mask, labels, return_logits: bool = False
