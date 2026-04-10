@@ -181,7 +181,10 @@ def _merge_shards(output_path: str, logger):
     """Combine all shard JSONL files into a single output."""
     out = Path(output_path)
     pattern = str(out.parent / f"{out.stem}.shard_*{out.suffix}")
-    shard_files = sorted(glob.glob(pattern))
+    # Exclude *.shard_NNN.gen_cache.jsonl (two-phase caches); only merge real shard outputs.
+    shard_files = sorted(
+        sf for sf in glob.glob(pattern) if not sf.endswith(".gen_cache.jsonl")
+    )
     if not shard_files:
         logger.error(f"No shard files matching {pattern}")
         sys.exit(1)
@@ -282,7 +285,7 @@ def _assemble_features(
       12       step number (absolute)
       13       normalized context length
       14       goal length (task complexity proxy)
-            15-23    reserved (benchmark one-hot + perturbation one-hot commented out)
+      15-23    reserved (benchmark one-hot + perturbation one-hot commented out)
     """
     features: list[float] = []
     features.append(entropy)
@@ -347,6 +350,17 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         )
     else:
         logger.info(f"vLLM: model='{policy_path}'")
+
+    # Gemma 2 uses tanh logit soft-capping in attention, which the default
+    # FLASH_ATTN (FA3) backend does not support.  Force FLASHINFER via the
+    # vLLM V1 attention_backend engine arg.
+    resolved_model = llm_kwargs["model"].lower()
+    if "gemma-2" in resolved_model or "gemma2" in resolved_model:
+        logger.info(
+            "Gemma 2 detected — forcing FLASHINFER attention backend "
+            "(required for tanh softcapping support)"
+        )
+        llm_kwargs["attention_backend"] = "FLASHINFER"
 
     llm = LLM(**llm_kwargs)
 

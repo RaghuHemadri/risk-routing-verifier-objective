@@ -31,6 +31,7 @@ SLM policy and scores them with a heuristic verifier to create preference pairs.
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import glob
 import json
@@ -100,19 +101,55 @@ def completed_episode_ids(output_file: Path) -> set[str]:
     return set(ep_steps.keys())
 
 
-def iter_step_items(episodes):
-    """Yield step items lazily to avoid large pre-collection stalls/memory."""
+def build_context_index(store: TrajectoryStore) -> dict[str, dict[str, list[str]]]:
+    """First streaming pass: build a lightweight context index for consistency pairs.
+
+    Returns:
+        task_id -> {episode_id -> [context_at_step_0, context_at_step_1, ...]}
+    """
+    index: dict[str, dict[str, list[str]]] = defaultdict(dict)
+    for ep in store.iter_episodes():
+        task_id = ep.metadata.task_id if ep.metadata else ep.episode_id
+        contexts: list[str] = []
+        ctx = ""
+        for step in ep.steps:
+            ctx += step.observation.raw_text + "\n"
+            contexts.append(ctx)
+            ctx += step.action.raw_text + "\n"
+        index[task_id][ep.episode_id] = contexts
+    return dict(index)
+
+
+def iter_step_items(episodes, context_index: dict | None = None):
+    """Yield step items lazily to avoid large pre-collection stalls/memory.
+
+    If context_index is provided, each item may include ``context_alt`` from a
+    different perturbation seed of the same task at the same step index.
+    """
     for episode in episodes:
         goal = episode.metadata.goal if episode.metadata else ""
+        task_id = episode.metadata.task_id if episode.metadata else episode.episode_id
+
+        partner_contexts: list[str] | None = None
+        if context_index is not None:
+            task_eps = context_index.get(task_id, {})
+            peers = sorted(eid for eid in task_eps if eid != episode.episode_id)
+            if peers:
+                partner_eid = peers[hash(episode.episode_id) % len(peers)]
+                partner_contexts = task_eps[partner_eid]
+
         context = ""
         for step_idx, step in enumerate(episode.steps):
             context += step.observation.raw_text + "\n"
-            yield {
+            item = {
                 "context": context,
                 "step_idx": step_idx,
                 "goal": goal,
                 "episode_id": episode.episode_id,
             }
+            if partner_contexts is not None and step_idx < len(partner_contexts):
+                item["context_alt"] = partner_contexts[step_idx]
+            yield item
             context += step.action.raw_text + "\n"
 
 
@@ -261,6 +298,11 @@ def parse_args():
         default=1024,
         help="Async writer flush interval in records",
     )
+    parser.add_argument(
+        "--no-consistency-pairs",
+        action="store_true",
+        help="Skip context index pass; omit context_alt from output pairs",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     parser.add_argument(
         "--scan-log-every-episodes",
@@ -379,6 +421,8 @@ def _score_and_write_batch(
                 "episode_id": item["episode_id"],
                 "step_idx": item["step_idx"],
             }
+            if "context_alt" in item:
+                pair["context_alt"] = item["context_alt"]
             if store_all_candidates:
                 pair["all_candidates"] = sorted(
                     scored, key=lambda x: x["verifier_score"], reverse=True
@@ -430,7 +474,6 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
     dict
         {"llm", "sampling_params_cls", "lora_request", "model_ref"}
     """
-    import os
     from vllm import LLM, SamplingParams
 
     lora_request = None
@@ -468,16 +511,16 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         logger.info(f"vLLM loading model from '{policy_path}'")
 
     # Gemma 2 uses tanh logit soft-capping in attention, which the default
-    # FLASH_ATTN (FA3) backend may not support.  Switch to FLASHINFER.
+    # FLASH_ATTN (FA3) backend does not support.  Force FLASHINFER via the
+    # vLLM V1 attention_backend engine arg (the old VLLM_ATTENTION_BACKEND
+    # env var is NOT read by the V1 engine).
     resolved_model = llm_kwargs["model"].lower()
     if "gemma-2" in resolved_model or "gemma2" in resolved_model:
-        current_backend = os.environ.get("VLLM_ATTENTION_BACKEND", "")
-        if current_backend.upper() != "FLASHINFER":
-            logger.info(
-                "Gemma 2 detected — setting VLLM_ATTENTION_BACKEND=FLASHINFER "
-                "(required for tanh softcapping support)"
-            )
-            os.environ["VLLM_ATTENTION_BACKEND"] = "FLASHINFER"
+        logger.info(
+            "Gemma 2 detected — forcing FLASHINFER attention backend "
+            "(required for tanh softcapping support)"
+        )
+        llm_kwargs["attention_backend"] = "FLASHINFER"
 
     llm = LLM(**llm_kwargs)
     return {
@@ -683,6 +726,20 @@ def main():
         f"compute_logprobs={args.compute_logprobs}"
     )
 
+    if not args.no_consistency_pairs:
+        logger.info("First pass: building context index for consistency pairs (streaming)...")
+        t_idx = time.time()
+        context_index = build_context_index(store)
+        n_tasks = len(context_index)
+        n_eps = sum(len(v) for v in context_index.values())
+        logger.info(
+            f"Context index built: {n_tasks} tasks, {n_eps} episodes "
+            f"in {time.time() - t_idx:.1f}s"
+        )
+    else:
+        context_index = None
+        logger.info("Skipping context index (--no-consistency-pairs)")
+
     # --------------- Batched main loop ---------------
     total_pairs = 0
     t0 = time.time()
@@ -710,7 +767,8 @@ def main():
     try:
         batch_stream = _iter_batches(
             iter_step_items(
-                iter_sharded_episodes(store, args.shard_id, args.num_shards, done_eids)
+                iter_sharded_episodes(store, args.shard_id, args.num_shards, done_eids),
+                context_index=context_index,
             ),
             batch_size,
         )

@@ -11,10 +11,15 @@
 # SCORE_ONLY=true — reuses existing sharding, merging, and
 # feature analysis logic.
 #
+# Use --no-resume after a bad/partial scoring run so each shard rewrites
+# its humaneval_*_router_features_heuristic_<model>.shard_NNN.jsonl from scratch
+# (candidate *.gen_cache.jsonl from generate-only is still reused).
+#
 # Usage:
 #   bash run_score_cpu.sh --model qwen7
+#   bash run_score_cpu.sh --model qwen7 --no-resume   # full re-score (ignore partial shard *.jsonl)
 #   bash run_score_cpu.sh --model llama --dry-run
-#   bash run_score_cpu.sh --model qwen14 --gpus 4
+#   (Cache shard count is auto-detected from *.gen_cache.jsonl — no --gpus.)
 #
 # Models (--model):
 #   qwen7   Qwen/Qwen2.5-Coder-7B-Instruct
@@ -36,11 +41,10 @@ cd "${SCRIPT_DIR}"
 # ── Defaults ─────────────────────────────────────────────────
 MODEL_SHORT=""
 BENCHMARK="humaneval"
-NUM_GPUS="${NUM_GPUS:-2}"
 ROUTER_BATCH_SIZE="${ROUTER_BATCH_SIZE:-32}"
 ROUTER_K="${ROUTER_K:-5}"
 DRY_RUN=false
-PASSTHROUGH_ARGS=()
+NO_RESUME=false
 
 # ── Argument parsing ─────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -49,8 +53,9 @@ while [[ $# -gt 0 ]]; do
         --gpus)        NUM_GPUS="$2"; shift 2 ;;
         --batch-size)  ROUTER_BATCH_SIZE="$2"; shift 2 ;;
         --dry-run)     DRY_RUN=true; shift ;;
+        --no-resume)   NO_RESUME=true; shift ;;
         --help|-h)
-            head -27 "$0" | tail -25
+            head -35 "$0" | tail -32
             exit 0
             ;;
         *) echo "ERROR: Unknown option: $1"; exit 1 ;;
@@ -81,7 +86,8 @@ MODEL_HF="${HF_ID[${MODEL_SHORT}]}"
 CONFIG_NOISY="configs/${BENCHMARK}/noisy.yaml"
 NOISY_TRAJECTORIES="data/trajectories/${BENCHMARK}_noisy/trajectories.jsonl"
 DPO_CHECKPOINT="outputs/policy/${BENCHMARK}_noisy_dpo_${MODEL_SHORT}/final"
-ROUTER_FEATURES_FILE="data/router_features/${BENCHMARK}_noisy_heuristic_${MODEL_SHORT}.jsonl"
+# Must match run_pipeline_updated.sh ROUTER_FEATURES_FILE (not *_noisy_heuristic_*).
+ROUTER_FEATURES_FILE="data/router_features/${BENCHMARK}_noisy_router_features_heuristic_${MODEL_SHORT}.jsonl"
 
 # ── Banner ───────────────────────────────────────────────────
 echo ""
@@ -94,7 +100,7 @@ echo "  Model:           ${MODEL_SHORT} (${MODEL_HF})"
 echo "  DPO checkpoint:  ${DPO_CHECKPOINT}"
 echo "  Trajectories:    ${NOISY_TRAJECTORIES}"
 echo "  Output:          ${ROUTER_FEATURES_FILE}"
-echo "  Num shards:      ${NUM_GPUS}"
+echo "  Cache shards:    (auto-detected from gen_cache files next to output)"
 echo "  Batch size:      ${ROUTER_BATCH_SIZE}"
 echo "  Dry run:         ${DRY_RUN}"
 echo ""
@@ -106,9 +112,9 @@ export CONFIG="${CONFIG_NOISY}"
 export OUTPUT="${ROUTER_FEATURES_FILE}"
 export K="${ROUTER_K}"
 export BATCH_SIZE="${ROUTER_BATCH_SIZE}"
-export NUM_GPUS="${NUM_GPUS}"
 export SCORE_ONLY="true"
 export EXTRA_OVERRIDES="policy.model_name=${MODEL_HF}"
+[[ "${NO_RESUME}" == true ]] && export ROUTER_NO_RESUME="true"
 
 DRY_FLAG=""
 [[ ${DRY_RUN} == true ]] && DRY_FLAG="--dry-run"
