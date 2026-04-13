@@ -85,6 +85,11 @@ class Step:
     # Context = (goal, o_<=t, a_<t, y_<t) — built during training
     context: Optional[str] = None
 
+    # Per-step LLM usage
+    llm_tokens_in: int = 0
+    llm_tokens_out: int = 0
+    llm_cost: float = 0.0
+
     # Perturbation applied to this step's observation
     perturbation_type: PerturbationType = PerturbationType.NONE
     perturbation_seed: Optional[int] = None
