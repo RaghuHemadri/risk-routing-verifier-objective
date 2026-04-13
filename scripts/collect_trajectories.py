@@ -117,6 +117,41 @@ Previous actions:
 What is your next action?"""
 
 
+# ── Terminal-Bench prompt templates ──────────────────────────────
+
+TERMINALBENCH_SYSTEM_PROMPT = """\
+You are an expert terminal user solving real-world shell tasks inside a \
+sandboxed Linux container.
+
+Actions available:
+  run [your_shell_command]  – execute a shell command in the container
+  submit                    – run evaluation tests and finish the task
+
+Workflow:
+1. Read the task description carefully.
+2. Explore the environment if needed (ls, cat, pwd, etc.) using run [...].
+3. Implement the required changes or produce the requested output.
+4. Verify your work with run [...] commands.
+5. Call submit when you are confident the task is complete.
+
+Rules:
+- One action per turn. Think step-by-step, then output the action.
+- Prefer simple, correct solutions over complex ones.
+- Do not attempt to escape the sandbox or modify the test harness.
+
+Respond with EXACTLY ONE action per turn, on its own line prefixed with "Action: "."""
+
+TERMINALBENCH_USER_TEMPLATE = """\
+Task: {goal}
+
+{observation}
+
+Previous actions:
+{action_history}
+
+What is your next action?"""
+
+
 # ── RTL-Repair prompt templates ───────────────────────────────
 
 RTLREPAIR_SYSTEM_PROMPT = """\
@@ -164,10 +199,16 @@ def create_benchmark_env(cfg) -> BenchmarkEnv:
     elif benchmark == "rtlrepair":
         from r2v.data.benchmarks.rtlrepair_env import RTLRepairEnv
         return RTLRepairEnv(cfg)
+    elif benchmark == "terminalbench":
+        from r2v.data.benchmarks.terminalbench_env import TerminalBenchEnv
+        return TerminalBenchEnv(cfg)
+    elif benchmark == "terminalbench_eai":
+        from r2v.data.benchmarks.terminalbench_eai_env import TerminalBenchEAIEnv
+        return TerminalBenchEAIEnv(cfg)
     else:
         raise ValueError(
             f"Unknown benchmark: {benchmark}. "
-            f"Supported: humaneval, textworld, rtlrepair"
+            f"Supported: humaneval, textworld, rtlrepair, terminalbench, terminalbench_eai"
         )
 
 
@@ -179,6 +220,45 @@ def parse_action_from_response(response_text: str, benchmark: str) -> str:
 
     For HumanEval/TextWorld/RTLRepair: looks for "Action: <action>" pattern.
     """
+    if benchmark in ("terminalbench", "terminalbench_eai"):
+        # 1) markdown bash/sh block
+        md = re.search(r"```(?:bash|sh|shell)?\s*\n(.+?)```", response_text, re.DOTALL | re.IGNORECASE)
+        if md:
+            return f"run [{md.group(1).strip()}]"
+
+        # 2) run [...] spanning multiple lines
+        rm = re.search(r"run\s*\[", response_text, re.IGNORECASE)
+        if rm:
+            body = response_text[rm.end():]
+            last_bracket = body.rfind("]")
+            if last_bracket != -1:
+                cmd = body[:last_bracket].strip()
+                if cmd:
+                    return f"run [{cmd}]"
+            cmd = body.strip()
+            if cmd:
+                return f"run [{cmd}]"
+
+        # 3) "Action: run <command>" or "Action: submit" or "Action: <bare command>"
+        am = re.search(r"Action:\s*(.+?)(?:\n|$)", response_text, re.IGNORECASE)
+        if am:
+            action = am.group(1).strip()
+            if action.lower() == "submit":
+                return "submit"
+            # Strip leading "run " if present, then wrap in run [...]
+            cmd = re.sub(r"^run\s+", "", action, flags=re.IGNORECASE)
+            # Strip brackets if the agent wrote "run [cmd]" literally
+            cmd = re.sub(r"^\[(.+)\]$", r"\1", cmd).strip()
+            if cmd:
+                return f"run [{cmd}]"
+
+        # 4) bare "submit"
+        if re.search(r"\bsubmit\b", response_text, re.IGNORECASE):
+            return "submit"
+
+        # 5) last non-empty line as fallback
+        return response_text.strip().split("\n")[-1]
+
     if benchmark in ("humaneval", "textworld", "rtlrepair"):
         # ── HumanEval: needs multiline-aware extraction ──────────
         # `write_code [<code>]` spans many lines; the generic single-line
@@ -316,11 +396,17 @@ def classify_action_type(action_text: str, benchmark: str) -> str:
         if lower.startswith("write_code") or lower.startswith("module ") or "endmodule" in lower:
             return "write_code"
         return "unknown"
+    elif benchmark in ("terminalbench", "terminalbench_eai"):
+        lower = action_text.strip().lower()
+        if lower == "submit":
+            return "submit"
+        if lower.startswith("run"):
+            return "run"
+        return "unknown"
     return "unknown"
 
 
 # ── Core collection logic ────────────────────────────────────────
-
 
 def collect_with_teacher(
     cfg,
@@ -358,6 +444,9 @@ def collect_with_teacher(
     elif benchmark == "rtlrepair":
         system_prompt = RTLREPAIR_SYSTEM_PROMPT
         user_template = RTLREPAIR_USER_TEMPLATE
+    elif benchmark in ("terminalbench", "terminalbench_eai"):
+        system_prompt = TERMINALBENCH_SYSTEM_PROMPT
+        user_template = TERMINALBENCH_USER_TEMPLATE
     else:
         raise ValueError(f"Unknown benchmark: {benchmark}")
 
@@ -384,9 +473,7 @@ def collect_with_teacher(
             "observation": current_obs[:_MAX_PROMPT_CHARS],
             "action_history": "\n".join(action_history[-5:]) if action_history else "(none)",
         }
-        if benchmark == "textworld":
-            fmt_kwargs["goal"] = task.goal
-        if benchmark == "rtlrepair":
+        if benchmark in ("textworld", "rtlrepair", "terminalbench", "terminalbench_eai"):
             fmt_kwargs["goal"] = task.goal
         user_prompt = user_template.format(**fmt_kwargs)
         messages = [
@@ -452,6 +539,9 @@ def collect_with_teacher(
             action_source=ActionSource.TEACHER,
             reward=step_result.reward,
             perturbation_type=PerturbationType.NONE,
+            llm_tokens_in=response.input_tokens,
+            llm_tokens_out=response.output_tokens,
+            llm_cost=response.cost,
         )
         steps.append(step)
 
@@ -696,6 +786,8 @@ def _worker_collect(
     _write_worker_progress(progress_dir, worker_id, 0, total, 0, 0.0, "(starting)")
 
     results: list[dict] = []
+    episode_timeout = cfg.get("data", {}).get("episode_timeout", 600)  # default 10 min
+
     for task_id, seed in task_seed_pairs:
         task = task_map.get(task_id)
         if task is None:
@@ -703,12 +795,27 @@ def _worker_collect(
             completed += 1
             continue
         logger.info(f"[{completed + 1}/{total}] Collecting task={task_id}, seed={seed}")
-        episode = collect_with_teacher(
-            cfg, env, teacher_client, task, seed, logger,
-            run_id=run_id,
-            teacher_model=teacher_model,
-            teacher_provider=teacher_provider,
-        )
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            with ThreadPoolExecutor(max_workers=1) as _ep_pool:
+                _ep_fut = _ep_pool.submit(
+                    collect_with_teacher,
+                    cfg, env, teacher_client, task, seed, logger,
+                    run_id=run_id,
+                    teacher_model=teacher_model,
+                    teacher_provider=teacher_provider,
+                )
+                try:
+                    episode = _ep_fut.result(timeout=episode_timeout)
+                except FutureTimeout:
+                    logger.error(
+                        f"Episode timed out after {episode_timeout}s: "
+                        f"task={task_id}, seed={seed} — skipping"
+                    )
+                    episode = None
+        except Exception as exc:
+            logger.error(f"Episode failed: task={task_id}, seed={seed}: {exc}")
+            episode = None
         if episode is not None:
             # Save incrementally to per-worker file
             worker_store.save_episode(episode)

@@ -1,0 +1,37 @@
+# Terminal-Bench Clean Configuration
+defaults:
+  - ../base
+
+benchmark: terminalbench
+
+teacher:
+  provider: azure
+  model_name: gpt-4.1   # Azure deployment name
+
+terminalbench:
+  dataset:
+    # Path to a terminal-bench task directory tree, or a JSONL manifest.
+    # Directory tree: each sub-folder must contain task.yaml + docker-compose.yaml + run-tests.sh
+    # JSONL format: {"task_id": "...", "goal": "...", "task_dir": "/abs/path/to/task"}
+    path: data/terminalbench/tasks
+    max_instances: null
+
+  cmd_timeout: 30       # seconds per shell command
+  test_timeout: 300     # seconds for the evaluation test script (setup-uv-pytest installs packages)
+  no_rebuild: false     # rebuild Docker images (needed for first run per task)
+  cleanup: true         # remove containers after each episode
+
+data:
+  num_teacher_trajectories: 100
+  max_episode_steps: 100
+  episode_timeout: 600   # max seconds per episode before skipping (10 min)
+
+perturbations:
+  tool_flakiness:
+    enabled: false
+  partial_observability:
+    enabled: false
+  prompt_injection:
+    enabled: false
+  distractors:
+    enabled: false
