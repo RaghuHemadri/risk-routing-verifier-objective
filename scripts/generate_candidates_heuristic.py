@@ -238,6 +238,15 @@ def parse_args():
     parser.add_argument("--max-new-tokens", type=int, default=None,
                         help="Override max tokens to generate (default: config or 128)")
     parser.add_argument(
+        "--max-prompt-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Max prompt tokens before left-truncation. "
+            "Default: max_model_len - max_new_tokens"
+        ),
+    )
+    parser.add_argument(
         "--gpu-keepalive-interval",
         type=float,
         default=1.5,
@@ -523,11 +532,20 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         llm_kwargs["attention_backend"] = "FLASHINFER"
 
     llm = LLM(**llm_kwargs)
+    tokenizer = llm.get_tokenizer()
+
+    try:
+        max_model_len = llm.llm_engine.model_config.max_model_len
+    except AttributeError:
+        max_model_len = getattr(llm, "max_model_len", 8192)
+
     return {
         "llm": llm,
         "sampling_params_cls": SamplingParams,
         "lora_request": lora_request,
         "model_ref": llm_kwargs["model"],
+        "tokenizer": tokenizer,
+        "max_model_len": max_model_len,
     }
 
 
@@ -543,8 +561,43 @@ def _generate_candidates_vllm(
     logger,
     shard_id: int,
     lora_request=None,
+    tokenizer=None,
+    max_prompt_tokens: int = 0,
 ):
-    """Generate candidates using vLLM."""
+    """Generate candidates using vLLM.
+
+    When *tokenizer* and *max_prompt_tokens* are provided, prompts that exceed
+    the token limit are individually skipped (given empty candidates) instead
+    of letting one over-limit prompt crash the entire batch.
+    """
+    # --- per-prompt length guard: skip over-limit prompts, keep the rest ---
+    if tokenizer is not None and max_prompt_tokens > 0:
+        valid_indices: list[int] = []
+        skipped_indices: list[int] = []
+        for i, p in enumerate(prompts):
+            n_tok = len(tokenizer.encode(p, add_special_tokens=False))
+            if n_tok <= max_prompt_tokens:
+                valid_indices.append(i)
+            else:
+                skipped_indices.append(i)
+                logger.debug(
+                    f"[shard {shard_id}] Skipping prompt {i} "
+                    f"({n_tok} tokens > {max_prompt_tokens} limit)"
+                )
+        if skipped_indices:
+            logger.warning(
+                f"[shard {shard_id}] Skipping {len(skipped_indices)}/{len(prompts)} "
+                f"over-limit prompts in batch (keeping {len(valid_indices)})"
+            )
+        if not valid_indices:
+            return _empty_candidates(len(prompts), K)
+
+        valid_prompts = [prompts[i] for i in valid_indices]
+    else:
+        valid_indices = list(range(len(prompts)))
+        skipped_indices = []
+        valid_prompts = prompts
+
     sampling_params = sampling_params_cls(
         n=K,
         temperature=gen_temperature,
@@ -558,16 +611,16 @@ def _generate_candidates_vllm(
         kwargs["lora_request"] = lora_request
 
     try:
-        outputs = llm.generate(prompts, sampling_params, **kwargs)
+        outputs = llm.generate(valid_prompts, sampling_params, **kwargs)
     except Exception as exc:
         logger.warning(
-            f"[shard {shard_id}] vLLM generation failed for batch of {len(prompts)}: {exc}"
+            f"[shard {shard_id}] vLLM generation failed for batch of "
+            f"{len(valid_prompts)}: {exc}"
         )
         return _empty_candidates(len(prompts), K)
 
-    all_candidates: list[list[dict]] = []
+    valid_candidates: list[list[dict]] = []
     for req_out in outputs:
-        # Keep deterministic candidate order if the backend provides indices.
         req_outputs = sorted(req_out.outputs, key=lambda o: getattr(o, "index", 0))
         cur: list[dict] = []
         for out in req_outputs[:K]:
@@ -585,14 +638,23 @@ def _generate_candidates_vllm(
                     "num_tokens": len(token_ids),
                 }
             )
-
         while len(cur) < K:
             cur.append({"text": "", "log_prob": 0.0, "num_tokens": 0})
-        all_candidates.append(cur)
+        valid_candidates.append(cur)
 
-    if len(all_candidates) < len(prompts):
-        all_candidates.extend(_empty_candidates(len(prompts) - len(all_candidates), K))
+    if len(valid_candidates) < len(valid_prompts):
+        valid_candidates.extend(
+            _empty_candidates(len(valid_prompts) - len(valid_candidates), K)
+        )
 
+    # Reassemble full-batch results: valid candidates at their original
+    # positions, empty candidates for skipped prompts.
+    if not skipped_indices:
+        return valid_candidates
+
+    all_candidates: list[list[dict]] = _empty_candidates(len(prompts), K)
+    for slot, cands in zip(valid_indices, valid_candidates):
+        all_candidates[slot] = cands
     return all_candidates
 
 
@@ -706,6 +768,16 @@ def main():
     else:
         gen_max_tokens = int(inf_cfg.get("max_tokens", 256)) if inf_cfg else 256
 
+    model_max_len = vllm_backend["max_model_len"]
+    if args.max_prompt_tokens is not None:
+        max_prompt_tokens = args.max_prompt_tokens
+    else:
+        max_prompt_tokens = model_max_len - gen_max_tokens
+    logger.info(
+        f"Prompt truncation: max_prompt_tokens={max_prompt_tokens} "
+        f"(model_max_len={model_max_len}, gen_max_tokens={gen_max_tokens})"
+    )
+
     # --------------- Stream step items (no giant pre-collect stall) ---------------
     batch_size = args.batch_size
     logger.info("Starting shard scan (streaming pass for step/episode counts)...")
@@ -792,6 +864,8 @@ def main():
                     logger=logger,
                     shard_id=args.shard_id,
                     lora_request=vllm_backend["lora_request"],
+                    tokenizer=vllm_backend["tokenizer"],
+                    max_prompt_tokens=max_prompt_tokens,
                 )
                 gen_elapsed = time.time() - gen_t0
             except Exception as exc:
