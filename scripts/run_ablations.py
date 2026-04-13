@@ -185,6 +185,11 @@ ABLATION_SPECS = {
         "overrides": ["training.consistency.lambda=0.5"],
         "retrain": "policy",
     },
+    "consistency_lambda_1.0": {
+        "description": "Consistency regularization λ=1.0 (very strong)",
+        "overrides": ["training.consistency.lambda=1.0"],
+        "retrain": "policy",
+    },
     "no_bc_warmup": {
         "description": "DPO from scratch (skip BC warmup stage)",
         "overrides": ["training.skip_bc=true"],

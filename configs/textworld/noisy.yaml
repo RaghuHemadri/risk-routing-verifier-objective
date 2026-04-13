@@ -1,0 +1,71 @@
+# TextWorld Noisy Configuration
+defaults:
+  - ../base
+
+benchmark: textworld
+
+policy:
+  model_name: Qwen/Qwen2.5-Coder-7B-Instruct
+  max_seq_len: 4096
+  lora:
+    enabled: true
+    r: 32
+    alpha: 64
+    dropout: 0.10
+  quantization:
+    load_in_4bit: false
+
+verifier:
+  trained:
+    backbone: /scratch/rh3884/humaira/risk-routing-verifier-objective/outputs/merged/qwen_coder_7b
+
+textworld:
+  dataset:
+    name: textworld
+    split: test
+    max_instances: null
+
+  cmd_timeout: 30
+  test_timeout: 60
+
+data:
+  num_teacher_trajectories: 250
+  num_perturbation_seeds: 20
+  max_episode_steps: 30
+
+training:
+  bc:
+    epochs: 3
+    batch_size: 1
+    gradient_accumulation_steps: 8
+    learning_rate: 1.5e-4
+    warmup_ratio: 0.05
+  preference:
+    epochs: 3
+    batch_size: 4
+    gradient_accumulation_steps: 8
+    learning_rate: 5.0e-6
+
+# TextWorld-specific perturbations
+perturbations:
+  tool_flakiness:
+    enabled: true
+    failure_prob: 0.10
+    timeout_prob: 0.05
+
+  partial_observability:
+    enabled: true
+    log_truncation_prob: 0.20
+    log_line_drop_prob: 0.15
+    stacktrace_truncation_prob: 0.15
+
+  prompt_injection:
+    enabled: true
+    misleading_error_prob: 0.15
+    misleading_comment_prob: 0.10
+
+  distractors:
+    enabled: true
+    plausible_wrong_fix_prob: 0.15
+    semantic_distractor_prob: 0.15
+    decoy_error_prob: 0.10

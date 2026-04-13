@@ -145,7 +145,7 @@ else
 fi
 
 # Verifier override: force heuristic mode
-VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval"
+VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=${BENCHMARK:-humaneval}"
 EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"
 
 # ── Sanity probe: load 1 trajectory and print stats ──────────

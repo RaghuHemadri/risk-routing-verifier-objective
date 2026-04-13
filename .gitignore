@@ -39,6 +39,7 @@ multirun/
 data/raw/
 data/trajectories/
 data/processed/
+updated_data/
 *.tar.gz
 *.zip
 
