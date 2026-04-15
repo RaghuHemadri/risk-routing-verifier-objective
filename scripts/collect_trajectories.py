@@ -797,9 +797,14 @@ def _worker_collect(
         logger.info(f"[{completed + 1}/{total}] Collecting task={task_id}, seed={seed}")
         try:
             from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            if cfg.get("benchmark") == "terminalbench":
+                from scripts.terminus_scaffold import collect_terminus_trajectory
+                _ep_collector = collect_terminus_trajectory
+            else:
+                _ep_collector = collect_with_teacher
             with ThreadPoolExecutor(max_workers=1) as _ep_pool:
                 _ep_fut = _ep_pool.submit(
-                    collect_with_teacher,
+                    _ep_collector,
                     cfg, env, teacher_client, task, seed, logger,
                     run_id=run_id,
                     teacher_model=teacher_model,
@@ -969,7 +974,12 @@ def main():
                 for i, task in enumerate(tasks):
                     logger.info(f"  [{i + 1}/{len(tasks)}] Task: {task.task_id}")
 
-                    episode = collect_with_teacher(
+                    if cfg.get("benchmark") == "terminalbench":
+                        from scripts.terminus_scaffold import collect_terminus_trajectory
+                        _collector = collect_terminus_trajectory
+                    else:
+                        _collector = collect_with_teacher
+                    episode = _collector(
                         cfg, env, teacher_client, task, seed, logger,
                         run_id=run_id,
                         teacher_model=teacher_model,

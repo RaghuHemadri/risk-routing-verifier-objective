@@ -216,6 +216,8 @@ class TerminalBenchEnv(BenchmarkEnv):
                     },
                 )
             )
+        _difficulty_order = {"easy": 0, "medium": 1, "hard": 2, "unknown": 3}
+        tasks.sort(key=lambda t: _difficulty_order.get(t.difficulty, 3))
         return tasks
 
     # ── Environment interface ──────────────────────────────────────────────

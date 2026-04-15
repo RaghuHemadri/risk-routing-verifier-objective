@@ -138,7 +138,7 @@ class PerturbationRegistry:
     """Registry for config-driven perturbation instantiation."""
 
     _registry: dict[str, type[Perturbation]] = {}
-    _supported_benchmarks = {"humaneval", "textworld"}
+    _supported_benchmarks = {"humaneval", "textworld", "terminalbench"}
 
     @classmethod
     def register(cls, name: str, perturbation_cls: type[Perturbation]):
