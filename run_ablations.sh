@@ -336,7 +336,15 @@ for MODEL_SHORT in "${MODELS[@]}"; do
         CONFIG_NOISY="configs/${BENCH}/noisy.yaml"
         SPLIT_DIR="updated_data/trajectories/${BENCH}_noisy"
         NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
-        BC_CHECKPOINT="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}/final"
+        BC_CHECKPOINT_BEST="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}/best"
+        BC_CHECKPOINT_FINAL="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}/final"
+        BC_CHECKPOINT="${BC_CHECKPOINT_BEST}"
+        # Prefer best/ checkpoint for subsequent stages; fall back to final/
+        # if best/ hasn't been produced yet.
+        if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_CHECKPOINT_FINAL}" ]]; then
+            warn "BC best checkpoint not found: ${BC_CHECKPOINT} — using final: ${BC_CHECKPOINT_FINAL}"
+            BC_CHECKPOINT="${BC_CHECKPOINT_FINAL}"
+        fi
         PREF_PREFIX="pref_${MODEL_SHORT}"
         PREF_TRAIN_DATA="${SPLIT_DIR}/${PREF_PREFIX}_train.jsonl"
         PREF_VAL_HALF_DATA="${SPLIT_DIR}/${PREF_PREFIX}_val_half.jsonl"
@@ -901,7 +909,7 @@ echo ""
 echo "    1. Train routers per ablation:"
 echo "       for f in updated_data/router_features/*_abl_*.jsonl updated_data/router_features/*_skipDPO.jsonl updated_data/router_features/*_noTraining.jsonl; do"
 echo "         python scripts/train_router.py \\"
-echo "           --config configs/humaneval/noisy.yaml \\"
+echo "           --config configs/<benchmark>/noisy.yaml \\"
 echo "           --features \"\$f\" \\"
 echo "           --output outputs/router/ablations/\$(basename \"\$f\" .jsonl)"
 echo "       done"
