@@ -152,10 +152,31 @@ BC_TRAIN_DATA="${SPLIT_DIR}/bc_train.jsonl"
 BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
 
 BC_OUTPUT="outputs/policy/${BENCHMARK}_noisy_bc_${MODEL_TAG}"
-# Prefer the BC "best/" checkpoint (lowest val loss). Fall back to "final/"
-# if best/ doesn't exist yet.
+# Prefer the BC "best/" checkpoint (lowest val loss).
+#
+# Note: `scripts/train_policy.py` writes BC checkpoints under:
+#   ${BC_OUTPUT}/bc_<model_type_tag>/{best,final}
+# Some older runs saved directly under:
+#   ${BC_OUTPUT}/{best,final}
 BC_CHECKPOINT="${BC_OUTPUT}/best"
 BC_CHECKPOINT_FALLBACK="${BC_OUTPUT}/final"
+
+shopt -s nullglob
+BC_NESTED_BEST=( "${BC_OUTPUT}"/bc_*/best )
+BC_NESTED_FINAL=( "${BC_OUTPUT}"/bc_*/final )
+shopt -u nullglob
+
+if [[ ! -d "${BC_CHECKPOINT}" ]]; then
+    # Use nested best if it exists.
+    if (( ${#BC_NESTED_BEST[@]} > 0 )); then
+        BC_CHECKPOINT="${BC_NESTED_BEST[0]}"
+    fi
+    # If neither direct best nor nested best exists, keep/try final.
+    if [[ ! -d "${BC_CHECKPOINT}" && ${#BC_NESTED_FINAL[@]} -gt 0 ]]; then
+        BC_CHECKPOINT_FALLBACK="${BC_NESTED_FINAL[0]}"
+    fi
+fi
+
 if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_CHECKPOINT_FALLBACK}" ]]; then
     echo "  ⚠ BC best checkpoint not found; using final: ${BC_CHECKPOINT_FALLBACK}"
     BC_CHECKPOINT="${BC_CHECKPOINT_FALLBACK}"

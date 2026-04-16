@@ -336,13 +336,30 @@ for MODEL_SHORT in "${MODELS[@]}"; do
         CONFIG_NOISY="configs/${BENCH}/noisy.yaml"
         SPLIT_DIR="updated_data/trajectories/${BENCH}_noisy"
         NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
-        BC_CHECKPOINT_BEST="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}/best"
-        BC_CHECKPOINT_FINAL="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}/final"
+        # BC checkpoints are produced by scripts/train_policy.py and may be saved in either:
+        #   1) ${BC_OUTPUT}/{best,final}                          (older runs)
+        #   2) ${BC_OUTPUT}/bc_<model_type_tag>/{best,final}    (current runs)
+        BC_OUTPUT="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}"
+        BC_CHECKPOINT_BEST="${BC_OUTPUT}/best"
+        BC_CHECKPOINT_FINAL="${BC_OUTPUT}/final"
         BC_CHECKPOINT="${BC_CHECKPOINT_BEST}"
-        # Prefer best/ checkpoint for subsequent stages; fall back to final/
-        # if best/ hasn't been produced yet.
+
+        shopt -s nullglob
+        BC_NESTED_BEST=( "${BC_OUTPUT}"/bc_*/best )
+        BC_NESTED_FINAL=( "${BC_OUTPUT}"/bc_*/final )
+        shopt -u nullglob
+
+        if [[ ! -d "${BC_CHECKPOINT}" ]]; then
+            if (( ${#BC_NESTED_BEST[@]} > 0 )); then
+                BC_CHECKPOINT="${BC_NESTED_BEST[0]}"
+            elif (( ${#BC_NESTED_FINAL[@]} > 0 )); then
+                BC_CHECKPOINT="${BC_NESTED_FINAL[0]}"
+            fi
+        fi
+
+        # Prefer best/ checkpoint; fall back to final/ if needed.
         if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_CHECKPOINT_FINAL}" ]]; then
-            warn "BC best checkpoint not found: ${BC_CHECKPOINT} — using final: ${BC_CHECKPOINT_FINAL}"
+            warn "BC best checkpoint not found under expected layouts — using final: ${BC_CHECKPOINT_FINAL}"
             BC_CHECKPOINT="${BC_CHECKPOINT_FINAL}"
         fi
         PREF_PREFIX="pref_${MODEL_SHORT}"
