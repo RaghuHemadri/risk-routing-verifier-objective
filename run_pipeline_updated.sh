@@ -7,7 +7,8 @@
 # All output files are tagged by model short name.
 #
 # Usage:
-#   bash run_pipeline_updated.sh --model qwen7                   # full pipeline
+#   bash run_pipeline_updated.sh --model qwen7                   # full pipeline (humaneval)
+#   bash run_pipeline_updated.sh --model qwen7 --benchmark textworld  # TextWorld
 #   bash run_pipeline_updated.sh --model llama --from 2          # resume from stage 2
 #   bash run_pipeline_updated.sh --model gemma --only 3          # run only stage 3
 #   bash run_pipeline_updated.sh --model qwen14 --dry-run        # print commands
@@ -96,6 +97,7 @@ while [[ $# -gt 0 ]]; do
         --pref-consistency-pairs) PREF_CONSISTENCY_PAIRS="$2"; shift 2 ;;
         --pref-gpu-keepalive-interval) PREF_GPU_KEEPALIVE_INTERVAL="$2"; shift 2 ;;
         --router-batch-size) ROUTER_BATCH_SIZE="$2"; shift 2 ;;
+        --benchmark)         BENCHMARK="$2"; shift 2 ;;
         --help|-h)
             head -32 "$0" | tail -30
             exit 0
@@ -150,7 +152,14 @@ BC_TRAIN_DATA="${SPLIT_DIR}/bc_train.jsonl"
 BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
 
 BC_OUTPUT="outputs/policy/${BENCHMARK}_noisy_bc_${MODEL_TAG}"
-BC_CHECKPOINT="${BC_OUTPUT}/final"
+# Prefer the BC "best/" checkpoint (lowest val loss). Fall back to "final/"
+# if best/ doesn't exist yet.
+BC_CHECKPOINT="${BC_OUTPUT}/best"
+BC_CHECKPOINT_FALLBACK="${BC_OUTPUT}/final"
+if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_CHECKPOINT_FALLBACK}" ]]; then
+    echo "  ⚠ BC best checkpoint not found; using final: ${BC_CHECKPOINT_FALLBACK}"
+    BC_CHECKPOINT="${BC_CHECKPOINT_FALLBACK}"
+fi
 
 CANDIDATES_FILE="data/candidates/${BENCHMARK}_noisy_dpo_prefs_heuristic_${MODEL_SHORT}.jsonl"
 
@@ -319,7 +328,7 @@ if should_run 1; then
 
     ensure_bc_splits
 
-    LOGFILE="${LOGDIR}/bc_${MODEL_SHORT}.log"
+    LOGFILE="${LOGDIR}/bc_${BENCHMARK}_${MODEL_SHORT}.log"
 
     BC_OVERRIDES=(
         "${QUANT_OVERRIDE}"
@@ -395,7 +404,7 @@ if should_run 2; then
     echo "  Stage 2: Collect Preferences — ${MODEL_SHORT}"
     echo "──────────────────────────────────────────────────────────"
 
-    LOGFILE="${LOGDIR}/preferences_${MODEL_SHORT}.log"
+    LOGFILE="${LOGDIR}/preferences_${BENCHMARK}_${MODEL_SHORT}.log"
     mkdir -p "$(dirname "${CANDIDATES_FILE}")"
 
     PREF_ARGS=(
@@ -412,7 +421,7 @@ if should_run 2; then
             "${COMMON_OVERRIDES}"
             "verifier.mode=heuristic"
             "verifier.heuristic.run_code=true"
-            "verifier.heuristic.benchmark=humaneval"
+            "verifier.heuristic.benchmark=${BENCHMARK}"
             "policy.model_name=${MODEL_HF}"
     )
     if [[ "${PREF_CONSISTENCY_PAIRS}" == "false" ]]; then
@@ -454,7 +463,7 @@ if should_run 3; then
         ensure_pref_val_half_split
     fi
 
-    LOGFILE="${LOGDIR}/dpo_${MODEL_SHORT}.log"
+    LOGFILE="${LOGDIR}/dpo_${BENCHMARK}_${MODEL_SHORT}.log"
 
     DPO_ARGS=(
         scripts/train_policy.py
@@ -515,10 +524,10 @@ if should_run 4; then
     echo "  Stage 4: Router Features — ${MODEL_SHORT}"
     echo "──────────────────────────────────────────────────────────"
 
-    LOGFILE="${LOGDIR}/router_features_${MODEL_SHORT}.log"
+    LOGFILE="${LOGDIR}/router_features_${BENCHMARK}_${MODEL_SHORT}.log"
     mkdir -p "$(dirname "${ROUTER_FEATURES_FILE}")"
 
-    VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=humaneval"
+    VERIFIER_OVERRIDE="verifier.mode=heuristic verifier.heuristic.run_code=true verifier.heuristic.benchmark=${BENCHMARK}"
 
     export POLICY_PATH="${DPO_CHECKPOINT}"
     export TRAJECTORIES="${NOISY_TRAJECTORIES}"
