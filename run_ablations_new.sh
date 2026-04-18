@@ -23,8 +23,8 @@
 #
 # Notes:
 #   - BC training is NOT run by this script. BC checkpoints are expected
-#     under outputs/policy/<bench>_noisy_bc_<model_tag>/{best,final}
-#     (or the nested bc_<tag>/{best,final} layout).
+#     under outputs/policy/<bench>_noisy_bc_<model_tag>/ with safetensors,
+#     tokenizer files, etc. directly in that folder (flat layout).
 #   - Defaults held fixed during the sweep:
 #       training.preference.beta            = 0.1
 #       training.preference.min_score_gap   = 0.1
@@ -274,27 +274,9 @@ for MODEL_SHORT in "${MODELS[@]}"; do
         NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
 
         # Locate existing BC checkpoint (reused; we do NOT run BC here).
-        BC_OUTPUT="outputs/policy/${BENCH}_noisy_bc_${MODEL_TAG}"
-        BC_CHECKPOINT_BEST="${BC_OUTPUT}/best"
-        BC_CHECKPOINT_FINAL="${BC_OUTPUT}/final"
-        BC_CHECKPOINT="${BC_CHECKPOINT_BEST}"
-
-        shopt -s nullglob
-        BC_NESTED_BEST=( "${BC_OUTPUT}"/bc_*/best )
-        BC_NESTED_FINAL=( "${BC_OUTPUT}"/bc_*/final )
-        shopt -u nullglob
-
-        if [[ ! -d "${BC_CHECKPOINT}" ]]; then
-            if (( ${#BC_NESTED_BEST[@]} > 0 )); then
-                BC_CHECKPOINT="${BC_NESTED_BEST[0]}"
-            elif (( ${#BC_NESTED_FINAL[@]} > 0 )); then
-                BC_CHECKPOINT="${BC_NESTED_FINAL[0]}"
-            fi
-        fi
-        if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_CHECKPOINT_FINAL}" ]]; then
-            warn "BC best checkpoint not found under expected layouts — using final: ${BC_CHECKPOINT_FINAL}"
-            BC_CHECKPOINT="${BC_CHECKPOINT_FINAL}"
-        fi
+        # Flat layout: safetensors, tokenizer, etc. live directly in BC_OUTPUT.
+        BC_OUTPUT="${MODEL_SHORT}_${BENCH}"
+        BC_CHECKPOINT="${BC_OUTPUT}"
 
         PREF_PREFIX="pref_${MODEL_SHORT}"
         PREF_TRAIN_DATA="${SPLIT_DIR}/${PREF_PREFIX}_train.jsonl"
