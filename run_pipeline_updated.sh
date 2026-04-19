@@ -146,12 +146,14 @@ if [[ "${MODEL_SHORT}" == "qwen14" && "${DPO_GPU_KEEPALIVE_INTERVAL}" == "0" ]];
 fi
 
 # ── Derived paths (all tagged by model short name) ────────────
-SPLIT_DIR="data/trajectories/${BENCHMARK}_noisy"
+SPLIT_DIR="updated_data/trajectories/${BENCHMARK}_noisy"
 NOISY_TRAJECTORIES="${SPLIT_DIR}/trajectories.jsonl"
 BC_TRAIN_DATA="${SPLIT_DIR}/bc_train.jsonl"
 BC_VAL_DATA="${SPLIT_DIR}/bc_val.jsonl"
 
-BC_OUTPUT="outputs/policy/${BENCHMARK}_noisy_bc_${MODEL_TAG}"
+# BC_OUTPUT_OVERRIDE lets callers point at a pre-existing flat checkpoint
+# (e.g. qwen7_humaneval) instead of the standard training output path.
+BC_OUTPUT="${BC_OUTPUT_OVERRIDE:-outputs/policy/${BENCHMARK}_noisy_bc_${MODEL_TAG}}"
 # Prefer the BC "best/" checkpoint (lowest val loss).
 #
 # Note: `scripts/train_policy.py` writes BC checkpoints under:
@@ -182,11 +184,16 @@ resolve_bc_checkpoint() {
         echo "  ⚠ BC best checkpoint not found; using final: ${BC_CHECKPOINT_FALLBACK}"
         BC_CHECKPOINT="${BC_CHECKPOINT_FALLBACK}"
     fi
+
+    # Flat layout: BC_OUTPUT itself is the checkpoint dir (e.g. qwen7_humaneval).
+    if [[ ! -d "${BC_CHECKPOINT}" && -d "${BC_OUTPUT}" ]]; then
+        BC_CHECKPOINT="${BC_OUTPUT}"
+    fi
 }
 
 resolve_bc_checkpoint
 
-CANDIDATES_FILE="data/candidates/${BENCHMARK}_noisy_dpo_prefs_heuristic_${MODEL_SHORT}.jsonl"
+CANDIDATES_FILE="updated_data/candidates/${BENCHMARK}_noisy_dpo_prefs_heuristic_${MODEL_SHORT}.jsonl"
 
 PREF_PREFIX="pref_${MODEL_SHORT}"
 PREF_TRAIN_DATA="${SPLIT_DIR}/${PREF_PREFIX}_train.jsonl"
