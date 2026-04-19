@@ -364,6 +364,16 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         )
         llm_kwargs["attention_backend"] = "FLASHINFER"
 
+    # Skip CUDAGraph capture on pre-Ampere GPUs (compute cap < 8.0) where
+    # CUDAGraph workspace causes OOM after model + KV-cache are loaded.
+    llm_kwargs.setdefault("enforce_eager", True)
+    llm_kwargs.setdefault("max_model_len", int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192")))
+    logger.info(
+        f"vLLM: enforce_eager={llm_kwargs['enforce_eager']}, "
+        f"max_model_len={llm_kwargs['max_model_len']}, "
+        f"gpu_memory_utilization={llm_kwargs['gpu_memory_utilization']}"
+    )
+
     llm = LLM(**llm_kwargs)
 
     vocab_size = 152064  # Qwen2.5 default

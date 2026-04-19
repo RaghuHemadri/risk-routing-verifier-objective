@@ -531,6 +531,18 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         )
         llm_kwargs["attention_backend"] = "FLASHINFER"
 
+    # Skip CUDAGraph capture — required on pre-Ampere GPUs (compute cap < 8.0)
+    # where FA2 is unavailable and CUDAGraph workspace causes OOM.
+    # Also caps KV-cache allocation: 8192 tokens is sufficient for our episodes.
+    llm_kwargs.setdefault("enforce_eager", True)
+    llm_kwargs.setdefault("max_model_len", int(policy_cfg.get("vllm_max_model_len", 8192)))
+    llm_kwargs.setdefault("gpu_memory_utilization", float(policy_cfg.get("vllm_gpu_memory_utilization", 0.85)))
+    logger.info(
+        f"vLLM: enforce_eager={llm_kwargs['enforce_eager']}, "
+        f"max_model_len={llm_kwargs['max_model_len']}, "
+        f"gpu_memory_utilization={llm_kwargs['gpu_memory_utilization']}"
+    )
+
     llm = LLM(**llm_kwargs)
     tokenizer = llm.get_tokenizer()
 
