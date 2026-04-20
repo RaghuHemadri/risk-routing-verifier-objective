@@ -64,6 +64,10 @@ def parse_args():
     parser.add_argument("--pref-val-data", type=str, default=None,
                         help="Pre-split preference val JSONL (static splitting)")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
+    parser.add_argument("--pref-resume-state", type=str, default=None,
+                        help="Accelerate state dir to resume preference training from (e.g. .../preference/epoch_1)")
+    parser.add_argument("--no-epoch-checkpoints", action="store_true", default=False,
+                        help="Skip epoch_N full Accelerate checkpoints (avoids large-save deadlocks)")
     parser.add_argument(
         "--data-fraction", type=float, default=1.0,
         help="(Deprecated — use --data-fraction on save_static_splits.py instead.) "
@@ -120,6 +124,21 @@ def main():
         else:
             logger.info(f"Resuming model weights from {args.resume}")
             policy.load(args.resume)
+
+    # Preference-stage mid-training resume
+    pref_resume_state = getattr(args, "pref_resume_state", None)
+    pref_start_epoch = 0
+    if pref_resume_state:
+        state_dir_name = Path(pref_resume_state).name
+        if state_dir_name.startswith("epoch_"):
+            try:
+                pref_start_epoch = int(state_dir_name.split("_")[1])
+            except (ValueError, IndexError):
+                pref_start_epoch = 0
+        logger.info(
+            f"Preference resume: Accelerate state from {pref_resume_state}; "
+            f"will start from epoch {pref_start_epoch + 1}"
+        )
 
     # ── Stage 1: Behavior Cloning ──
     if args.stage in ("bc", "all"):
@@ -273,6 +292,7 @@ def main():
                 )
                 sys.exit(1)
 
+            save_epoch_ckpts = not getattr(args, "no_epoch_checkpoints", False)
             pref_trainer = PreferenceTrainer(
                 policy=policy,
                 train_dataset=pref_train_dataset,
@@ -280,6 +300,9 @@ def main():
                 config=pref_cfg,
                 output_dir=str(output_dir / "preference"),
                 collate_fn=PreferenceDataset.collate_fn,
+                start_epoch=pref_start_epoch,
+                resume_state_path=pref_resume_state,
+                save_epoch_checkpoints=save_epoch_ckpts,
             )
 
             pref_trainer.train()

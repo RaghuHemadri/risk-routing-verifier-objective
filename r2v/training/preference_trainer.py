@@ -40,6 +40,9 @@ class PreferenceTrainer:
         config: dict[str, Any] | None = None,
         output_dir: str = "experiments/checkpoints/preference",
         collate_fn=None,
+        start_epoch: int = 0,
+        resume_state_path: str | None = None,
+        save_epoch_checkpoints: bool = True,
     ):
         self.policy = policy
         self.train_dataset = train_dataset
@@ -48,6 +51,9 @@ class PreferenceTrainer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.collate_fn = collate_fn
+        self.start_epoch = start_epoch
+        self.resume_state_path = resume_state_path
+        self.save_epoch_checkpoints = save_epoch_checkpoints
 
         # DPO hyperparameters
         self.beta = self.config.get("beta", 0.1)
@@ -219,13 +225,18 @@ class PreferenceTrainer:
         if eval_loader is not None:
             eval_loader = accelerator.prepare(eval_loader)
 
+        if self.resume_state_path:
+            logger.info(f"[DPO] Restoring Accelerate state from {self.resume_state_path}")
+            accelerator.load_state(self.resume_state_path)
+            logger.info(f"[DPO] State restored; resuming from epoch {self.start_epoch + 1}")
+
         global_step = 0
         best_eval_acc = float("-inf")
         metrics_history = []
 
         self._start_gpu_keepalive()
         try:
-            for epoch in range(self.epochs):
+            for epoch in range(self.start_epoch, self.epochs):
                 model.train()
                 epoch_metrics = {"dpo_loss": 0.0, "accuracy": 0.0, "reward_margin": 0.0, "cons_loss": 0.0}
                 num_batches = 0
@@ -421,10 +432,14 @@ class PreferenceTrainer:
         reload via ``PeftModel.from_pretrained`` / ``AutoModelForCausalLM``.
         """
         save_path = self.output_dir / name
-        save_path.mkdir(parents=True, exist_ok=True)
         if name.startswith("epoch_"):
+            if not self.save_epoch_checkpoints:
+                logger.info(f"[DPO] Skipping epoch checkpoint {name} (save_epoch_checkpoints=False)")
+                return
+            save_path.mkdir(parents=True, exist_ok=True)
             accelerator.save_state(str(save_path))
         else:
+            save_path.mkdir(parents=True, exist_ok=True)
             unwrapped = accelerator.unwrap_model(model)
             unwrapped.save_pretrained(str(save_path))
             self.policy.tokenizer.save_pretrained(str(save_path))
