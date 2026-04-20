@@ -276,7 +276,7 @@ class PolicyModel(nn.Module):
 
     def save(self, path: str):
         """Save model and tokenizer."""
-        self.model.save_pretrained(path)
+        self.model.save_pretrained(path, safe_serialization=False)
         self.tokenizer.save_pretrained(path)
 
     def _is_accelerate_state_dir(self, path: str) -> bool:
