@@ -441,7 +441,7 @@ class PreferenceTrainer:
         else:
             save_path.mkdir(parents=True, exist_ok=True)
             unwrapped = accelerator.unwrap_model(model)
-            unwrapped.save_pretrained(str(save_path))
+            unwrapped.save_pretrained(str(save_path), safe_serialization=False)
             self.policy.tokenizer.save_pretrained(str(save_path))
         logger.info(f"[DPO] Saved checkpoint to {save_path} (step {step})")
 
