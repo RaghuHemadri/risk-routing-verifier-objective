@@ -77,4 +77,14 @@ proofs/
 .claude/**
 CLAUDE.md
 results/*
+!results/ablation/
+!results/ablation/**
 logs/*
+
+# Allow ablation router checkpoints (small ~57KB each)
+!outputs/router/
+!outputs/router/ablation/
+!outputs/router/ablation/**
+!outputs/router/ablation/**/*.pt
+!outputs/router/ablation/**/*.yaml
+!outputs/router/ablation/**/*.jsonl

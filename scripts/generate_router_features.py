@@ -366,17 +366,24 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
 
     # Skip CUDAGraph capture on pre-Ampere GPUs (compute cap < 8.0) where
     # CUDAGraph workspace causes OOM after model + KV-cache are loaded.
+    tp = int(os.environ.get("VLLM_TENSOR_PARALLEL_SIZE", "1"))
+    if tp > 1:
+        llm_kwargs["tensor_parallel_size"] = tp
     llm_kwargs.setdefault("enforce_eager", True)
     llm_kwargs.setdefault("max_model_len", int(os.environ.get("VLLM_MAX_MODEL_LEN", "8192")))
+    if "VLLM_MAX_NUM_SEQS" in os.environ:
+        llm_kwargs["max_num_seqs"] = int(os.environ["VLLM_MAX_NUM_SEQS"])
     logger.info(
         f"vLLM: enforce_eager={llm_kwargs['enforce_eager']}, "
         f"max_model_len={llm_kwargs['max_model_len']}, "
-        f"gpu_memory_utilization={llm_kwargs['gpu_memory_utilization']}"
+        f"gpu_memory_utilization={llm_kwargs['gpu_memory_utilization']}, "
+        f"max_num_seqs={llm_kwargs.get('max_num_seqs', 'default')}"
     )
 
     llm = LLM(**llm_kwargs)
 
     vocab_size = 152064  # Qwen2.5 default
+    tokenizer = None
     try:
         tokenizer = llm.get_tokenizer()
         vocab_size = len(tokenizer)
@@ -388,6 +395,8 @@ def _init_vllm_backend(policy_cfg: dict, policy_path: str, logger):
         "sampling_params_cls": SamplingParams,
         "lora_request": lora_request,
         "vocab_size": vocab_size,
+        "max_model_len": llm_kwargs["max_model_len"],
+        "tokenizer": tokenizer,
     }
 
 
@@ -450,13 +459,37 @@ def _generate_batch_vllm(
     lora_request = backend["lora_request"]
     vocab_size = backend["vocab_size"]
 
-    sampling_params = SamplingParams(
+    max_model_len = backend.get("max_model_len", 8192)
+    max_prompt_tokens = max_model_len - gen_max_tokens
+    tokenizer = backend.get("tokenizer")
+    sp_kwargs: dict = dict(
         n=K,
         temperature=gen_temperature,
         top_p=0.95,
         max_tokens=gen_max_tokens,
         logprobs=num_logprobs,
     )
+    _supports_truncate = True
+    try:
+        # vLLM 0.4.3+: truncate long prompts from the left (keep most recent context)
+        # instead of throwing ValueError for over-length inputs.
+        sp_kwargs["truncate_prompt_tokens"] = max_prompt_tokens
+        sampling_params = SamplingParams(**sp_kwargs)
+    except TypeError:
+        del sp_kwargs["truncate_prompt_tokens"]
+        sampling_params = SamplingParams(**sp_kwargs)
+        _supports_truncate = False
+
+    # Manual truncation fallback for older vLLM: decode and re-encode with token limit.
+    if not _supports_truncate and tokenizer is not None:
+        truncated = []
+        for p in prompts:
+            ids = tokenizer.encode(p)
+            if len(ids) > max_prompt_tokens:
+                ids = ids[-max_prompt_tokens:]  # keep most recent context
+                p = tokenizer.decode(ids, skip_special_tokens=False)
+            truncated.append(p)
+        prompts = truncated
 
     kwargs: dict = {}
     if lora_request is not None:
@@ -980,10 +1013,10 @@ def _run_batches_pipelined(
                     entropy_fallback = True
                     _diag["gen_errors"] += 1
                     _diag["entropy_errors"] += 1
-                    if _diag["gen_errors"] <= 3:
-                        logger.warning(
-                            f"vLLM generation failed (batch {batch_idx}): {exc}"
-                        )
+                    logger.warning(
+                        f"vLLM generation failed (batch {batch_idx}, "
+                        f"error #{_diag['gen_errors']}): {exc}"
+                    )
 
                 fut = scorer.submit(
                     _score_and_assemble,
@@ -1144,10 +1177,10 @@ def _run_batches_two_phase(
                     ] * B
                     entropies = [0.0] * B
                     _diag["gen_errors"] += 1
-                    if _diag["gen_errors"] <= 3:
-                        logger.warning(
-                            f"vLLM generation failed (batch {batch_idx}): {exc}"
-                        )
+                    logger.warning(
+                        f"vLLM generation failed (batch {batch_idx}, "
+                        f"error #{_diag['gen_errors']}): {exc}"
+                    )
 
                 cf.write(
                     json.dumps(
