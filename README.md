@@ -110,6 +110,51 @@ bash run_pipeline.sh --dry-run
 
 See [RUN.md](RUN.md) for detailed per-stage instructions.
 
+## Large Artifacts (Google Drive)
+
+Files too large for git (~23 GB total) are stored in a shared Google Drive folder:
+
+**Folder:** https://drive.google.com/drive/folders/1AzTpx_xOy-46MtfgkmACIB6TvgIyvFDn
+
+| Artifact | Path in repo | Size | Description |
+|---|---|---|---|
+| Router feature JSONL (10 files) | `data/router_features/final_ablations/` | ~407 MB | Scored features for λ ablation (gen + verifier scores) |
+| Gen-cache JSONL | `data/router_features/*.gen_cache.jsonl` | ~70 MB | Raw candidate generations (pre-scoring) |
+| Policy checkpoints (10 runs) | `outputs/policy/` | ~22 GB | DPO `_s2` LoRA adapters for each ablation condition |
+| Base SLM adapters | `qwen7_humaneval/`, `qwen7_textworld/` | ~646 MB | Final merged adapters (no LoRA wrapper needed) |
+| Trajectory data | `updated_data/trajectories/` | ~157 MB | Perturbed episode trajectories (humaneval + textworld) |
+
+### Download with rclone (recommended)
+
+```bash
+# 1. Install rclone (once)
+brew install rclone          # macOS
+# or: sudo apt install rclone  # Linux
+
+# 2. Authorize Google Drive (once — opens browser)
+rclone config
+# → n (new remote) → name: gdrive → type: drive → leave client_id blank
+# → scope 1 (full) → y (auto config) → authorize in browser
+
+# 3. Download everything
+bash scripts/fetch_gdrive_artifacts.sh
+
+# Or download a specific subset:
+bash scripts/fetch_gdrive_artifacts.sh --only router_features
+bash scripts/fetch_gdrive_artifacts.sh --only policy
+bash scripts/fetch_gdrive_artifacts.sh --only qwen_adapters
+bash scripts/fetch_gdrive_artifacts.sh --only trajectories
+```
+
+### Ablation feature files only (no rclone)
+
+If you only need the 10 scored feature JSONL files and have SSH access to the lab machines, use the faster direct pull:
+
+```bash
+bash scripts/fetch_ablation_data.sh             # from skampere2 (default)
+bash scripts/fetch_ablation_data.sh hyperturing1
+```
+
 ## Benchmarks
 
 | Benchmark | Domain | Tasks | Docker-Free | Key Evaluation |
