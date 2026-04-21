@@ -33,6 +33,9 @@ experiments/results/
 experiments/checkpoints/
 experiments/logs/
 outputs/
+!outputs/router/
+!outputs/router/ablation/
+!outputs/router/ablation/**
 multirun/
 
 # Data artifacts (large files)
@@ -65,7 +68,10 @@ webarena/
 config_files/
 
 
-/data/
+data/router_features/*.jsonl
+data/router_features/*.gen_cache.jsonl
+!data/router_features/final_ablations/
+!data/router_features/final_ablations/*.jsonl
 .auth
 config_files
 exports.sh
