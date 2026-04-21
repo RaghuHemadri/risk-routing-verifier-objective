@@ -68,10 +68,7 @@ webarena/
 config_files/
 
 
-data/router_features/*.jsonl
-data/router_features/*.gen_cache.jsonl
-!data/router_features/final_ablations/
-!data/router_features/final_ablations/*.jsonl
+data/router_features/
 .auth
 config_files
 exports.sh
