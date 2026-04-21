@@ -1,0 +1,183 @@
+[2026-04-21 13:04:23] [r2v] [INFO] Loading router features from data/router_features/humaneval_lam_0.5.jsonl...
+[2026-04-21 13:04:24] [r2v] [INFO]   43200 step-level records (before split filter)
+[2026-04-21 13:04:25] [r2v] [INFO] Loading trajectory metadata from updated_data/trajectories/humaneval_noisy/trajectories.jsonl...
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] Loaded 4920 episodes from updated_data/trajectories/humaneval_noisy/trajectories.jsonl
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] 
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] ── Initial dataset (before split) ──
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes : 4920 total (3876 success, 1044 failure, 78.8% success rate)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Tasks    : 164 total (152 success, 12 failure)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes/task : min=30, max=30, mean=30.0, median=30.0
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Clean vs perturbed : 820 clean, 4100 perturbed
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Perturbation types : composite=4100
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Split config : ratios=70%/15%/15%, max_perturbations_per_task=2, seed=42
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] 
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] ── Split: train ──
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes : 1710 total (1344 success, 366 failure, 78.6% success rate)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Tasks    : 114 total (106 success, 8 failure)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes/task : min=15, max=15, mean=15.0, median=15.0
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Clean vs perturbed : 570 clean, 1140 perturbed
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Perturbation types : composite=1140
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] ── Split: val ──
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes : 375 total (288 success, 87 failure, 76.8% success rate)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Tasks    : 25 total (23 success, 2 failure)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes/task : min=15, max=15, mean=15.0, median=15.0
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Clean vs perturbed : 125 clean, 250 perturbed
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Perturbation types : composite=250
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] ── Split: test ──
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes : 375 total (306 success, 69 failure, 81.6% success rate)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Tasks    : 25 total (23 success, 2 failure)
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Episodes/task : min=15, max=15, mean=15.0, median=15.0
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Clean vs perturbed : 125 clean, 250 perturbed
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO]   Perturbation types : composite=250
+[2026-04-21 13:04:28] [r2v.data.splits] [INFO] 
+[2026-04-21 13:04:28] [r2v] [INFO]   Using test split: 375 episode IDs (train=1710, val=375)
+[2026-04-21 13:04:30] [r2v] [INFO]   4920 episodes with metadata
+[2026-04-21 13:04:30] [r2v] [INFO]   3627 step-level records after test-split filter
+[2026-04-21 13:04:30] [r2v] [INFO]   333 episodes
+[2026-04-21 13:04:30] [r2v] [INFO] Loading router from outputs/router/ablation/humaneval_lam_0.5/router_final.pt...
+[2026-04-21 13:04:30] [r2v.models.router] [INFO] Router initialized: input_dim=15, hidden_dims=[128, 64], params=10,755
+[2026-04-21 13:04:30] [r2v] [INFO]   Temperature: 4.0893
+[2026-04-21 13:04:30] [r2v] [INFO]   Feature normalization stats loaded from checkpoint
+[2026-04-21 13:04:30] [r2v] [INFO]   Threshold sweep: 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8
+[2026-04-21 13:04:30] [r2v] [INFO] === Evaluating: r2v@0.1 ===
+[2026-04-21 13:10:42] [r2v] [INFO]   r2v@0.1: SR=1.000 [1.000, 1.000], Worst-Seed=1.000, CVaR-Fail=0.000, Cost=207.23, LLM-Rate=0.972
+[2026-04-21 13:10:42] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:10:42] [r2v] [INFO] === Evaluating: r2v@0.2 ===
+[2026-04-21 13:17:11] [r2v] [INFO]   r2v@0.2: SR=0.928 [0.898, 0.955], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.35, LLM-Rate=0.002
+[2026-04-21 13:17:11] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:17:11] [r2v] [INFO] === Evaluating: r2v@0.3 ===
+[2026-04-21 13:24:20] [r2v] [INFO]   r2v@0.3: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.29, LLM-Rate=0.002
+[2026-04-21 13:24:20] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:24:20] [r2v] [INFO] === Evaluating: r2v@0.4 ===
+[2026-04-21 13:30:36] [r2v] [INFO]   r2v@0.4: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.29, LLM-Rate=0.002
+[2026-04-21 13:30:36] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:30:36] [r2v] [INFO] === Evaluating: r2v@0.5 ===
+[2026-04-21 13:34:33] [r2v] [INFO]   r2v@0.5: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.18, LLM-Rate=0.001
+[2026-04-21 13:34:33] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:34:33] [r2v] [INFO] === Evaluating: r2v@0.6 ===
+[2026-04-21 13:38:20] [r2v] [INFO]   r2v@0.6: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.12, LLM-Rate=0.001
+[2026-04-21 13:38:20] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:38:20] [r2v] [INFO] === Evaluating: r2v@0.7 ===
+[2026-04-21 13:42:06] [r2v] [INFO]   r2v@0.7: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.12, LLM-Rate=0.001
+[2026-04-21 13:42:06] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:42:06] [r2v] [INFO] === Evaluating: r2v@0.8 ===
+[2026-04-21 13:45:18] [r2v] [INFO]   r2v@0.8: SR=0.925 [0.895, 0.952], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=11.12, LLM-Rate=0.001
+[2026-04-21 13:45:18] [r2v] [INFO]   Calibration: ECE=0.1105, Brier=0.1143
+[2026-04-21 13:45:18] [r2v] [INFO] === Evaluating: slm_only ===
+[2026-04-21 13:45:19] [r2v] [INFO]   slm_only: SR=0.919 [0.889, 0.946], Worst-Seed=0.907, CVaR-Fail=0.093, Cost=10.89, LLM-Rate=0.000
+[2026-04-21 13:45:19] [r2v] [INFO] === Evaluating: llm_only ===
+[2026-04-21 13:45:19] [r2v] [INFO]   llm_only: SR=1.000 [1.000, 1.000], Worst-Seed=1.000, CVaR-Fail=0.000, Cost=217.84, LLM-Rate=1.000
+[2026-04-21 13:45:19] [r2v] [INFO] === Evaluating: entropy_router ===
+[2026-04-21 13:45:19] [r2v] [INFO]   entropy_router: SR=0.952 [0.928, 0.973], Worst-Seed=0.930, CVaR-Fail=0.070, Cost=14.09, LLM-Rate=0.010
+[2026-04-21 13:45:19] [r2v] [INFO] === Evaluating: oracle_router ===
+[2026-04-21 13:45:19] [r2v] [INFO]   oracle_router: SR=1.000 [1.000, 1.000], Worst-Seed=1.000, CVaR-Fail=0.000, Cost=36.23, LLM-Rate=0.081
+[2026-04-21 13:45:19] [r2v] [INFO] === Evaluating: heuristic_router ===
+[2026-04-21 13:45:19] [r2v] [INFO]   heuristic_router: SR=0.991 [0.979, 1.000], Worst-Seed=0.972, CVaR-Fail=0.028, Cost=58.48, LLM-Rate=0.226
+[2026-04-21 13:45:19] [r2v] [INFO] === Evaluating: verifier_router ===
+[2026-04-21 13:45:19] [r2v] [INFO]   verifier_router: SR=0.982 [0.967, 0.994], Worst-Seed=0.972, CVaR-Fail=0.028, Cost=57.45, LLM-Rate=0.251
+[2026-04-21 13:45:19] [r2v] [INFO] Computing per-seed results...
+[2026-04-21 13:45:20] [r2v] [INFO] Computing statistical comparisons...
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs slm_only: Δ=+0.081 [0.054, 0.108], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs llm_only: Δ=+0.000 [0.000, 0.000], p=1.0000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs entropy_router: Δ=+0.048 [0.027, 0.072], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs oracle_router: Δ=+0.000 [0.000, 0.000], p=1.0000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs heuristic_router: Δ=+0.009 [0.000, 0.021], p=0.2500
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 vs verifier_router: Δ=+0.018 [0.006, 0.033], p=0.0312 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs slm_only: Δ=+0.009 [0.000, 0.021], p=0.2500
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs llm_only: Δ=-0.072 [-0.099, -0.045], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs entropy_router: Δ=-0.024 [-0.045, -0.006], p=0.0215 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs oracle_router: Δ=-0.072 [-0.099, -0.045], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs heuristic_router: Δ=-0.063 [-0.090, -0.036], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 vs verifier_router: Δ=-0.054 [-0.078, -0.030], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs slm_only: Δ=+0.006 [0.000, 0.015], p=0.5000
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs llm_only: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs entropy_router: Δ=-0.027 [-0.048, -0.009], p=0.0117 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs oracle_router: Δ=-0.075 [-0.102, -0.048], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs heuristic_router: Δ=-0.066 [-0.093, -0.042], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 vs verifier_router: Δ=-0.057 [-0.084, -0.033], p=0.0000 *
+[2026-04-21 13:45:20] [r2v] [INFO] Computing per-perturbation-type analysis...
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 / composite: SR=1.000 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.1 / none: SR=1.000 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 / composite: SR=0.928 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.2 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.3 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.4 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.5 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.6 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.7 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 / composite: SR=0.923 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   r2v@0.8 / none: SR=0.928 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   slm_only / composite: SR=0.919 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   slm_only / none: SR=0.919 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   llm_only / composite: SR=1.000 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   llm_only / none: SR=1.000 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   entropy_router / composite: SR=0.950 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   entropy_router / none: SR=0.955 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   oracle_router / composite: SR=1.000 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   oracle_router / none: SR=1.000 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   heuristic_router / composite: SR=0.991 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   heuristic_router / none: SR=0.991 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO]   verifier_router / composite: SR=0.986 (n=222)
+[2026-04-21 13:45:20] [r2v] [INFO]   verifier_router / none: SR=0.973 (n=111)
+[2026-04-21 13:45:20] [r2v] [INFO] Results bundle saved: results/ablation/humaneval_lam_0.5/structured_results/eval_humaneval_noisy_2026-04-21.json
+[2026-04-21 13:45:20] [r2v] [INFO] Main table CSV: results/ablation/humaneval_lam_0.5/structured_results/main_table.csv
+[2026-04-21 13:45:20] [r2v] [INFO] Comparisons CSV: results/ablation/humaneval_lam_0.5/structured_results/comparisons.csv
+[2026-04-21 13:45:20] [r2v] [INFO] LLM summary: results/ablation/humaneval_lam_0.5/structured_results/llm_summary.json
+[2026-04-21 13:45:20] [r2v] [INFO] LaTeX table: results/ablation/humaneval_lam_0.5/structured_results/main_table.tex
+[2026-04-21 13:45:20] [r2v] [INFO] 
+======================================================================
+[2026-04-21 13:45:20] [r2v] [INFO] EVALUATION SUMMARY
+[2026-04-21 13:45:20] [r2v] [INFO] ======================================================================
+[2026-04-21 13:45:20] [r2v] [INFO] Method                     SR    Worst   CVaR-F     Cost     LLM%
+[2026-04-21 13:45:20] [r2v] [INFO] ----------------------------------------------------------------------
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.1                 1.000    1.000    0.000    207.2    0.972
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.2                 0.928    0.907    0.093     11.3    0.002
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.3                 0.925    0.907    0.093     11.3    0.002
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.4                 0.925    0.907    0.093     11.3    0.002
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.5                 0.925    0.907    0.093     11.2    0.001
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.6                 0.925    0.907    0.093     11.1    0.001
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.7                 0.925    0.907    0.093     11.1    0.001
+[2026-04-21 13:45:20] [r2v] [INFO] r2v@0.8                 0.925    0.907    0.093     11.1    0.001
+[2026-04-21 13:45:20] [r2v] [INFO] slm_only                0.919    0.907    0.093     10.9    0.000
+[2026-04-21 13:45:20] [r2v] [INFO] llm_only                1.000    1.000    0.000    217.8    1.000
+[2026-04-21 13:45:20] [r2v] [INFO] entropy_router          0.952    0.930    0.070     14.1    0.010
+[2026-04-21 13:45:20] [r2v] [INFO] oracle_router           1.000    1.000    0.000     36.2    0.081
+[2026-04-21 13:45:20] [r2v] [INFO] heuristic_router        0.991    0.972    0.028     58.5    0.226
+[2026-04-21 13:45:20] [r2v] [INFO] verifier_router         0.982    0.972    0.028     57.5    0.251
+[2026-04-21 13:45:20] [r2v] [INFO] ======================================================================
+[2026-04-21 13:45:20] [r2v] [INFO] Evaluation complete!

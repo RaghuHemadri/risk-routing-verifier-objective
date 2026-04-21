@@ -79,6 +79,8 @@ CLAUDE.md
 results/*
 !results/ablation/
 !results/ablation/**
+!results/ablation/logs/
+!results/ablation/logs/**
 logs/*
 
 # Allow ablation router checkpoints (small ~57KB each)
