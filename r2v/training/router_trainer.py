@@ -69,28 +69,46 @@ class RouterTrainer:
             num_bins=self.config.get("num_bins", 15)
         )
 
+    @staticmethod
+    def _iter_batches(
+        dataset,
+        batch_size: int,
+        shuffle: bool,
+        device: torch.device,
+    ):
+        """Yield batches by slicing pre-normalised tensors directly.
+
+        Avoids the per-sample Python overhead of DataLoader/__getitem__ when
+        the entire dataset is already in memory as contiguous tensors.
+        The first call moves the dataset tensors to *device* in-place if they
+        are not already there.
+        """
+        n = len(dataset)
+        dataset.to(device)
+        idx = torch.randperm(n, device=device) if shuffle else torch.arange(n, device=device)
+        for start in range(0, n, batch_size):
+            sl = idx[start : start + batch_size]
+            yield {
+                "features":          dataset._features[sl],
+                "label":             dataset._labels[sl],
+                "success":           dataset._success[sl],
+                "perturbation_seed": dataset._seeds[sl],
+                "cost":              dataset._costs[sl],
+            }
+
     def train(self) -> dict[str, Any]:
         """Run router training with Lagrangian dual optimization."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.router = self.router.to(device)
         self.router.train()
 
-        train_loader = DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-            drop_last=True,
-        )
-
         eval_loader = None
         if self.eval_dataset:
             eval_loader = DataLoader(
                 self.eval_dataset,
-                batch_size=self.batch_size * 2,
+                batch_size=self.batch_size * 4,
                 shuffle=False,
-                num_workers=2,
+                num_workers=0,
             )
 
         # Separate optimizers for primal (router params) and dual (λ)
@@ -118,7 +136,7 @@ class RouterTrainer:
             epoch_metrics = {}
             num_batches = 0
 
-            for batch in train_loader:
+            for batch in self._iter_batches(self.train_dataset, self.batch_size, True, device):
                 features = batch["features"].to(device)
                 labels = batch["label"].to(device)
                 success = batch["success"].to(device)
