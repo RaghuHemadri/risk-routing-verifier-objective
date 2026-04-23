@@ -57,12 +57,64 @@ if [[ -n "${MODEL_FILTER}" ]]; then
   COMMON_ARGS+=(--model-filter "${MODEL_FILTER}")
 fi
 
+THRESHOLD_SWEEP="${THRESHOLD_SWEEP:-0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9}"
+
 COMMON_OVERRIDES=(
   "project.seed=${SEED}"
   "logging.wandb_mode=disabled"
   "training.router.eval_every_epochs=1"
   "training.router.checkpoint_every_epochs=1"
 )
+
+# run_threshold_sweep_eval — eval-only, no training.
+# Sweeps the routing threshold on an already-trained router checkpoint.
+# Called after the "baseline" run so the Pareto SR-vs-LLM% curve can be plotted.
+run_threshold_sweep_eval() {
+  local router_path="$1"
+  local eval_output_dir="${RESULTS_ROOT}/threshold_sweep"
+  local log_file="${LOG_ROOT}/threshold_sweep.eval.log"
+
+  if [[ "${RUN_EVAL}" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ ! -f "${router_path}" ]]; then
+    echo "[SKIP] threshold sweep: router checkpoint missing: ${router_path}"
+    return 0
+  fi
+
+  echo
+  echo "================================================================"
+  echo "Threshold sweep eval (eval-only, no training)"
+  echo "Router: ${router_path}"
+  echo "Thresholds: ${THRESHOLD_SWEEP}"
+  echo "================================================================"
+
+  # shellcheck disable=SC2068
+  read -r -a threshold_arr <<< "${THRESHOLD_SWEEP}"
+
+  local -a eval_args=(
+    --config "${CONFIG}"
+    --features "${PARQUET}"
+    --split test
+    --feature-transform none
+    --category-filter "${CATEGORY_FILTER}"
+    --variant-filter "${VARIANT_FILTER}"
+    --router-path "${router_path}"
+    --output "${eval_output_dir}"
+    --methods r2v slm_only llm_only entropy_router oracle_router
+    --router-threshold-sweep "${threshold_arr[@]}"
+    --seeds 1 2 3
+  )
+  if [[ -n "${BENCHMARK_FILTER}" ]]; then
+    eval_args+=(--benchmark-filter "${BENCHMARK_FILTER}")
+  fi
+  if [[ -n "${MODEL_FILTER}" ]]; then
+    eval_args+=(--model-filter "${MODEL_FILTER}")
+  fi
+
+  python scripts/evaluate.py "${eval_args[@]}" > "${log_file}" 2>&1
+}
 
 declare -a RUN_SPECS=()
 
@@ -206,7 +258,7 @@ out_row = {
     "eval_json": str(eval_json_path),
 }
 
-  with open(row_json, "w", encoding="utf-8") as f:
+with open(row_json, "w", encoding="utf-8") as f:
     json.dump(out_row, f, indent=2)
 PY
 }
@@ -277,6 +329,10 @@ done
 while (( $(jobs -rp | wc -l) > 0 )); do
   wait -n
 done
+
+# Threshold sweep eval on the baseline checkpoint (eval-only, no training needed).
+baseline_router="${OUT_ROOT}/baseline/router_final.pt"
+run_threshold_sweep_eval "${baseline_router}"
 
 if [[ "${RUN_EVAL}" == "true" ]]; then
   python - "${ROWS_DIR}" "${SUMMARY_CSV}" <<'PY'
