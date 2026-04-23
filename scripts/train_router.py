@@ -168,6 +168,13 @@ def _apply_feature_transform(record: dict, mode: str) -> list[float]:
     raise ValueError(f"Unknown feature transform mode: {mode}")
 
 
+_PARQUET_NEEDED_COLS = [
+    "features", "slm_success", "cost", "episode_id",
+    "step_idx", "perturbation_seed", "verifier_scores",
+    "split", "benchmark", "model", "variant", "category",
+]
+
+
 def load_feature_records(
     path: str,
     feature_transform: str = "none",
@@ -181,7 +188,13 @@ def load_feature_records(
     if _is_parquet_source(path):
         if pd is None:
             raise RuntimeError("pandas is required to read Parquet router datasets")
-        df = pd.read_parquet(path)
+
+        # Only load the columns actually needed — much faster than reading all columns.
+        available = set(pd.read_parquet(path, columns=[]).columns) if False else None
+        try:
+            df = pd.read_parquet(path, columns=_PARQUET_NEEDED_COLS)
+        except Exception:
+            df = pd.read_parquet(path)
 
         if split is not None and "split" in df.columns:
             df = df[df["split"] == split]
@@ -194,11 +207,7 @@ def load_feature_records(
         if category_filter is not None and "category" in df.columns:
             df = df[df["category"] == category_filter]
 
-        records = df.to_dict(orient="records")
-        normed = [_normalize_record(r) for r in records]
-        for r in normed:
-            r["features"] = _apply_feature_transform(r, feature_transform)
-        return normed
+        return _load_records_from_df(df, feature_transform)
 
     records = []
     with open(path) as f:
@@ -206,9 +215,63 @@ def load_feature_records(
             line = line.strip()
             if not line:
                 continue
-                r = _normalize_record(json.loads(line))
-                r["features"] = _apply_feature_transform(r, feature_transform)
-                records.append(r)
+            r = _normalize_record(json.loads(line))
+            r["features"] = _apply_feature_transform(r, feature_transform)
+            records.append(r)
+    return records
+
+
+def _load_records_from_df(df: "pd.DataFrame", feature_transform: str) -> list[dict]:
+    """Vectorised conversion of a filtered DataFrame → list[dict].
+
+    Avoids the slow ``df.to_dict(orient='records')`` path by extracting arrays
+    with numpy and only building one Python dict per row at the very end.
+    """
+    import numpy as np
+
+    n = len(df)
+    if n == 0:
+        return []
+
+    # Feature matrix — stack list-of-lists column into a 2-D array.
+    raw_feats = df["features"].to_numpy()
+    try:
+        feats = np.stack(raw_feats).astype(np.float32)
+    except ValueError:
+        feats = np.array([list(x) for x in raw_feats], dtype=np.float32)
+
+    # Apply feature transform in-place (vectorised where possible).
+    if feature_transform == "no_entropy":
+        feats[:, 0] = 0.0
+    elif feature_transform == "verifier_pseudo_entropy":
+        # verifier_pseudo_entropy is per-row (needs verifier_scores); keep the
+        # Python loop only for this branch.
+        vs_col = df["verifier_scores"].to_numpy() if "verifier_scores" in df.columns else None
+        for i in range(n):
+            vs = list(vs_col[i]) if (vs_col is not None and vs_col[i] is not None) else None
+            feats[i, 0] = _compute_verifier_pseudo_entropy(feats[i].tolist(), vs)
+    elif feature_transform != "none":
+        raise ValueError(f"Unknown feature transform: {feature_transform}")
+
+    slm_success  = df["slm_success"].to_numpy().astype(np.float32)
+    cost         = df["cost"].to_numpy().astype(np.float32) if "cost" in df.columns else np.ones(n, np.float32)
+    episode_ids  = df["episode_id"].to_numpy().astype(str) if "episode_id" in df.columns else np.array([str(i) for i in range(n)])
+    step_idxs    = df["step_idx"].to_numpy().astype(np.int64) if "step_idx" in df.columns else np.zeros(n, np.int64)
+    pert_seeds   = df["perturbation_seed"].to_numpy().astype(np.int64) if "perturbation_seed" in df.columns else np.zeros(n, np.int64)
+
+    vs_col = df["verifier_scores"].to_numpy() if "verifier_scores" in df.columns else None
+
+    records = []
+    for i in range(n):
+        records.append({
+            "features":         feats[i].tolist(),
+            "slm_success":      float(slm_success[i]),
+            "cost":             float(cost[i]),
+            "episode_id":       str(episode_ids[i]),
+            "step_idx":         int(step_idxs[i]),
+            "perturbation_seed": int(pert_seeds[i]),
+            "verifier_scores":  (list(vs_col[i]) if vs_col is not None and vs_col[i] is not None else None),
+        })
     return records
 
 

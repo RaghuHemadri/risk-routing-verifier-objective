@@ -688,6 +688,51 @@ def main():
                 + ", ".join(f"{t:g}" for t in args.router_threshold_sweep)
             )
 
+    # ── Pre-compute router probabilities for all episodes in one batched pass ──
+    # This replaces the per-episode MLP call with a single vectorised forward,
+    # which is ~N_episodes× faster (GPU or CPU) due to kernel launch amortisation.
+    ep_router_probs: dict[str, np.ndarray] = {}
+    if router is not None and feature_mean is not None:
+        device = next(router.parameters()).device
+        ep_ids_ordered = list(ep_groups.keys())
+        step_counts = [len(ep_groups[eid]) for eid in ep_ids_ordered]
+
+        # Build feature matrix for all steps across all episodes.
+        raw_all = np.vstack([
+            np.array([s["features"] for s in ep_groups[eid]], dtype=np.float32)
+            for eid in ep_ids_ordered
+        ])
+        normed_all = (raw_all - feature_mean) / feature_std
+
+        # Optional feature mask (zeroes out unused feature dimensions).
+        if args.feature_mask is not None:
+            mask = np.zeros(normed_all.shape[1], dtype=np.float32)
+            for idx in args.feature_mask:
+                if idx < normed_all.shape[1]:
+                    mask[idx] = 1.0
+            normed_all = normed_all * mask
+
+        # Single batched inference — chunk to avoid OOM on very large datasets.
+        _CHUNK = 131072
+        all_probs_list = []
+        router.eval()
+        with torch.no_grad():
+            for start in range(0, len(normed_all), _CHUNK):
+                chunk_t = torch.tensor(
+                    normed_all[start : start + _CHUNK], dtype=torch.float32
+                ).to(device)
+                logits = router.mlp(chunk_t).squeeze(-1)
+                probs  = torch.sigmoid(logits / max(temperature, 0.01))
+                all_probs_list.append(probs.cpu().numpy())
+        router.train()
+
+        all_probs_np = np.concatenate(all_probs_list)
+        ptr = 0
+        for eid, cnt in zip(ep_ids_ordered, step_counts):
+            ep_router_probs[eid] = all_probs_np[ptr : ptr + cnt]
+            ptr += cnt
+        logger.info(f"  Batched router inference: {len(normed_all)} steps in one pass")
+
     # ── Evaluate each method ──
     # For robustness analysis, we group episodes by perturbation_seed
     # and evaluate per-seed success rates.
@@ -710,12 +755,31 @@ def main():
                     if method_threshold is not None
                     else args.router_threshold
                 )
-                res = evaluate_episode_r2v(
-                    steps, router, temperature,
-                    threshold, cost_slm, cost_llm,
-                    feature_mean, feature_std,
-                    feature_mask=args.feature_mask,
-                )
+                # Re-use pre-computed probabilities; fall back to per-episode
+                # path only if pre-computation was skipped.
+                if ep_id in ep_router_probs:
+                    probs = ep_router_probs[ep_id]
+                    decisions = (probs > threshold).astype(float)
+                    llm_steps = int(decisions.sum())
+                    slm_steps = len(steps) - llm_steps
+                    slm_success = steps[0]["slm_success"]
+                    success = 1.0 if slm_success >= 0.5 else (1.0 if llm_steps > 0 else 0.0)
+                    cost = slm_steps * cost_slm + llm_steps * cost_llm
+                    res = {
+                        "success": success,
+                        "cost": cost,
+                        "llm_call_rate": llm_steps / max(len(steps), 1),
+                        "llm_steps": llm_steps,
+                        "total_steps": len(steps),
+                        "fallback_probs": probs.tolist(),
+                    }
+                else:
+                    res = evaluate_episode_r2v(
+                        steps, router, temperature,
+                        threshold, cost_slm, cost_llm,
+                        feature_mean, feature_std,
+                        feature_mask=args.feature_mask,
+                    )
             elif base_method == "slm_only":
                 res = evaluate_episode_slm_only(steps, cost_slm)
             elif base_method == "llm_only":
