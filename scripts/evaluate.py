@@ -29,12 +29,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import torch
+
+try:
+    import pandas as pd
+except Exception:  # pragma: no cover
+    pd = None
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -63,9 +69,29 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate R2V-Agent (offline)")
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--features", type=str, required=True,
-                        help="Router features JSONL (from generate_router_features.py)")
+                        help="Router features (.jsonl or .parquet/.parquet-dir)")
     parser.add_argument("--trajectories", type=str, default=None,
                         help="Trajectory JSONL for perturbation-seed metadata")
+    parser.add_argument("--split", type=str, default=None,
+                        help="Optional split filter when features include a split column")
+    parser.add_argument("--benchmark-filter", type=str, default=None,
+                        help="Optional benchmark filter for Parquet dataset")
+    parser.add_argument("--model-filter", type=str, default=None,
+                        help="Optional model filter for Parquet dataset")
+    parser.add_argument("--variant-filter", type=str, default=None,
+                        help="Optional variant filter for Parquet dataset")
+    parser.add_argument("--category-filter", type=str, default=None,
+                        help="Optional category filter for Parquet dataset")
+    parser.add_argument(
+        "--feature-transform",
+        type=str,
+        default="none",
+        choices=["none", "no_entropy", "verifier_pseudo_entropy"],
+        help=(
+            "Optional transform over feature vectors before evaluation: "
+            "none | no_entropy | verifier_pseudo_entropy"
+        ),
+    )
     parser.add_argument("--router-path", type=str, default=None,
                         help="Path to router_final.pt checkpoint")
     parser.add_argument("--output", type=str, required=True)
@@ -102,17 +128,112 @@ def parse_args():
 # Data loading helpers
 # ============================================================
 
-def load_features(path: str) -> list[dict]:
-    """Load router features JSONL → list of dicts.
+def _is_parquet_source(path: str) -> bool:
+    p = Path(path)
+    return p.is_dir() or p.suffix.lower() in {".parquet", ".pq"}
 
-    Each dict: {features, slm_success, cost, episode_id, step_idx}
-    """
+
+def _normalize_record(record: dict) -> dict:
+    out = dict(record)
+    out["features"] = [float(x) for x in out["features"]]
+    out["slm_success"] = float(out.get("slm_success", 0.0))
+    out["cost"] = float(out.get("cost", 1.0))
+    out["episode_id"] = str(out.get("episode_id", ""))
+    out["step_idx"] = int(out.get("step_idx", 0))
+    if "perturbation_seed" in out and out["perturbation_seed"] is not None:
+        out["perturbation_seed"] = int(out["perturbation_seed"])
+    if out.get("verifier_scores") is not None:
+        out["verifier_scores"] = [float(x) for x in out["verifier_scores"]]
+    else:
+        out["verifier_scores"] = None
+    return out
+
+
+def _softmax_entropy(scores: list[float]) -> float:
+    if not scores:
+        return 0.0
+    arr = [float(s) for s in scores]
+    m = max(arr)
+    exps = [math.exp(x - m) for x in arr]
+    z = sum(exps)
+    if z <= 1e-12:
+        return 0.0
+    probs = [e / z for e in exps]
+    return float(-sum(p * math.log(p + 1e-12) for p in probs))
+
+
+def _compute_verifier_pseudo_entropy(features: list[float], verifier_scores: list[float] | None) -> float:
+    if verifier_scores:
+        return _softmax_entropy(verifier_scores)
+
+    # Fallback approximation from summary stats.
+    if len(features) < 6:
+        return 0.0
+    mean = float(features[2])
+    std = abs(float(features[3]))
+    best = float(features[4])
+    worst = float(features[5])
+    approx_scores = [best, mean + std, mean, mean - std, worst]
+    return _softmax_entropy(approx_scores)
+
+
+def _apply_feature_transform(record: dict, mode: str) -> list[float]:
+    features = record["features"]
+    if mode == "none":
+        return [float(x) for x in features]
+
+    out = [float(x) for x in features]
+    if not out:
+        return out
+
+    if mode == "no_entropy":
+        out[0] = 0.0
+        return out
+
+    if mode == "verifier_pseudo_entropy":
+        out[0] = _compute_verifier_pseudo_entropy(out, record.get("verifier_scores"))
+        return out
+
+    raise ValueError(f"Unknown feature transform mode: {mode}")
+
+
+def load_features(
+    path: str,
+    feature_transform: str = "none",
+    split: str | None = None,
+    benchmark_filter: str | None = None,
+    model_filter: str | None = None,
+    variant_filter: str | None = None,
+    category_filter: str | None = None,
+) -> list[dict]:
+    """Load router features from JSONL or Parquet into normalized record dicts."""
+    if _is_parquet_source(path):
+        if pd is None:
+            raise RuntimeError("pandas is required to read Parquet router datasets")
+        df = pd.read_parquet(path)
+        if split is not None and "split" in df.columns:
+            df = df[df["split"] == split]
+        if benchmark_filter is not None and "benchmark" in df.columns:
+            df = df[df["benchmark"] == benchmark_filter]
+        if model_filter is not None and "model" in df.columns:
+            df = df[df["model"] == model_filter]
+        if variant_filter is not None and "variant" in df.columns:
+            df = df[df["variant"] == variant_filter]
+        if category_filter is not None and "category" in df.columns:
+            df = df[df["category"] == category_filter]
+        out = [_normalize_record(r) for r in df.to_dict(orient="records")]
+        for r in out:
+            r["features"] = _apply_feature_transform(r, feature_transform)
+        return out
+
     records = []
     with open(path) as f:
         for line in f:
             line = line.strip()
             if line:
-                records.append(json.loads(line))
+                r = _normalize_record(json.loads(line))
+                r["features"] = _apply_feature_transform(r, feature_transform)
+                records.append(r)
     return records
 
 
@@ -150,6 +271,21 @@ def group_by_episode(records: list[dict]) -> dict[str, list[dict]]:
     for ep_id in episodes:
         episodes[ep_id].sort(key=lambda r: r["step_idx"])
     return dict(episodes)
+
+
+def load_episode_metadata_from_records(records: list[dict]) -> dict[str, dict]:
+    """Build per-episode metadata from record-level fields when trajectories are absent."""
+    meta: dict[str, dict] = {}
+    for r in records:
+        eid = r.get("episode_id")
+        if not eid:
+            continue
+        if eid not in meta:
+            meta[eid] = {
+                "perturbation_seed": int(r.get("perturbation_seed", 0)) if r.get("perturbation_seed") is not None else 0,
+                "perturbation_type": str(r.get("perturbation_type", "unknown")),
+            }
+    return meta
 
 
 # ============================================================
@@ -485,12 +621,21 @@ def main():
 
     # ── Load data (test split only) ──
     logger.info(f"Loading router features from {args.features}...")
-    records = load_features(args.features)
+    records = load_features(
+        args.features,
+        feature_transform=args.feature_transform,
+        split=args.split,
+        benchmark_filter=args.benchmark_filter,
+        model_filter=args.model_filter,
+        variant_filter=args.variant_filter,
+        category_filter=args.category_filter,
+    )
+    logger.info(f"  feature_transform={args.feature_transform}")
     logger.info(f"  {len(records)} step-level records (before split filter)")
 
     # Build test-split episode_id allowlist from trajectories
     test_eids: set[str] | None = None
-    ep_meta = {}
+    ep_meta = load_episode_metadata_from_records(records)
     if args.trajectories:
         logger.info(f"Loading trajectory metadata from {args.trajectories}...")
         splits = load_and_split(
@@ -508,8 +653,13 @@ def main():
         ep_meta = load_episode_metadata(args.trajectories)
         logger.info(f"  {len(ep_meta)} episodes with metadata")
     else:
-        logger.warning("No --trajectories provided; evaluating ALL episodes "
-                       "(no test-split filter).")
+        if args.split and _is_parquet_source(args.features):
+            logger.info(
+                "No --trajectories provided; using split-filtered records from features dataset"
+            )
+        else:
+            logger.warning("No --trajectories provided; evaluating ALL episodes "
+                           "(no test-split filter).")
 
     if test_eids is not None:
         records = [r for r in records if r.get("episode_id") in test_eids]
