@@ -27,12 +27,12 @@ import numpy as np
 # ── Publication-quality matplotlib defaults ────────────────────────────────────
 matplotlib.rcParams.update({
     "font.family": "sans-serif",
-    "font.size": 10,
-    "axes.titlesize": 11,
-    "axes.labelsize": 10,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "legend.fontsize": 9,
+    "font.size": 20,
+    "axes.titlesize": 20,
+    "axes.labelsize": 20,
+    "xtick.labelsize": 20,
+    "ytick.labelsize": 20,
+    "legend.fontsize": 20,
     "legend.framealpha": 0.85,
     "lines.linewidth": 1.8,
     "lines.markersize": 6,
@@ -483,9 +483,9 @@ def plot_cvar_sweeps(rows: list[dict], plots_dir: Path) -> None:
 
         handles, labels = axes[0].get_legend_handles_labels()
         if handles:
-            fig.legend(handles, labels, loc="upper center", ncol=min(4, len(labels)))
+            fig.legend(handles, labels, loc="upper center", ncol=min(4, len(labels)), fontsize=20)
 
-        fig.suptitle(f"CVaR sweeps: {benchmark} / {model}")
+        fig.suptitle(f"CVaR sweeps: {benchmark} / {model}", fontsize=20)
         fig.tight_layout(rect=[0, 0, 1, 0.94])
         out = plots_dir / f"cvar_sweeps_{benchmark}_{model}.png"
         fig.savefig(out, dpi=220)
@@ -554,9 +554,9 @@ def plot_pareto_multimodel(rows: list[dict], plots_dir: Path) -> None:
         ax.set_ylabel("Task success rate")
         ax.xaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
         ax.yaxis.set_major_formatter(mticker.PercentFormatter(xmax=1, decimals=0))
-        ax.legend(fontsize=8, ncol=1)
+        ax.legend(fontsize=20, ncol=1)
 
-    fig.suptitle("R2V-Agent: Task success rate vs. LLM escalation cost", fontsize=12)
+    fig.suptitle("R2V-Agent: Task success rate vs. LLM escalation cost", fontsize=20)
     fig.tight_layout()
     out = plots_dir / "figure1_pareto_multimodel.pdf"
     fig.savefig(out)
@@ -616,10 +616,10 @@ def plot_lambda_sweep(rows: list[dict], plots_dir: Path) -> None:
     handles, labels = ax_sr.get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc="lower center",
-                   ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.12))
+                   ncol=min(4, len(labels)), bbox_to_anchor=(0.5, -0.12), fontsize=20)
 
     fig.suptitle("Effect of consistency regularisation weight on routing performance",
-                 fontsize=11)
+                 fontsize=20)
     fig.tight_layout()
     out = plots_dir / "figure2_lambda_sweep.pdf"
     fig.savefig(out, bbox_inches="tight")
