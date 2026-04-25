@@ -852,6 +852,7 @@ def main():
             # Recalculate with access to raw data
             all_probs = []
             all_labels = []
+            router.eval()
             for ep_id, steps in ep_groups.items():
                 slm_success = steps[0]["slm_success"]
                 raw = np.array([s["features"] for s in steps], dtype=np.float32)

@@ -148,4 +148,4 @@ python scripts/evaluate.py \
 cd /mnt/c/Users/rhvam/Desktop/not_os/NYU/projects/risk-routing-verifier-objective
 source exports.sh   # sets HF_TOKEN from .env
 
-bash scripts/run_paper_experiments.sh --parallel-jobs 4
+bash scripts/run_paper_experiments.sh --parallel-jobs 4 --skip-phase 1
