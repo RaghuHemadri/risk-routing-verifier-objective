@@ -21,12 +21,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-if [[ -f "${HOME}/.venv/bin/activate" ]]; then
-    source "${HOME}/.venv/bin/activate"
-elif [[ -f ".venv/bin/activate" ]]; then
-    source ".venv/bin/activate"
-fi
-
 # ── Configuration ─────────────────────────────────────────────────────────────
 DATASET_PATH="${DATASET_PATH:-data/router_dataset/unified_router_features.parquet}"
 RESULTS_ROOT="${RESULTS_ROOT:-results/paper_experiments}"
