@@ -121,6 +121,11 @@ bash scripts/launch_router_features.sh 4 \
     verifier.mode=trained \
     logging.wandb_mode=disabled
 
+python scripts/build_router_dataset.py \
+  --features-root router_features_data \
+  --output data/router_dataset/unified_router_features.parquet \
+  > logs/run_evaluation/build_router_dataset_regen.log 2>&1
+
 python scripts/train_router.py \
   --config configs/humaneval/noisy.yaml \
   --features data/router_features_old/humaneval_noisy_heuristic_qwen.jsonl \
