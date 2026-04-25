@@ -383,7 +383,7 @@ if phase_enabled 2; then
             --variant-filter heuristic \
             --category-filter main \
             --methods r2v slm_only llm_only entropy_router oracle_router heuristic_router \
-            --overrides "project.seed=${SEED}"
+            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
 
         bundle="$(latest_bundle "${main_eval_dir}")"
         record_metrics "${bundle}" "main" "main_results" \
@@ -404,7 +404,7 @@ if phase_enabled 2; then
             --category-filter main \
             --methods r2v slm_only llm_only entropy_router oracle_router \
             --router-threshold-sweep "${THRESHOLDS[@]}" \
-            --overrides "project.seed=${SEED}"
+            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
 
         bundle="$(latest_bundle "${pareto_eval_dir}")"
         record_metrics "${bundle}" "figure" "pareto_sweep" \
@@ -431,7 +431,7 @@ if phase_enabled 2; then
                 --category-filter main \
                 --feature-transform no_entropy \
                 --methods r2v \
-                --overrides "project.seed=${SEED}"
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             bundle="$(latest_bundle "${no_ent_eval_dir}")"
             record_metrics "${bundle}" "feature_transform" "no_entropy" \
                 "${benchmark}" "${model}" "test" "${NO_ENTROPY_ROUTER_DIR}/router_final.pt"
@@ -453,7 +453,7 @@ if phase_enabled 2; then
                 --category-filter main \
                 --feature-transform verifier_pseudo_entropy \
                 --methods r2v \
-                --overrides "project.seed=${SEED}"
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             bundle="$(latest_bundle "${vpe_eval_dir}")"
             record_metrics "${bundle}" "feature_transform" "verifier_pseudo_entropy" \
                 "${benchmark}" "${model}" "test" "${VPE_ROUTER_DIR}/router_final.pt"
@@ -517,7 +517,7 @@ if phase_enabled 3; then
                     --variant-filter heuristic \
                     --category-filter main \
                     --methods r2v \
-                    --overrides "project.seed=${SEED}"
+                    --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             else
                 # shellcheck disable=SC2068
                 run_cmd "Feature ablation: ${ablation_name} [${benchmark}/${model}]" \
@@ -533,7 +533,7 @@ if phase_enabled 3; then
                     --category-filter main \
                     --methods r2v \
                     --feature-mask ${mask} \
-                    --overrides "project.seed=${SEED}"
+                    --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             fi
 
             bundle="$(latest_bundle "${eval_dir}")"
@@ -599,7 +599,7 @@ if phase_enabled 4; then
             --variant-filter "${variant}" \
             --category-filter ablation \
             --methods r2v slm_only llm_only entropy_router \
-            --overrides "project.seed=${SEED}"
+            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
 
         local bundle; bundle="$(latest_bundle "${eval_dir}")"
         record_metrics "${bundle}" "lambda_ablation" "${variant}" \
@@ -670,7 +670,7 @@ if phase_enabled 5; then
             --category-filter main \
             --variant-filter heuristic \
             --methods r2v slm_only llm_only entropy_router \
-            --overrides "project.seed=${SEED}"
+            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
 
         local bundle; bundle="$(latest_bundle "${eval_dir}")"
         record_metrics "${bundle}" "cvar_sweep" "${run_name}" \
