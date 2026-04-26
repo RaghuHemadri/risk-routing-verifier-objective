@@ -23,28 +23,54 @@ cd "${ROOT_DIR}"
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 DATASET_PATH="${DATASET_PATH:-data/router_dataset/unified_router_features.parquet}"
-RESULTS_ROOT="${RESULTS_ROOT:-results/paper_experiments}"
-MAIN_ROUTER_DIR="${MAIN_ROUTER_DIR:-outputs/router/paper_main}"
+# v2 dirs ensure a clean retrain with the tuned hyperparameters below.
+RESULTS_ROOT="${RESULTS_ROOT:-results/paper_experiments_v2}"
+MAIN_ROUTER_DIR="${MAIN_ROUTER_DIR:-outputs/router/paper_main_v2}"
 # Feature-transform variants: trained with features permanently modified,
 # not just masked at eval time.  Critical for the no-entropy and
 # verifier-pseudo-entropy ablations (the latter matters for closed-source models
 # where true SLM entropy is unavailable).
-NO_ENTROPY_ROUTER_DIR="${NO_ENTROPY_ROUTER_DIR:-outputs/router/paper_main_no_entropy}"
-VPE_ROUTER_DIR="${VPE_ROUTER_DIR:-outputs/router/paper_main_verifier_pseudo_entropy}"
-LAMBDA_ROUTERS_DIR="${LAMBDA_ROUTERS_DIR:-outputs/router/paper_lambda}"
-CVAR_ROUTERS_DIR="${CVAR_ROUTERS_DIR:-outputs/router/paper_cvar}"
+NO_ENTROPY_ROUTER_DIR="${NO_ENTROPY_ROUTER_DIR:-outputs/router/paper_main_v2_no_entropy}"
+VPE_ROUTER_DIR="${VPE_ROUTER_DIR:-outputs/router/paper_main_v2_verifier_pseudo_entropy}"
+LAMBDA_ROUTERS_DIR="${LAMBDA_ROUTERS_DIR:-outputs/router/paper_lambda_v2}"
+CVAR_ROUTERS_DIR="${CVAR_ROUTERS_DIR:-outputs/router/paper_cvar_v2}"
 BASE_CONFIG="${BASE_CONFIG:-configs/base.yaml}"
 
 SEED="${SEED:-42}"
 DRY_RUN=false
 PARALLEL_JOBS="${PARALLEL_JOBS:-1}"
 
-# Threshold values for Pareto curve (Phase 2) — eval-only, no training.
-THRESHOLDS=(0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9)
+# ── Router training hyperparameters ───────────────────────────────────────────
+# Benchmarks to include in router TRAINING.  terminalbench is excluded because
+# every step in the collected data has slm_success=1 (0 % positive labels) —
+# it contributes 51 % of the combined dataset but carries zero routing signal,
+# poisoning the Lagrangian objective.  Evaluation still runs on all benchmarks.
+ROUTER_TRAIN_BENCHMARKS="${ROUTER_TRAIN_BENCHMARKS:-humaneval textworld}"
+
+# cost_llm for TRAINING only (not evaluation); 5:1 ratio keeps the cost
+# gradient small enough that the Lagrangian term can compete.  The actual
+# dollar-cost ratio used in evaluation remains 50:1 (base config).
+COST_LLM_TRAIN="${COST_LLM_TRAIN:-5.0}"
+# Dual-optimizer LR: increased from 0.01 so λ grows fast enough to enforce
+# the CVaR constraint when it is violated.
+LAGRANGIAN_LR="${LAGRANGIAN_LR:-0.05}"
+# Reduce Brier weight so cost+Lagrangian dominate the gradient.
+BRIER_WEIGHT="${BRIER_WEIGHT:-0.3}"
+# More epochs give λ time to converge to the constraint-satisfying level.
+ROUTER_EPOCHS="${ROUTER_EPOCHS:-50}"
+# Default CVaR ε for the main router.  Must be BELOW the SLM failure rate
+# (~17 %) so the constraint is actually violated and λ grows.
+CVAR_EPSILON_MAIN="${CVAR_EPSILON_MAIN:-0.10}"
+
+# Threshold values for Pareto curve (Phase 2) — finer grid for smoother curve.
+THRESHOLDS=(0.05 0.10 0.15 0.20 0.25 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65 0.70 0.75 0.80 0.85 0.90 0.95)
 
 # CVaR sweep values (Phase 5).
-CVAR_ALPHAS=(0.05 0.10 0.15 0.20 0.30 0.40 0.50)
-CVAR_EPSILONS=(0.05 0.10 0.20 0.30 0.40)
+# All epsilons are set BELOW the SLM failure rate (~17 %) so the constraint
+# is violated at init and λ grows → the router actually routes to LLM.
+# Lower ε = tighter constraint = more LLM routing (the paper's key sweep figure).
+CVAR_ALPHAS=(0.05 0.10 0.20 0.30 0.50)
+CVAR_EPSILONS=(0.02 0.05 0.08 0.10 0.13 0.15)
 
 # Phase control: populated by --skip-phase / --only-phase.
 declare -A SKIP_PHASE=()
@@ -114,6 +140,7 @@ METRICS_PATH="${RESULTS_ROOT}/metrics_long.csv"
 export DATASET_PATH RESULTS_ROOT MAIN_ROUTER_DIR NO_ENTROPY_ROUTER_DIR VPE_ROUTER_DIR
 export LAMBDA_ROUTERS_DIR CVAR_ROUTERS_DIR BASE_CONFIG SEED DRY_RUN PARALLEL_JOBS
 export MANIFEST_PATH METRICS_PATH
+export COST_LLM_TRAIN LAGRANGIAN_LR BRIER_WEIGHT ROUTER_EPOCHS CVAR_EPSILON_MAIN ROUTER_TRAIN_BENCHMARKS
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 run_cmd() {
@@ -316,6 +343,7 @@ if phase_enabled 1; then
             return
         fi
         mkdir -p "${dir}"
+        # shellcheck disable=SC2086
         run_cmd "Train ${name} router" \
             python scripts/train_router.py \
             --config "${BASE_CONFIG}" \
@@ -325,10 +353,16 @@ if phase_enabled 1; then
             --val-split val \
             --category-filter main \
             --variant-filter heuristic \
+            --benchmark-filter ${ROUTER_TRAIN_BENCHMARKS} \
             --feature-transform "${transform}" \
             --overrides \
                 "project.seed=${SEED}" \
-                "logging.wandb_mode=disabled"
+                "logging.wandb_mode=disabled" \
+                "training.router.cost_llm=${COST_LLM_TRAIN}" \
+                "training.router.lagrangian_lr=${LAGRANGIAN_LR}" \
+                "training.router.brier_weight=${BRIER_WEIGHT}" \
+                "training.router.epochs=${ROUTER_EPOCHS}" \
+                "training.router.cvar_epsilon=${CVAR_EPSILON_MAIN}"
     }
     export -f train_router_if_needed
 
@@ -619,7 +653,12 @@ if phase_enabled 4; then
                 --feature-transform none \
                 --overrides \
                     "project.seed=${SEED}" \
-                    "logging.wandb_mode=disabled"
+                    "logging.wandb_mode=disabled" \
+                    "training.router.cost_llm=${COST_LLM_TRAIN}" \
+                    "training.router.lagrangian_lr=${LAGRANGIAN_LR}" \
+                    "training.router.brier_weight=${BRIER_WEIGHT}" \
+                    "training.router.epochs=${ROUTER_EPOCHS}" \
+                    "training.router.cvar_epsilon=${CVAR_EPSILON_MAIN}"
         fi
 
         if bundle_exists "${eval_dir}"; then
@@ -681,6 +720,7 @@ if phase_enabled 5; then
         if [[ -f "${router_dir}/router_final.pt" ]]; then
             echo "INFO: Reusing CVaR router: ${router_dir}/router_final.pt"
         else
+            # shellcheck disable=SC2086
             run_cmd "Train CVaR router α=${alpha} ε=${epsilon}" \
                 python scripts/train_router.py \
                 --config "${BASE_CONFIG}" \
@@ -690,12 +730,17 @@ if phase_enabled 5; then
                 --val-split val \
                 --category-filter main \
                 --variant-filter heuristic \
+                --benchmark-filter ${ROUTER_TRAIN_BENCHMARKS} \
                 --feature-transform none \
                 --overrides \
                     "project.seed=${SEED}" \
                     "logging.wandb_mode=disabled" \
                     "training.router.cvar_alpha=${alpha}" \
-                    "training.router.cvar_epsilon=${epsilon}"
+                    "training.router.cvar_epsilon=${epsilon}" \
+                    "training.router.cost_llm=${COST_LLM_TRAIN}" \
+                    "training.router.lagrangian_lr=${LAGRANGIAN_LR}" \
+                    "training.router.brier_weight=${BRIER_WEIGHT}" \
+                    "training.router.epochs=${ROUTER_EPOCHS}"
         fi
 
         if bundle_exists "${eval_dir}"; then
