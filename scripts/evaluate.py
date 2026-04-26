@@ -120,6 +120,10 @@ def parse_args():
             "Used for inference-time feature ablation without router retraining."
         ),
     )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="Torch device for router inference (default: cuda if available, else cpu)",
+    )
     parser.add_argument("--overrides", nargs="*", default=[])
     return parser.parse_args()
 
@@ -292,12 +296,12 @@ def load_episode_metadata_from_records(records: list[dict]) -> dict[str, dict]:
 # Router loading
 # ============================================================
 
-def load_router(router_path: str, cfg) -> tuple[Router, float, np.ndarray, np.ndarray]:
+def load_router(router_path: str, cfg, device: str = "cpu") -> tuple[Router, float, np.ndarray, np.ndarray]:
     """Load trained router from checkpoint.
 
     Returns (router, temperature, feature_mean, feature_std) tuple.
     """
-    ckpt = torch.load(router_path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(router_path, map_location=device, weights_only=False)
     input_dim = ckpt.get("input_dim", 13)
 
     # Reconstruct Router config (same logic as train_router.py)
@@ -313,6 +317,7 @@ def load_router(router_path: str, cfg) -> tuple[Router, float, np.ndarray, np.nd
 
     router = Router(router_config)
     router.load_state_dict(ckpt["router_state_dict"])
+    router.to(device)
     router.eval()
 
     temperature = ckpt.get("temperature", 1.0)
@@ -670,6 +675,14 @@ def main():
 
     eval_methods = _expand_methods(args.methods, args.router_threshold_sweep)
 
+    # ── Resolve device ──
+    import torch as _torch
+    if args.device is not None:
+        device = args.device
+    else:
+        device = "cuda" if _torch.cuda.is_available() else "cpu"
+    logger.info(f"  Device: {device}")
+
     # ── Load router (if evaluating R2V) ──
     router, temperature = None, 1.0
     feature_mean = feature_std = None
@@ -678,7 +691,7 @@ def main():
             logger.error("--router-path required for R2V evaluation")
             sys.exit(1)
         logger.info(f"Loading router from {args.router_path}...")
-        router, temperature, feature_mean, feature_std = load_router(args.router_path, cfg)
+        router, temperature, feature_mean, feature_std = load_router(args.router_path, cfg, device=device)
         logger.info(f"  Temperature: {temperature:.4f}")
         if feature_mean is not None:
             logger.info("  Feature normalization stats loaded from checkpoint")
@@ -857,11 +870,11 @@ def main():
                 slm_success = steps[0]["slm_success"]
                 raw = np.array([s["features"] for s in steps], dtype=np.float32)
                 normed = (raw - feature_mean) / feature_std
-                features = torch.tensor(normed, dtype=torch.float32)
+                features = torch.tensor(normed, dtype=torch.float32).to(device)
                 with torch.no_grad():
                     logits = router.mlp(features).squeeze(-1)
                     scaled = logits / max(temperature, 0.01)
-                    probs = torch.sigmoid(scaled).numpy()
+                    probs = torch.sigmoid(scaled).cpu().numpy()
                 all_probs.extend(probs.tolist())
                 # Ground truth: should router have routed to LLM?
                 # 1 = yes (SLM failed), 0 = no (SLM succeeded)
