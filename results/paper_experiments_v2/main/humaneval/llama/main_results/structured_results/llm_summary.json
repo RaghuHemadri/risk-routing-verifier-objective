@@ -1,0 +1,154 @@
+{
+  "generated_at": "2026-04-26T16:11:06.781597",
+  "num_experiments": 1,
+  "main_results": [
+    {
+      "method": "r2v",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9579579579579579,
+      "std_sr": 0.0,
+      "min_sr": 0.9579579579579579,
+      "max_sr": 0.9579579579579579,
+      "avg_cost": 24.06156156156156,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "slm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 10.891891891891891,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "llm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 1.0,
+      "std_sr": 0.0,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 544.5945945945946,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "entropy_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 11.48048048048048,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "oracle_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 1.0,
+      "std_sr": 0.0,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 76.22522522522523,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "heuristic_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9594594594594594,
+      "std_sr": 0.0,
+      "min_sr": 0.9594594594594594,
+      "max_sr": 0.9594594594594594,
+      "avg_cost": 52.68168168168168,
+      "avg_safety_failure_rate": null
+    }
+  ],
+  "comparisons": [
+    {
+      "method_a": "r2v",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.039039039039038936,
+      "ci": [
+        0.025525525525525526,
+        0.05405405405405406
+      ],
+      "p_value": 9.443043861301348e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.042042042042042094,
+      "ci": [
+        -0.057057057057057055,
+        -0.028528528528528527
+      ],
+      "p_value": 3.3515963071550914e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.039039039039038936,
+      "ci": [
+        0.025525525525525526,
+        0.05405405405405406
+      ],
+      "p_value": 9.443043861301348e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.042042042042042094,
+      "ci": [
+        -0.057057057057057055,
+        -0.028528528528528527
+      ],
+      "p_value": 3.3515963071550914e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "heuristic_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.0015015015015015232,
+      "ci": [
+        -0.012012012012012012,
+        0.010510510510510511
+      ],
+      "p_value": 1.0,
+      "significant": false
+    }
+  ],
+  "ablations": [],
+  "key_findings": [
+    "r2v achieves 95.8% SR on humaneval (noisy)",
+    "slm_only achieves 91.9% SR on humaneval (noisy)",
+    "llm_only achieves 100.0% SR on humaneval (noisy)",
+    "entropy_router achieves 91.9% SR on humaneval (noisy)",
+    "oracle_router achieves 100.0% SR on humaneval (noisy)",
+    "heuristic_router achieves 95.9% SR on humaneval (noisy)"
+  ]
+}

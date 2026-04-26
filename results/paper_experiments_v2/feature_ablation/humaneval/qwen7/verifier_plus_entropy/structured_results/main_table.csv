@@ -1,0 +1,3 @@
+method,benchmark,condition,seed,success_rate,success_rate_ci,worst_seed_sr,cvar_failure,bottom_10_sr,avg_cost,avg_latency,llm_call_rate,safety_failure_rate,ece,brier
+r2v,humaneval,noisy,0,0.9715,"[0.958, 0.983]",0.9715,0.0285,,53.5646,,0.0968,,0.0890,0.1189
+r2v,humaneval,noisy,0,0.9715,"[0.958, 0.983]",,,,53.5646,,0.0968,,,

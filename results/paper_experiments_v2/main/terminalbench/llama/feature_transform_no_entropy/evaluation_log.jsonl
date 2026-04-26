@@ -1,0 +1,1 @@
+{"timestamp": "2026-04-26T16:13:50.618759", "event": "evaluation", "method": "r2v", "base_method": "r2v", "router_threshold": 0.5, "success_rate": 1.0, "ci": [1.0, 1.0], "worst_seed_sr": 1.0, "cvar_failure": 0.0, "avg_cost": 754.6492146596859, "llm_call_rate": 0.5915188160155203, "ece": 0.752949784176131, "brier": 0.6699270966876673, "per_seed_sr": {"0": 1.0}}

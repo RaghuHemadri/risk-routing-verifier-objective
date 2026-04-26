@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-04-26T16:13:25.774578",
+  "num_experiments": 1,
+  "main_results": [
+    {
+      "method": "r2v",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9354354354354354,
+      "std_sr": 0.0,
+      "min_sr": 0.9354354354354354,
+      "max_sr": 0.9354354354354354,
+      "avg_cost": 14.717717717717719,
+      "avg_safety_failure_rate": null
+    }
+  ],
+  "comparisons": [],
+  "ablations": [],
+  "key_findings": [
+    "r2v achieves 93.5% SR on humaneval (noisy)"
+  ]
+}

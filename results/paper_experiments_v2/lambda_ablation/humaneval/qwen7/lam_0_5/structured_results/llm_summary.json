@@ -1,0 +1,102 @@
+{
+  "generated_at": "2026-04-26T16:19:46.553913",
+  "num_experiments": 1,
+  "main_results": [
+    {
+      "method": "r2v",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9384384384384384,
+      "std_sr": 0.0,
+      "min_sr": 0.9384384384384384,
+      "max_sr": 0.9384384384384384,
+      "avg_cost": 31.1981981981982,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "slm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 10.891891891891891,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "llm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 1.0,
+      "std_sr": 0.0,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 544.5945945945946,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "entropy_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9504504504504504,
+      "std_sr": 0.0,
+      "min_sr": 0.9504504504504504,
+      "max_sr": 0.9504504504504504,
+      "avg_cost": 20.75075075075075,
+      "avg_safety_failure_rate": null
+    }
+  ],
+  "comparisons": [
+    {
+      "method_a": "r2v",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.019519519519519468,
+      "ci": [
+        0.010510510510510511,
+        0.03003003003003003
+      ],
+      "p_value": 0.000244140625,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.06156156156156156,
+      "ci": [
+        -0.08108108108108109,
+        -0.04500750750750754
+      ],
+      "p_value": 4.1854364418725254e-10,
+      "significant": true
+    },
+    {
+      "method_a": "r2v",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.012012012012011963,
+      "ci": [
+        -0.028528528528528527,
+        0.001539039039039005
+      ],
+      "p_value": 0.18587673236587576,
+      "significant": false
+    }
+  ],
+  "ablations": [],
+  "key_findings": [
+    "r2v achieves 93.8% SR on humaneval (noisy)",
+    "slm_only achieves 91.9% SR on humaneval (noisy)",
+    "llm_only achieves 100.0% SR on humaneval (noisy)",
+    "entropy_router achieves 95.0% SR on humaneval (noisy)"
+  ]
+}

@@ -1,0 +1,648 @@
+{
+  "generated_at": "2026-04-26T16:12:31.201511",
+  "num_experiments": 1,
+  "main_results": [
+    {
+      "method": "r2v@0.1",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9534534534534534,
+      "std_sr": 0.0,
+      "min_sr": 0.9534534534534534,
+      "max_sr": 0.9534534534534534,
+      "avg_cost": 210.57057057057057,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.2",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9429429429429429,
+      "std_sr": 0.0,
+      "min_sr": 0.9429429429429429,
+      "max_sr": 0.9429429429429429,
+      "avg_cost": 36.71621621621622,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.3",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9324324324324325,
+      "std_sr": 0.0,
+      "min_sr": 0.9324324324324325,
+      "max_sr": 0.9324324324324325,
+      "avg_cost": 22.14864864864865,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.4",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9279279279279279,
+      "std_sr": 0.0,
+      "min_sr": 0.9279279279279279,
+      "max_sr": 0.9279279279279279,
+      "avg_cost": 17.145645645645647,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.5",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9219219219219219,
+      "std_sr": 0.0,
+      "min_sr": 0.9219219219219219,
+      "max_sr": 0.9219219219219219,
+      "avg_cost": 13.981981981981981,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.6",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9204204204204204,
+      "std_sr": 0.0,
+      "min_sr": 0.9204204204204204,
+      "max_sr": 0.9204204204204204,
+      "avg_cost": 11.848348348348349,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.7",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 11.112612612612613,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.8",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 11.03903903903904,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "r2v@0.9",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 10.891891891891891,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "slm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.918918918918919,
+      "std_sr": 0.0,
+      "min_sr": 0.918918918918919,
+      "max_sr": 0.918918918918919,
+      "avg_cost": 10.891891891891891,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "llm_only",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 1.0,
+      "std_sr": 0.0,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 544.5945945945946,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "entropy_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.9594594594594594,
+      "std_sr": 0.0,
+      "min_sr": 0.9594594594594594,
+      "max_sr": 0.9594594594594594,
+      "avg_cost": 32.3018018018018,
+      "avg_safety_failure_rate": null
+    },
+    {
+      "method": "oracle_router",
+      "benchmark": "humaneval",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 1.0,
+      "std_sr": 0.0,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 76.22522522522523,
+      "avg_safety_failure_rate": null
+    }
+  ],
+  "comparisons": [
+    {
+      "method_a": "r2v@0.1",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.03453453453453448,
+      "ci": [
+        0.021021021021021023,
+        0.04804804804804805
+      ],
+      "p_value": 2.384185791015625e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.1",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.04654654654654655,
+      "ci": [
+        -0.06159909909909907,
+        -0.03303303303303303
+      ],
+      "p_value": 7.118304168329814e-08,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.1",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.006006006006005982,
+      "ci": [
+        -0.02406156156156153,
+        0.010510510510510511
+      ],
+      "p_value": 0.6170750774519739,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.1",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.04654654654654655,
+      "ci": [
+        -0.06159909909909907,
+        -0.03303303303303303
+      ],
+      "p_value": 7.118304168329814e-08,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.2",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.024024024024023927,
+      "ci": [
+        0.012012012012012012,
+        0.03453453453453453
+      ],
+      "p_value": 3.0517578125e-05,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.2",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.0570570570570571,
+      "ci": [
+        -0.07361111111111107,
+        -0.042042042042042045
+      ],
+      "p_value": 1.946706018607358e-09,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.2",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.016516516516516533,
+      "ci": [
+        -0.03303303303303303,
+        -0.0015015015015015015
+      ],
+      "p_value": 0.06331778683004563,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.2",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.0570570570570571,
+      "ci": [
+        -0.07361111111111107,
+        -0.042042042042042045
+      ],
+      "p_value": 1.946706018607358e-09,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.3",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.013513513513513487,
+      "ci": [
+        0.006006006006006006,
+        0.02252252252252252
+      ],
+      "p_value": 0.00390625,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.3",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.06756756756756754,
+      "ci": [
+        -0.08708708708708708,
+        -0.05101351351351355
+      ],
+      "p_value": 5.412159609363698e-11,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.3",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.027027027027026973,
+      "ci": [
+        -0.04207957957957955,
+        -0.012012012012012012
+      ],
+      "p_value": 0.0013149446697131584,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.3",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.06756756756756754,
+      "ci": [
+        -0.08708708708708708,
+        -0.05101351351351355
+      ],
+      "p_value": 5.412159609363698e-11,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.4",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.009009009009008917,
+      "ci": [
+        0.003003003003003003,
+        0.016516516516516516
+      ],
+      "p_value": 0.03125,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.4",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.07207207207207211,
+      "ci": [
+        -0.09012762762762759,
+        -0.05405405405405406
+      ],
+      "p_value": 1.1700196367314675e-11,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.4",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.03153153153153154,
+      "ci": [
+        -0.04658408408408405,
+        -0.016516516516516516
+      ],
+      "p_value": 0.00020408400998039866,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.4",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.07207207207207211,
+      "ci": [
+        -0.09012762762762759,
+        -0.05405405405405406
+      ],
+      "p_value": 1.1700196367314675e-11,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.5",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.0030030030030029353,
+      "ci": [
+        0.0,
+        0.0075075075075075074
+      ],
+      "p_value": 0.5,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.5",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.0780780780780781,
+      "ci": [
+        -0.09759759759759759,
+        -0.05855855855855856
+      ],
+      "p_value": 1.5224488336684772e-12,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.5",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.037537537537537524,
+      "ci": [
+        -0.052552552552552555,
+        -0.024024024024024024
+      ],
+      "p_value": 3.859616436896474e-06,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.5",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.0780780780780781,
+      "ci": [
+        -0.09759759759759759,
+        -0.05855855855855856
+      ],
+      "p_value": 1.5224488336684772e-12,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.6",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.0015015015015014122,
+      "ci": [
+        0.0,
+        0.0045045045045045045
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.6",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.07957957957957962,
+      "ci": [
+        -0.0990990990990991,
+        -0.06006006006006006
+      ],
+      "p_value": 9.14823772291129e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.6",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.03903903903903905,
+      "ci": [
+        -0.05405405405405406,
+        -0.025525525525525526
+      ],
+      "p_value": 9.443043861301348e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.6",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.07957957957957962,
+      "ci": [
+        -0.0990990990990991,
+        -0.06006006006006006
+      ],
+      "p_value": 9.14823772291129e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.7",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.0,
+      "ci": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.7",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.7",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.04054054054054046,
+      "ci": [
+        -0.05555555555555555,
+        -0.02702702702702703
+      ],
+      "p_value": 5.623957756162312e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.7",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.8",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.0,
+      "ci": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.8",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.8",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.04054054054054046,
+      "ci": [
+        -0.05555555555555555,
+        -0.02702702702702703
+      ],
+      "p_value": 5.623957756162312e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.8",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.9",
+      "method_b": "slm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": 0.0,
+      "ci": [
+        0.0,
+        0.0
+      ],
+      "p_value": 1.0,
+      "significant": false
+    },
+    {
+      "method_a": "r2v@0.9",
+      "method_b": "llm_only",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.9",
+      "method_b": "entropy_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.04054054054054046,
+      "ci": [
+        -0.05555555555555555,
+        -0.02702702702702703
+      ],
+      "p_value": 5.623957756162312e-07,
+      "significant": true
+    },
+    {
+      "method_a": "r2v@0.9",
+      "method_b": "oracle_router",
+      "metric": "success_rate",
+      "benchmark": "humaneval",
+      "difference": -0.08108108108108103,
+      "ci": [
+        -0.1006381381381381,
+        -0.06156156156156156
+      ],
+      "p_value": 5.497824417943775e-13,
+      "significant": true
+    }
+  ],
+  "ablations": [],
+  "key_findings": [
+    "r2v@0.1 achieves 95.3% SR on humaneval (noisy)",
+    "r2v@0.2 achieves 94.3% SR on humaneval (noisy)",
+    "r2v@0.3 achieves 93.2% SR on humaneval (noisy)",
+    "r2v@0.4 achieves 92.8% SR on humaneval (noisy)",
+    "r2v@0.5 achieves 92.2% SR on humaneval (noisy)",
+    "r2v@0.6 achieves 92.0% SR on humaneval (noisy)",
+    "r2v@0.7 achieves 91.9% SR on humaneval (noisy)",
+    "r2v@0.8 achieves 91.9% SR on humaneval (noisy)",
+    "r2v@0.9 achieves 91.9% SR on humaneval (noisy)",
+    "slm_only achieves 91.9% SR on humaneval (noisy)",
+    "llm_only achieves 100.0% SR on humaneval (noisy)",
+    "entropy_router achieves 95.9% SR on humaneval (noisy)",
+    "oracle_router achieves 100.0% SR on humaneval (noisy)"
+  ]
+}
