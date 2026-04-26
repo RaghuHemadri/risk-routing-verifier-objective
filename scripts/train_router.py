@@ -70,14 +70,14 @@ def parse_args():
                         help="Split value to use for training when features contain a split column")
     parser.add_argument("--val-split", type=str, default="val",
                         help="Split value to use for validation when features contain a split column")
-    parser.add_argument("--benchmark-filter", type=str, default=None,
-                        help="Optional benchmark filter for Parquet dataset")
-    parser.add_argument("--model-filter", type=str, default=None,
-                        help="Optional model filter for Parquet dataset")
-    parser.add_argument("--variant-filter", type=str, default=None,
-                        help="Optional variant filter for Parquet dataset")
-    parser.add_argument("--category-filter", type=str, default=None,
-                        help="Optional category filter for Parquet dataset")
+    parser.add_argument("--benchmark-filter", type=str, nargs="+", default=None,
+                        help="Optional benchmark filter(s) for Parquet dataset")
+    parser.add_argument("--model-filter", type=str, nargs="+", default=None,
+                        help="Optional model filter(s) for Parquet dataset")
+    parser.add_argument("--variant-filter", type=str, nargs="+", default=None,
+                        help="Optional variant filter(s) for Parquet dataset")
+    parser.add_argument("--category-filter", type=str, nargs="+", default=None,
+                        help="Optional category filter(s) for Parquet dataset")
     parser.add_argument(
         "--feature-transform",
         type=str,
@@ -179,10 +179,10 @@ def load_feature_records(
     path: str,
     feature_transform: str = "none",
     split: str | None = None,
-    benchmark_filter: str | None = None,
-    model_filter: str | None = None,
-    variant_filter: str | None = None,
-    category_filter: str | None = None,
+    benchmark_filter: list[str] | None = None,
+    model_filter: list[str] | None = None,
+    variant_filter: list[str] | None = None,
+    category_filter: list[str] | None = None,
 ) -> list[dict]:
     """Load feature records from JSONL or Parquet with optional metadata filters."""
     if _is_parquet_source(path):
@@ -199,13 +199,13 @@ def load_feature_records(
         if split is not None and "split" in df.columns:
             df = df[df["split"] == split]
         if benchmark_filter is not None and "benchmark" in df.columns:
-            df = df[df["benchmark"] == benchmark_filter]
+            df = df[df["benchmark"].isin(benchmark_filter)]
         if model_filter is not None and "model" in df.columns:
-            df = df[df["model"] == model_filter]
+            df = df[df["model"].isin(model_filter)]
         if variant_filter is not None and "variant" in df.columns:
-            df = df[df["variant"] == variant_filter]
+            df = df[df["variant"].isin(variant_filter)]
         if category_filter is not None and "category" in df.columns:
-            df = df[df["category"] == category_filter]
+            df = df[df["category"].isin(category_filter)]
 
         return _load_records_from_df(df, feature_transform)
 
