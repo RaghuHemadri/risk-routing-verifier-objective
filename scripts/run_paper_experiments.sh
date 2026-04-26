@@ -61,7 +61,7 @@ Options:
   --seed INT              Random seed            [42]
   --skip-phase N...       Skip phases (1-6), e.g. --skip-phase 4 5
   --only-phase N...       Run only listed phases
-  --parallel-jobs N       Parallel training jobs [1]
+  --parallel-jobs N       Parallel jobs per phase [1]
   --dry-run               Print commands without executing
   -h, --help              Show this help
 EOF
@@ -109,6 +109,11 @@ mkdir -p "${RESULTS_ROOT}" "${RESULTS_ROOT}/logs"
 
 MANIFEST_PATH="${RESULTS_ROOT}/experiment_manifest.jsonl"
 METRICS_PATH="${RESULTS_ROOT}/metrics_long.csv"
+
+# Export all scalars so forked background subshells inherit them.
+export DATASET_PATH RESULTS_ROOT MAIN_ROUTER_DIR NO_ENTROPY_ROUTER_DIR VPE_ROUTER_DIR
+export LAMBDA_ROUTERS_DIR CVAR_ROUTERS_DIR BASE_CONFIG SEED DRY_RUN PARALLEL_JOBS
+export MANIFEST_PATH METRICS_PATH
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 run_cmd() {
@@ -231,6 +236,25 @@ latest_bundle() {
     ls -1t "${1}"/structured_results/*.json 2>/dev/null | head -n1 || true
 }
 
+bundle_exists() { [[ -n "$(latest_bundle "$1")" ]]; }
+
+# Throttle background jobs to PARALLEL_JOBS; call after each `&`.
+throttle_jobs() {
+    while (( $(jobs -rp | wc -l) >= PARALLEL_JOBS )); do
+        wait -n 2>/dev/null || true
+    done
+}
+
+# Wait for all remaining background jobs.
+wait_all() {
+    while (( $(jobs -rp | wc -l) > 0 )); do
+        wait -n 2>/dev/null || true
+    done
+}
+
+export -f run_cmd config_for_benchmark lambda_variant record_metrics \
+          latest_bundle bundle_exists throttle_jobs wait_all
+
 # ── Enumerate benchmark/model combos in the dataset ───────────────────────────
 mapfile -t HEURISTIC_COMBOS < <(
     python - "${DATASET_PATH}" <<'PY'
@@ -272,6 +296,7 @@ echo "  dataset:     ${DATASET_PATH}"
 echo "  results:     ${RESULTS_ROOT}"
 echo "  main router: ${MAIN_ROUTER_DIR}"
 echo "  dry_run:     ${DRY_RUN}"
+echo "  parallel_jobs: ${PARALLEL_JOBS}"
 echo "  heuristic combos: ${#HEURISTIC_COMBOS[@]}"
 echo "  lambda combos:    ${#LAMBDA_COMBOS[@]}"
 
@@ -284,69 +309,38 @@ if phase_enabled 1; then
     echo "║  PHASE 1: Train main router                             ║"
     echo "╚══════════════════════════════════════════════════════════╝"
 
-    # ── Full-feature router ──────────────────────────────────────────────────
-    if [[ -f "${MAIN_ROUTER_DIR}/router_final.pt" ]]; then
-        echo "INFO: Reusing existing main router: ${MAIN_ROUTER_DIR}/router_final.pt"
-    else
-        mkdir -p "${MAIN_ROUTER_DIR}"
-        run_cmd "Train main router (all features)" \
+    train_router_if_needed() {
+        local name="$1" dir="$2" transform="$3"
+        if [[ -f "${dir}/router_final.pt" ]]; then
+            echo "INFO: Reusing existing ${name} router: ${dir}/router_final.pt"
+            return
+        fi
+        mkdir -p "${dir}"
+        run_cmd "Train ${name} router" \
             python scripts/train_router.py \
             --config "${BASE_CONFIG}" \
             --features "${DATASET_PATH}" \
-            --output "${MAIN_ROUTER_DIR}" \
+            --output "${dir}" \
             --train-split train \
             --val-split val \
             --category-filter main \
             --variant-filter heuristic \
-            --feature-transform none \
+            --feature-transform "${transform}" \
             --overrides \
                 "project.seed=${SEED}" \
                 "logging.wandb_mode=disabled"
-    fi
+    }
+    export -f train_router_if_needed
 
-    # ── No-entropy router ────────────────────────────────────────────────────
-    # Trains with entropy (feature 0) permanently zeroed out.
-    # Shows whether the router can compensate with verifier signals alone.
-    if [[ -f "${NO_ENTROPY_ROUTER_DIR}/router_final.pt" ]]; then
-        echo "INFO: Reusing existing no-entropy router: ${NO_ENTROPY_ROUTER_DIR}/router_final.pt"
+    if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
+        train_router_if_needed "main (all features)" "${MAIN_ROUTER_DIR}" "none" &
+        train_router_if_needed "no-entropy" "${NO_ENTROPY_ROUTER_DIR}" "no_entropy" &
+        train_router_if_needed "verifier-pseudo-entropy" "${VPE_ROUTER_DIR}" "verifier_pseudo_entropy" &
+        wait
     else
-        mkdir -p "${NO_ENTROPY_ROUTER_DIR}"
-        run_cmd "Train no-entropy router (feature-transform=no_entropy)" \
-            python scripts/train_router.py \
-            --config "${BASE_CONFIG}" \
-            --features "${DATASET_PATH}" \
-            --output "${NO_ENTROPY_ROUTER_DIR}" \
-            --train-split train \
-            --val-split val \
-            --category-filter main \
-            --variant-filter heuristic \
-            --feature-transform no_entropy \
-            --overrides \
-                "project.seed=${SEED}" \
-                "logging.wandb_mode=disabled"
-    fi
-
-    # ── Verifier-pseudo-entropy router ───────────────────────────────────────
-    # Replaces SLM entropy (feature 0) with entropy computed from verifier
-    # scores.  Key for closed-source model settings where true SLM entropy
-    # is not observable.
-    if [[ -f "${VPE_ROUTER_DIR}/router_final.pt" ]]; then
-        echo "INFO: Reusing existing verifier-pseudo-entropy router: ${VPE_ROUTER_DIR}/router_final.pt"
-    else
-        mkdir -p "${VPE_ROUTER_DIR}"
-        run_cmd "Train verifier-pseudo-entropy router (feature-transform=verifier_pseudo_entropy)" \
-            python scripts/train_router.py \
-            --config "${BASE_CONFIG}" \
-            --features "${DATASET_PATH}" \
-            --output "${VPE_ROUTER_DIR}" \
-            --train-split train \
-            --val-split val \
-            --category-filter main \
-            --variant-filter heuristic \
-            --feature-transform verifier_pseudo_entropy \
-            --overrides \
-                "project.seed=${SEED}" \
-                "logging.wandb_mode=disabled"
+        train_router_if_needed "main (all features)" "${MAIN_ROUTER_DIR}" "none"
+        train_router_if_needed "no-entropy" "${NO_ENTROPY_ROUTER_DIR}" "no_entropy"
+        train_router_if_needed "verifier-pseudo-entropy" "${VPE_ROUTER_DIR}" "verifier_pseudo_entropy"
     fi
 fi
 
@@ -363,49 +357,55 @@ if phase_enabled 2; then
     echo "║  PHASE 2: Main eval + Pareto threshold sweep            ║"
     echo "╚══════════════════════════════════════════════════════════╝"
 
-    for combo in "${HEURISTIC_COMBOS[@]}"; do
-        IFS='|' read -r benchmark model <<< "${combo}"
-        config="$(config_for_benchmark "${benchmark}")"
-        eval_root="${RESULTS_ROOT}/main/${benchmark}/${model}"
+    run_phase2_combo() {
+        local benchmark="$1" model="$2"
+        local config; config="$(config_for_benchmark "${benchmark}")"
+        local eval_root="${RESULTS_ROOT}/main/${benchmark}/${model}"
         mkdir -p "${eval_root}"
 
         # ── Single fixed threshold for the main results table ──
-        main_eval_dir="${eval_root}/main_results"
-        run_cmd "Main results [${benchmark}/${model}]" \
-            python scripts/evaluate.py \
-            --config "${config}" \
-            --features "${DATASET_PATH}" \
-            --router-path "${MAIN_ROUTER_DIR}/router_final.pt" \
-            --output "${main_eval_dir}" \
-            --split test \
-            --benchmark-filter "${benchmark}" \
-            --model-filter "${model}" \
-            --variant-filter heuristic \
-            --category-filter main \
-            --methods r2v slm_only llm_only entropy_router oracle_router heuristic_router \
-            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
-
-        bundle="$(latest_bundle "${main_eval_dir}")"
+        local main_eval_dir="${eval_root}/main_results"
+        if bundle_exists "${main_eval_dir}"; then
+            echo "INFO: Skipping main results [done]: ${main_eval_dir}"
+        else
+            run_cmd "Main results [${benchmark}/${model}]" \
+                python scripts/evaluate.py \
+                --config "${config}" \
+                --features "${DATASET_PATH}" \
+                --router-path "${MAIN_ROUTER_DIR}/router_final.pt" \
+                --output "${main_eval_dir}" \
+                --split test \
+                --benchmark-filter "${benchmark}" \
+                --model-filter "${model}" \
+                --variant-filter heuristic \
+                --category-filter main \
+                --methods r2v slm_only llm_only entropy_router oracle_router heuristic_router \
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        fi
+        local bundle; bundle="$(latest_bundle "${main_eval_dir}")"
         record_metrics "${bundle}" "main" "main_results" \
             "${benchmark}" "${model}" "test" "${MAIN_ROUTER_DIR}/router_final.pt"
 
         # ── Threshold sweep for the Pareto figure (eval-only, no training) ──
-        pareto_eval_dir="${eval_root}/pareto_sweep"
-        run_cmd "Pareto threshold sweep [${benchmark}/${model}]" \
-            python scripts/evaluate.py \
-            --config "${config}" \
-            --features "${DATASET_PATH}" \
-            --router-path "${MAIN_ROUTER_DIR}/router_final.pt" \
-            --output "${pareto_eval_dir}" \
-            --split test \
-            --benchmark-filter "${benchmark}" \
-            --model-filter "${model}" \
-            --variant-filter heuristic \
-            --category-filter main \
-            --methods r2v slm_only llm_only entropy_router oracle_router \
-            --router-threshold-sweep "${THRESHOLDS[@]}" \
-            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
-
+        local pareto_eval_dir="${eval_root}/pareto_sweep"
+        if bundle_exists "${pareto_eval_dir}"; then
+            echo "INFO: Skipping pareto sweep [done]: ${pareto_eval_dir}"
+        else
+            run_cmd "Pareto threshold sweep [${benchmark}/${model}]" \
+                python scripts/evaluate.py \
+                --config "${config}" \
+                --features "${DATASET_PATH}" \
+                --router-path "${MAIN_ROUTER_DIR}/router_final.pt" \
+                --output "${pareto_eval_dir}" \
+                --split test \
+                --benchmark-filter "${benchmark}" \
+                --model-filter "${model}" \
+                --variant-filter heuristic \
+                --category-filter main \
+                --methods r2v slm_only llm_only entropy_router oracle_router \
+                --router-threshold-sweep 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 \
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        fi
         bundle="$(latest_bundle "${pareto_eval_dir}")"
         record_metrics "${bundle}" "figure" "pareto_sweep" \
             "${benchmark}" "${model}" "test" "${MAIN_ROUTER_DIR}/router_final.pt"
@@ -417,21 +417,25 @@ if phase_enabled 2; then
 
         # no_entropy router
         if [[ -f "${NO_ENTROPY_ROUTER_DIR}/router_final.pt" ]] || [[ "${DRY_RUN}" == true ]]; then
-            no_ent_eval_dir="${eval_root}/feature_transform_no_entropy"
-            run_cmd "Feature-transform eval: no_entropy [${benchmark}/${model}]" \
-                python scripts/evaluate.py \
-                --config "${config}" \
-                --features "${DATASET_PATH}" \
-                --router-path "${NO_ENTROPY_ROUTER_DIR}/router_final.pt" \
-                --output "${no_ent_eval_dir}" \
-                --split test \
-                --benchmark-filter "${benchmark}" \
-                --model-filter "${model}" \
-                --variant-filter heuristic \
-                --category-filter main \
-                --feature-transform no_entropy \
-                --methods r2v \
-                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+            local no_ent_eval_dir="${eval_root}/feature_transform_no_entropy"
+            if bundle_exists "${no_ent_eval_dir}"; then
+                echo "INFO: Skipping no_entropy eval [done]: ${no_ent_eval_dir}"
+            else
+                run_cmd "Feature-transform eval: no_entropy [${benchmark}/${model}]" \
+                    python scripts/evaluate.py \
+                    --config "${config}" \
+                    --features "${DATASET_PATH}" \
+                    --router-path "${NO_ENTROPY_ROUTER_DIR}/router_final.pt" \
+                    --output "${no_ent_eval_dir}" \
+                    --split test \
+                    --benchmark-filter "${benchmark}" \
+                    --model-filter "${model}" \
+                    --variant-filter heuristic \
+                    --category-filter main \
+                    --feature-transform no_entropy \
+                    --methods r2v \
+                    --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+            fi
             bundle="$(latest_bundle "${no_ent_eval_dir}")"
             record_metrics "${bundle}" "feature_transform" "no_entropy" \
                 "${benchmark}" "${model}" "test" "${NO_ENTROPY_ROUTER_DIR}/router_final.pt"
@@ -439,26 +443,42 @@ if phase_enabled 2; then
 
         # verifier_pseudo_entropy router
         if [[ -f "${VPE_ROUTER_DIR}/router_final.pt" ]] || [[ "${DRY_RUN}" == true ]]; then
-            vpe_eval_dir="${eval_root}/feature_transform_verifier_pseudo_entropy"
-            run_cmd "Feature-transform eval: verifier_pseudo_entropy [${benchmark}/${model}]" \
-                python scripts/evaluate.py \
-                --config "${config}" \
-                --features "${DATASET_PATH}" \
-                --router-path "${VPE_ROUTER_DIR}/router_final.pt" \
-                --output "${vpe_eval_dir}" \
-                --split test \
-                --benchmark-filter "${benchmark}" \
-                --model-filter "${model}" \
-                --variant-filter heuristic \
-                --category-filter main \
-                --feature-transform verifier_pseudo_entropy \
-                --methods r2v \
-                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+            local vpe_eval_dir="${eval_root}/feature_transform_verifier_pseudo_entropy"
+            if bundle_exists "${vpe_eval_dir}"; then
+                echo "INFO: Skipping vpe eval [done]: ${vpe_eval_dir}"
+            else
+                run_cmd "Feature-transform eval: verifier_pseudo_entropy [${benchmark}/${model}]" \
+                    python scripts/evaluate.py \
+                    --config "${config}" \
+                    --features "${DATASET_PATH}" \
+                    --router-path "${VPE_ROUTER_DIR}/router_final.pt" \
+                    --output "${vpe_eval_dir}" \
+                    --split test \
+                    --benchmark-filter "${benchmark}" \
+                    --model-filter "${model}" \
+                    --variant-filter heuristic \
+                    --category-filter main \
+                    --feature-transform verifier_pseudo_entropy \
+                    --methods r2v \
+                    --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+            fi
             bundle="$(latest_bundle "${vpe_eval_dir}")"
             record_metrics "${bundle}" "feature_transform" "verifier_pseudo_entropy" \
                 "${benchmark}" "${model}" "test" "${VPE_ROUTER_DIR}/router_final.pt"
         fi
+    }
+    export -f run_phase2_combo
+
+    for combo in "${HEURISTIC_COMBOS[@]}"; do
+        IFS='|' read -r benchmark model <<< "${combo}"
+        if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
+            run_phase2_combo "${benchmark}" "${model}" &
+            throttle_jobs
+        else
+            run_phase2_combo "${benchmark}" "${model}"
+        fi
     done
+    wait_all
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -483,27 +503,26 @@ if phase_enabled 3; then
         ["terminalbench"]="qwen7"
     )
 
-    declare -A FEATURE_ABLATIONS=(
-        ["all_features"]=""
-        ["entropy_only"]="0"
-        ["verifier_only"]="1 2 3 4 5"
-        ["verifier_plus_entropy"]="0 1 2 3 4 5"
-        ["no_verifier"]="0 6 7 8 9 10 11 12 13 14"
-        ["no_entropy"]="1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-        ["logprob_only"]="6 7 8"
-        ["step_context_only"]="11 12 13 14"
+    # Encode ablations as "name:mask" strings (mask empty = all features).
+    PHASE3_ABLATIONS=(
+        "all_features:"
+        "entropy_only:0"
+        "verifier_only:1 2 3 4 5"
+        "verifier_plus_entropy:0 1 2 3 4 5"
+        "no_verifier:0 6 7 8 9 10 11 12 13 14"
+        "no_entropy:1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+        "logprob_only:6 7 8"
+        "step_context_only:11 12 13 14"
     )
 
-    for benchmark in humaneval textworld terminalbench; do
-        model="${PRIMARY_MODEL[${benchmark}]}"
-        config="$(config_for_benchmark "${benchmark}")"
-        feat_root="${RESULTS_ROOT}/feature_ablation/${benchmark}/${model}"
-        mkdir -p "${feat_root}"
+    run_phase3_ablation() {
+        local benchmark="$1" model="$2" ablation_name="$3" mask="$4"
+        local config; config="$(config_for_benchmark "${benchmark}")"
+        local eval_dir="${RESULTS_ROOT}/feature_ablation/${benchmark}/${model}/${ablation_name}"
 
-        for ablation_name in "${!FEATURE_ABLATIONS[@]}"; do
-            mask="${FEATURE_ABLATIONS[${ablation_name}]}"
-            eval_dir="${feat_root}/${ablation_name}"
-
+        if bundle_exists "${eval_dir}"; then
+            echo "INFO: Skipping feature ablation [done]: ${eval_dir}"
+        else
             if [[ -z "${mask}" ]]; then
                 run_cmd "Feature ablation: ${ablation_name} [${benchmark}/${model}]" \
                     python scripts/evaluate.py \
@@ -519,7 +538,7 @@ if phase_enabled 3; then
                     --methods r2v \
                     --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             else
-                # shellcheck disable=SC2068
+                # shellcheck disable=SC2086
                 run_cmd "Feature ablation: ${ablation_name} [${benchmark}/${model}]" \
                     python scripts/evaluate.py \
                     --config "${config}" \
@@ -535,12 +554,29 @@ if phase_enabled 3; then
                     --feature-mask ${mask} \
                     --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
             fi
+        fi
 
-            bundle="$(latest_bundle "${eval_dir}")"
-            record_metrics "${bundle}" "feature_ablation" "${ablation_name}" \
-                "${benchmark}" "${model}" "test" "${MAIN_ROUTER_DIR}/router_final.pt"
+        local bundle; bundle="$(latest_bundle "${eval_dir}")"
+        record_metrics "${bundle}" "feature_ablation" "${ablation_name}" \
+            "${benchmark}" "${model}" "test" "${MAIN_ROUTER_DIR}/router_final.pt"
+    }
+    export -f run_phase3_ablation
+
+    for benchmark in humaneval textworld terminalbench; do
+        model="${PRIMARY_MODEL[${benchmark}]}"
+        mkdir -p "${RESULTS_ROOT}/feature_ablation/${benchmark}/${model}"
+        for entry in "${PHASE3_ABLATIONS[@]}"; do
+            ablation_name="${entry%%:*}"
+            mask="${entry#*:}"
+            if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
+                run_phase3_ablation "${benchmark}" "${model}" "${ablation_name}" "${mask}" &
+                throttle_jobs
+            else
+                run_phase3_ablation "${benchmark}" "${model}" "${ablation_name}" "${mask}"
+            fi
         done
     done
+    wait_all
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -562,7 +598,6 @@ if phase_enabled 4; then
         local safe_variant="${variant//./_}"
         local router_dir="${LAMBDA_ROUTERS_DIR}/${benchmark}_${model}_${safe_variant}"
         local eval_dir="${RESULTS_ROOT}/lambda_ablation/${benchmark}/${model}/${safe_variant}"
-        local log_file="${RESULTS_ROOT}/logs/lambda_${benchmark}_${model}_${safe_variant}.log"
         local config; config="$(config_for_benchmark "${benchmark}")"
 
         mkdir -p "${router_dir}" "${eval_dir}"
@@ -587,36 +622,40 @@ if phase_enabled 4; then
                     "logging.wandb_mode=disabled"
         fi
 
-        run_cmd "Eval λ=${lam} [${benchmark}/${model}/${variant}]" \
-            python scripts/evaluate.py \
-            --config "${config}" \
-            --features "${DATASET_PATH}" \
-            --router-path "${router_dir}/router_final.pt" \
-            --output "${eval_dir}" \
-            --split test \
-            --benchmark-filter "${benchmark}" \
-            --model-filter "${model}" \
-            --variant-filter "${variant}" \
-            --category-filter ablation \
-            --methods r2v slm_only llm_only entropy_router \
-            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        if bundle_exists "${eval_dir}"; then
+            echo "INFO: Skipping eval [done]: ${eval_dir}"
+        else
+            run_cmd "Eval λ=${lam} [${benchmark}/${model}/${variant}]" \
+                python scripts/evaluate.py \
+                --config "${config}" \
+                --features "${DATASET_PATH}" \
+                --router-path "${router_dir}/router_final.pt" \
+                --output "${eval_dir}" \
+                --split test \
+                --benchmark-filter "${benchmark}" \
+                --model-filter "${model}" \
+                --variant-filter "${variant}" \
+                --category-filter ablation \
+                --methods r2v slm_only llm_only entropy_router \
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        fi
 
         local bundle; bundle="$(latest_bundle "${eval_dir}")"
         record_metrics "${bundle}" "lambda_ablation" "${variant}" \
             "${benchmark}" "${model}" "test" "${router_dir}/router_final.pt"
     }
-    export -f run_lambda_combo run_cmd record_metrics latest_bundle config_for_benchmark lambda_variant
+    export -f run_lambda_combo
 
     for combo in "${LAMBDA_COMBOS[@]}"; do
         IFS='|' read -r benchmark model variant lam <<< "${combo}"
         if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
             run_lambda_combo "${benchmark}" "${model}" "${variant}" "${lam}" &
-            while (( $(jobs -rp | wc -l) >= PARALLEL_JOBS )); do wait -n; done
+            throttle_jobs
         else
             run_lambda_combo "${benchmark}" "${model}" "${variant}" "${lam}"
         fi
     done
-    while (( $(jobs -rp | wc -l) > 0 )); do wait -n; done
+    wait_all
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -636,7 +675,6 @@ if phase_enabled 5; then
         local run_name="alpha_${safe_alpha}_eps_${safe_eps}"
         local router_dir="${CVAR_ROUTERS_DIR}/${run_name}"
         local eval_dir="${RESULTS_ROOT}/cvar_sweep/${run_name}"
-        local log_file="${RESULTS_ROOT}/logs/cvar_${run_name}.log"
 
         mkdir -p "${router_dir}" "${eval_dir}"
 
@@ -660,36 +698,40 @@ if phase_enabled 5; then
                     "training.router.cvar_epsilon=${epsilon}"
         fi
 
-        run_cmd "Eval CVaR α=${alpha} ε=${epsilon}" \
-            python scripts/evaluate.py \
-            --config "${BASE_CONFIG}" \
-            --features "${DATASET_PATH}" \
-            --router-path "${router_dir}/router_final.pt" \
-            --output "${eval_dir}" \
-            --split test \
-            --category-filter main \
-            --variant-filter heuristic \
-            --methods r2v slm_only llm_only entropy_router \
-            --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        if bundle_exists "${eval_dir}"; then
+            echo "INFO: Skipping eval [done]: ${eval_dir}"
+        else
+            run_cmd "Eval CVaR α=${alpha} ε=${epsilon}" \
+                python scripts/evaluate.py \
+                --config "${BASE_CONFIG}" \
+                --features "${DATASET_PATH}" \
+                --router-path "${router_dir}/router_final.pt" \
+                --output "${eval_dir}" \
+                --split test \
+                --category-filter main \
+                --variant-filter heuristic \
+                --methods r2v slm_only llm_only entropy_router \
+                --overrides "project.seed=${SEED}" "logging.wandb_mode=disabled"
+        fi
 
         local bundle; bundle="$(latest_bundle "${eval_dir}")"
         record_metrics "${bundle}" "cvar_sweep" "${run_name}" \
             "all" "all" "test" "${router_dir}/router_final.pt" \
             --alpha "${alpha}" --epsilon "${epsilon}"
     }
-    export -f run_cvar_combo run_cmd record_metrics latest_bundle
+    export -f run_cvar_combo
 
     for alpha in "${CVAR_ALPHAS[@]}"; do
         for epsilon in "${CVAR_EPSILONS[@]}"; do
             if [[ "${PARALLEL_JOBS}" -gt 1 ]]; then
                 run_cvar_combo "${alpha}" "${epsilon}" &
-                while (( $(jobs -rp | wc -l) >= PARALLEL_JOBS )); do wait -n; done
+                throttle_jobs
             else
                 run_cvar_combo "${alpha}" "${epsilon}"
             fi
         done
     done
-    while (( $(jobs -rp | wc -l) > 0 )); do wait -n; done
+    wait_all
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
