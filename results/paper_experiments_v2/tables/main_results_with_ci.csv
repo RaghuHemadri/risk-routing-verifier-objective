@@ -1,0 +1,49 @@
+benchmark,model,method,sr,sr_ci,worst_sr,cvar_f,cost,llm_rate
+HumanEval+,Gemma-7B,R2V (ours),0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Gemma-7B,SLM-only,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Gemma-7B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,544.6,1.000
+HumanEval+,Gemma-7B,Entropy-Router,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Gemma-7B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,76.2,0.081
+HumanEval+,Gemma-7B,Heuristic-Router,0.991,"[0.983, 0.997]",0.991,0.009,453.7,0.731
+HumanEval+,LLaMA-3.1-8B,R2V (ours),0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,LLaMA-3.1-8B,SLM-only,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,LLaMA-3.1-8B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,544.6,1.000
+HumanEval+,LLaMA-3.1-8B,Entropy-Router,0.919,"[0.896, 0.938]",0.919,0.081,11.5,0.000
+HumanEval+,LLaMA-3.1-8B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,76.2,0.081
+HumanEval+,LLaMA-3.1-8B,Heuristic-Router,0.959,"[0.944, 0.973]",0.959,0.041,52.7,0.085
+HumanEval+,Qwen-14B,R2V (ours),0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Qwen-14B,SLM-only,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Qwen-14B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,544.6,1.000
+HumanEval+,Qwen-14B,Entropy-Router,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Qwen-14B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,76.2,0.081
+HumanEval+,Qwen-14B,Heuristic-Router,0.959,"[0.944, 0.973]",0.959,0.041,55.6,0.082
+HumanEval+,Qwen-7B,R2V (ours),0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Qwen-7B,SLM-only,0.919,"[0.896, 0.938]",0.919,0.081,10.9,0.000
+HumanEval+,Qwen-7B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,544.6,1.000
+HumanEval+,Qwen-7B,Entropy-Router,0.959,"[0.944, 0.973]",0.959,0.041,32.3,0.030
+HumanEval+,Qwen-7B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,76.2,0.081
+HumanEval+,Qwen-7B,Heuristic-Router,0.988,"[0.979, 0.995]",0.988,0.012,87.6,0.166
+TextWorld,Gemma-7B,R2V (ours),0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Gemma-7B,SLM-only,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Gemma-7B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,Gemma-7B,Entropy-Router,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Gemma-7B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,611.7,0.348
+TextWorld,Gemma-7B,Heuristic-Router,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,LLaMA-3.1-8B,R2V (ours),0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,LLaMA-3.1-8B,SLM-only,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,LLaMA-3.1-8B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,LLaMA-3.1-8B,Entropy-Router,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,LLaMA-3.1-8B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,611.7,0.348
+TextWorld,LLaMA-3.1-8B,Heuristic-Router,1.000,"[1.000, 1.000]",1.000,0.000,848.7,0.997
+TextWorld,Qwen-14B,R2V (ours),0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-14B,SLM-only,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-14B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,Qwen-14B,Entropy-Router,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-14B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,611.7,0.348
+TextWorld,Qwen-14B,Heuristic-Router,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,Qwen-7B,R2V (ours),0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-7B,SLM-only,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-7B,LLM-only,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000
+TextWorld,Qwen-7B,Entropy-Router,0.652,"[0.627, 0.674]",0.652,0.348,17.0,0.000
+TextWorld,Qwen-7B,Oracle-Router,1.000,"[1.000, 1.000]",1.000,0.000,611.7,0.348
+TextWorld,Qwen-7B,Heuristic-Router,1.000,"[1.000, 1.000]",1.000,0.000,850.0,1.000

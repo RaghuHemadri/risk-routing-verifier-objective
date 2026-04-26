@@ -789,7 +789,15 @@ if phase_enabled 6; then
     echo "╚══════════════════════════════════════════════════════════╝"
 
     if [[ ! -f "${METRICS_PATH}" ]]; then
-        echo "WARN: No metrics file found at ${METRICS_PATH} — skipping plotting."
+        echo "INFO: No metrics file found at ${METRICS_PATH} — attempting to rebuild from existing bundle JSONs."
+        run_cmd "Rebuild metrics CSV from existing bundles" \
+            python scripts/rebuild_metrics_csv.py \
+            --results-root "${RESULTS_ROOT}" \
+            --output "${METRICS_PATH}"
+    fi
+
+    if [[ ! -f "${METRICS_PATH}" ]]; then
+        echo "WARN: Could not rebuild ${METRICS_PATH} — no bundle JSONs found. Skipping plotting."
     else
         run_cmd "Generate paper plots and LaTeX/CSV tables" \
             python scripts/plot_router_experiments.py \

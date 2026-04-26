@@ -1,0 +1,59 @@
+\begin{table}[t]
+\centering
+\caption{Main router results across benchmarks.}
+\label{tab:router-main-results}
+\begin{tabular}{lrrrrrr}
+\hline
+Benchmark & Model & Method & SR & CVaR-F & Cost & LLM\% \\
+\hline
+humaneval & gemma & entropy_router & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & gemma & heuristic_router & 0.9910 & 0.0090 & 453.6577 & 0.7309 \\
+humaneval & gemma & llm_only & 1.0000 & 0.0000 & 544.5946 & 1.0000 \\
+humaneval & gemma & oracle_router & 1.0000 & 0.0000 & 76.2252 & 0.0811 \\
+humaneval & gemma & r2v & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & gemma & slm_only & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & llama & entropy_router & 0.9189 & 0.0811 & 11.4805 & 0.0004 \\
+humaneval & llama & heuristic_router & 0.9595 & 0.0405 & 52.6817 & 0.0855 \\
+humaneval & llama & llm_only & 1.0000 & 0.0000 & 544.5946 & 1.0000 \\
+humaneval & llama & oracle_router & 1.0000 & 0.0000 & 76.2252 & 0.0811 \\
+humaneval & llama & r2v & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & llama & slm_only & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & qwen14 & entropy_router & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & qwen14 & heuristic_router & 0.9595 & 0.0405 & 55.6246 & 0.0823 \\
+humaneval & qwen14 & llm_only & 1.0000 & 0.0000 & 544.5946 & 1.0000 \\
+humaneval & qwen14 & oracle_router & 1.0000 & 0.0000 & 76.2252 & 0.0811 \\
+humaneval & qwen14 & r2v & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & qwen14 & slm_only & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & qwen7 & entropy_router & 0.9595 & 0.0405 & 32.3018 & 0.0301 \\
+humaneval & qwen7 & heuristic_router & 0.9880 & 0.0120 & 87.6291 & 0.1657 \\
+humaneval & qwen7 & llm_only & 1.0000 & 0.0000 & 544.5946 & 1.0000 \\
+humaneval & qwen7 & oracle_router & 1.0000 & 0.0000 & 76.2252 & 0.0811 \\
+humaneval & qwen7 & r2v & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+humaneval & qwen7 & slm_only & 0.9189 & 0.0811 & 10.8919 & 0.0000 \\
+textworld & gemma & entropy_router & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & gemma & heuristic_router & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & gemma & llm_only & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & gemma & oracle_router & 1.0000 & 0.0000 & 611.6640 & 0.3480 \\
+textworld & gemma & r2v & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & gemma & slm_only & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & llama & entropy_router & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & llama & heuristic_router & 1.0000 & 0.0000 & 848.6933 & 0.9968 \\
+textworld & llama & llm_only & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & llama & oracle_router & 1.0000 & 0.0000 & 611.6640 & 0.3480 \\
+textworld & llama & r2v & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & llama & slm_only & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen14 & entropy_router & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen14 & heuristic_router & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & qwen14 & llm_only & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & qwen14 & oracle_router & 1.0000 & 0.0000 & 611.6640 & 0.3480 \\
+textworld & qwen14 & r2v & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen14 & slm_only & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen7 & entropy_router & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen7 & heuristic_router & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & qwen7 & llm_only & 1.0000 & 0.0000 & 850.0000 & 1.0000 \\
+textworld & qwen7 & oracle_router & 1.0000 & 0.0000 & 611.6640 & 0.3480 \\
+textworld & qwen7 & r2v & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+textworld & qwen7 & slm_only & 0.6520 & 0.3480 & 17.0000 & 0.0000 \\
+\hline
+\end{tabular}
+\end{table}

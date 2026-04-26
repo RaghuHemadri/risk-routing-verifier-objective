@@ -1,0 +1,17 @@
+benchmark,model,variant,method,sr,cvar_f,cost,llm_rate
+humaneval,qwen7,all_features,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,entropy_only,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,logprob_only,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,no_entropy,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,no_verifier,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,step_context_only,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,verifier_only,r2v,0.9189,0.0811,10.8919,0.0000
+humaneval,qwen7,verifier_plus_entropy,r2v,0.9189,0.0811,10.8919,0.0000
+textworld,qwen7,all_features,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,entropy_only,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,logprob_only,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,no_entropy,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,no_verifier,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,step_context_only,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,verifier_only,r2v,0.6520,0.3480,17.0000,0.0000
+textworld,qwen7,verifier_plus_entropy,r2v,0.6520,0.3480,17.0000,0.0000

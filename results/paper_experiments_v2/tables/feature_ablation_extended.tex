@@ -1,0 +1,27 @@
+\begin{table}[t]
+\centering
+\caption{Feature ablation: effect of removing or isolating feature groups at inference time (router weights are unchanged). \textit{All features} is the full 15-dim vector.}
+\label{tab:feature-ablation}
+\begin{tabular}{lrrrrrr}
+\hline
+Benchmark & Model & Feature set & SR↑ & CVaR-F↓ & Cost↓ & LLM\%↓ \\
+\hline
+HumanEval+ & Qwen-7B & All features & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & Verifier + entropy & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & Verifier only & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & Entropy only & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & Log-prob only & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & Step/context only & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & w/o verifier & 0.919 & 0.081 & 10.89 & 0.000 \\
+HumanEval+ & Qwen-7B & w/o entropy & 0.919 & 0.081 & 10.89 & 0.000 \\
+TextWorld & Qwen-7B & All features & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & Verifier + entropy & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & Verifier only & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & Entropy only & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & Log-prob only & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & Step/context only & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & w/o verifier & 0.652 & 0.348 & 17.00 & 0.000 \\
+TextWorld & Qwen-7B & w/o entropy & 0.652 & 0.348 & 17.00 & 0.000 \\
+\hline
+\end{tabular}
+\end{table}

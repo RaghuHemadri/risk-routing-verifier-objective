@@ -73,5 +73,5 @@ proofs/
 
 .claude/**
 CLAUDE.md
-results/*
+results_old/*
 logs/*

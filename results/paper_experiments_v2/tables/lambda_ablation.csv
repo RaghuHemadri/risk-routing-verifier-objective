@@ -1,0 +1,5 @@
+benchmark,model,lambda,sr,cvar_f,cost,llm_rate
+HumanEval+,Qwen-14B,0,0.976,0.024,80.27,0.207
+HumanEval+,Qwen-7B,0,0.974,0.026,74.24,0.140
+TextWorld,Qwen-14B,0,0.920,0.080,163.71,0.200
+TextWorld,Qwen-7B,0,0.787,0.213,86.06,0.129
