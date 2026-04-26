@@ -1,17 +1,17 @@
 benchmark,model,features,sr,cvar_f,cost,llm_rate
-HumanEval+,Qwen-7B,All features,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,Verifier + entropy,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,Verifier only,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,Entropy only,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,Log-prob only,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,Step/context only,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,w/o verifier,0.919,0.081,10.89,0.000
-HumanEval+,Qwen-7B,w/o entropy,0.919,0.081,10.89,0.000
-TextWorld,Qwen-7B,All features,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,Verifier + entropy,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,Verifier only,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,Entropy only,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,Log-prob only,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,Step/context only,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,w/o verifier,0.652,0.348,17.00,0.000
-TextWorld,Qwen-7B,w/o entropy,0.652,0.348,17.00,0.000
+HumanEval+,Qwen-7B,All features,0.922,0.078,13.98,0.004
+HumanEval+,Qwen-7B,Verifier + entropy,0.971,0.029,53.56,0.097
+HumanEval+,Qwen-7B,Verifier only,0.944,0.056,33.26,0.063
+HumanEval+,Qwen-7B,Entropy only,0.983,0.017,142.88,0.204
+HumanEval+,Qwen-7B,Log-prob only,0.941,0.059,21.05,0.015
+HumanEval+,Qwen-7B,Step/context only,0.932,0.068,44.81,0.028
+HumanEval+,Qwen-7B,w/o verifier,0.925,0.075,21.49,0.015
+HumanEval+,Qwen-7B,w/o entropy,0.923,0.077,13.69,0.003
+TextWorld,Qwen-7B,All features,0.999,0.001,603.76,0.432
+TextWorld,Qwen-7B,Verifier + entropy,1.000,0.000,846.96,0.994
+TextWorld,Qwen-7B,Verifier only,1.000,0.000,846.64,0.994
+TextWorld,Qwen-7B,Entropy only,0.655,0.345,24.22,0.020
+TextWorld,Qwen-7B,Log-prob only,1.000,0.000,444.15,0.628
+TextWorld,Qwen-7B,Step/context only,0.709,0.291,37.61,0.012
+TextWorld,Qwen-7B,w/o verifier,0.996,0.004,365.75,0.217
+TextWorld,Qwen-7B,w/o entropy,0.996,0.004,545.09,0.345

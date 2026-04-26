@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-04-26T16:16:58.844418",
+  "num_experiments": 1,
+  "main_results": [
+    {
+      "method": "r2v",
+      "benchmark": "textworld",
+      "condition": "noisy",
+      "num_seeds": 2,
+      "mean_sr": 0.7093333333333334,
+      "std_sr": 0.0,
+      "min_sr": 0.7093333333333334,
+      "max_sr": 0.7093333333333334,
+      "avg_cost": 37.61266666666667,
+      "avg_safety_failure_rate": null
+    }
+  ],
+  "comparisons": [],
+  "ablations": [],
+  "key_findings": [
+    "r2v achieves 70.9% SR on textworld (noisy)"
+  ]
+}
