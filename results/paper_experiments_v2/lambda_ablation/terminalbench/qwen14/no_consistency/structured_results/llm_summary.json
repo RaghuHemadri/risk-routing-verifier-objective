@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:19:40.604237",
+  "generated_at": "2026-05-01T16:08:07.040045",
   "num_experiments": 1,
   "main_results": [
     {
@@ -11,7 +11,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 66.4258289703316,
+      "avg_cost": 53.08403361344538,
       "avg_safety_failure_rate": null
     },
     {
@@ -23,7 +23,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 19.13612565445026,
+      "avg_cost": 13.925210084033614,
       "avg_safety_failure_rate": null
     },
     {
@@ -35,7 +35,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 956.8062827225131,
+      "avg_cost": 696.2605042016806,
       "avg_safety_failure_rate": null
     },
     {
@@ -47,7 +47,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 19.13612565445026,
+      "avg_cost": 13.925210084033614,
       "avg_safety_failure_rate": null
     }
   ],

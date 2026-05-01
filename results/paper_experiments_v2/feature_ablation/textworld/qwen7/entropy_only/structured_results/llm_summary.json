@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:16:58.875472",
+  "generated_at": "2026-05-01T16:05:22.731556",
   "num_experiments": 1,
   "main_results": [
     {
@@ -7,17 +7,17 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.6546666666666666,
+      "mean_sr": 0.6460176991150443,
       "std_sr": 0.0,
-      "min_sr": 0.6546666666666666,
-      "max_sr": 0.6546666666666666,
-      "avg_cost": 24.219333333333335,
+      "min_sr": 0.6460176991150443,
+      "max_sr": 0.6460176991150443,
+      "avg_cost": 18.640117994100294,
       "avg_safety_failure_rate": null
     }
   ],
   "comparisons": [],
   "ablations": [],
   "key_findings": [
-    "r2v achieves 65.5% SR on textworld (noisy)"
+    "r2v achieves 64.6% SR on textworld (noisy)"
   ]
 }

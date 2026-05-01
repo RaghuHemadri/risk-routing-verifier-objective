@@ -1,6 +1,6 @@
 method_a,method_b,benchmark,condition,metric,value_a,value_b,difference,ci_lower,ci_upper,p_value,significant,effect_size,test_name
-r2v,slm_only,textworld,noisy,success_rate,0.998,0.652,0.346,0.32265,0.37001666666666666,0.0,True,,mcnemar
-r2v,llm_only,textworld,noisy,success_rate,0.998,1.0,-0.0020000000000000018,-0.004666666666666667,0.0,0.25,False,,mcnemar
-r2v,entropy_router,textworld,noisy,success_rate,0.998,0.652,0.346,0.32265,0.37001666666666666,0.0,True,,mcnemar
-r2v,oracle_router,textworld,noisy,success_rate,0.998,1.0,-0.0020000000000000018,-0.004666666666666667,0.0,0.25,False,,mcnemar
-r2v,heuristic_router,textworld,noisy,success_rate,0.998,1.0,-0.0020000000000000018,-0.004666666666666667,0.0,0.25,False,,mcnemar
+r2v,slm_only,textworld,noisy,success_rate,1.0,0.6460176991150443,0.35398230088495575,0.3185840707964602,0.39085545722713866,0.0,True,,mcnemar
+r2v,llm_only,textworld,noisy,success_rate,1.0,1.0,0.0,0.0,0.0,1.0,False,,mcnemar
+r2v,entropy_router,textworld,noisy,success_rate,1.0,0.6460176991150443,0.35398230088495575,0.3185840707964602,0.39085545722713866,0.0,True,,mcnemar
+r2v,oracle_router,textworld,noisy,success_rate,1.0,1.0,0.0,0.0,0.0,1.0,False,,mcnemar
+r2v,heuristic_router,textworld,noisy,success_rate,1.0,1.0,0.0,0.0,0.0,1.0,False,,mcnemar

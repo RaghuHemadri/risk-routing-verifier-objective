@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:22:58.297459",
+  "generated_at": "2026-05-01T16:11:04.557987",
   "num_experiments": 1,
   "main_results": [
     {
@@ -7,11 +7,11 @@
       "benchmark": "unknown",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9927536231884058,
+      "mean_sr": 0.9638284250960307,
       "std_sr": 0.0,
-      "min_sr": 0.9927536231884058,
-      "max_sr": 0.9927536231884058,
-      "avg_cost": 2319.451690821256,
+      "min_sr": 0.9638284250960307,
+      "max_sr": 0.9638284250960307,
+      "avg_cost": 1030.1478873239437,
       "avg_safety_failure_rate": null
     },
     {
@@ -19,11 +19,11 @@
       "benchmark": "unknown",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.8260869565217391,
+      "mean_sr": 0.8338668373879642,
       "std_sr": 0.0,
-      "min_sr": 0.8260869565217391,
-      "max_sr": 0.8260869565217391,
-      "avg_cost": 66.04347826086956,
+      "min_sr": 0.8338668373879642,
+      "max_sr": 0.8338668373879642,
+      "avg_cost": 40.89372599231754,
       "avg_safety_failure_rate": null
     },
     {
@@ -35,7 +35,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 3302.1739130434785,
+      "avg_cost": 2044.686299615877,
       "avg_safety_failure_rate": null
     },
     {
@@ -43,11 +43,11 @@
       "benchmark": "unknown",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.8342391304347826,
+      "mean_sr": 0.8895646606914213,
       "std_sr": 0.0,
-      "min_sr": 0.8342391304347826,
-      "max_sr": 0.8342391304347826,
-      "avg_cost": 70.68900966183575,
+      "min_sr": 0.8895646606914213,
+      "max_sr": 0.8895646606914213,
+      "avg_cost": 85.73719590268887,
       "avg_safety_failure_rate": null
     }
   ],
@@ -57,10 +57,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "unknown",
-      "difference": 0.16666666666666663,
+      "difference": 0.12996158770806654,
       "ci": [
-        0.15307971014492755,
-        0.17906099033816422
+        0.11843790012804098,
+        0.14180537772087068
       ],
       "p_value": 0.0,
       "significant": true
@@ -70,12 +70,12 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "unknown",
-      "difference": -0.007246376811594235,
+      "difference": -0.03617157490396927,
       "ci": [
-        -0.010265700483091788,
-        -0.004528985507246377
+        -0.04289372599231754,
+        -0.029441421254801547
       ],
-      "p_value": 1.1920928955078125e-07,
+      "p_value": 0.0,
       "significant": true
     },
     {
@@ -83,10 +83,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "unknown",
-      "difference": 0.15851449275362317,
+      "difference": 0.07426376440460947,
       "ci": [
-        0.14552385265700485,
-        0.17119565217391305
+        0.06338028169014084,
+        0.08610755441741358
       ],
       "p_value": 0.0,
       "significant": true
@@ -94,9 +94,9 @@
   ],
   "ablations": [],
   "key_findings": [
-    "r2v achieves 99.3% SR on unknown (noisy)",
-    "slm_only achieves 82.6% SR on unknown (noisy)",
+    "r2v achieves 96.4% SR on unknown (noisy)",
+    "slm_only achieves 83.4% SR on unknown (noisy)",
     "llm_only achieves 100.0% SR on unknown (noisy)",
-    "entropy_router achieves 83.4% SR on unknown (noisy)"
+    "entropy_router achieves 89.0% SR on unknown (noisy)"
   ]
 }

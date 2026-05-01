@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:12:13.982763",
+  "generated_at": "2026-05-01T16:01:05.950075",
   "num_experiments": 1,
   "main_results": [
     {
@@ -11,7 +11,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 942.696335078534,
+      "avg_cost": 671.8428571428572,
       "avg_safety_failure_rate": null
     },
     {
@@ -23,7 +23,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 854.7870855148342,
+      "avg_cost": 561.5310924369747,
       "avg_safety_failure_rate": null
     },
     {
@@ -35,7 +35,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 797.4921465968587,
+      "avg_cost": 494.2487394957983,
       "avg_safety_failure_rate": null
     },
     {
@@ -47,7 +47,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 539.10907504363,
+      "avg_cost": 284.0016806722689,
       "avg_safety_failure_rate": null
     },
     {
@@ -59,7 +59,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 440.16841186736474,
+      "avg_cost": 215.68991596638656,
       "avg_safety_failure_rate": null
     },
     {
@@ -71,7 +71,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 371.32897033158815,
+      "avg_cost": 176.7781512605042,
       "avg_safety_failure_rate": null
     },
     {
@@ -83,7 +83,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 318.0959860383944,
+      "avg_cost": 151.7016806722689,
       "avg_safety_failure_rate": null
     },
     {
@@ -95,7 +95,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 271.78970331588135,
+      "avg_cost": 129.34285714285716,
       "avg_safety_failure_rate": null
     },
     {
@@ -107,7 +107,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 168.6588132635253,
+      "avg_cost": 62.34873949579832,
       "avg_safety_failure_rate": null
     },
     {
@@ -119,7 +119,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 19.13612565445026,
+      "avg_cost": 13.925210084033614,
       "avg_safety_failure_rate": null
     },
     {
@@ -131,7 +131,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 956.8062827225131,
+      "avg_cost": 696.2605042016806,
       "avg_safety_failure_rate": null
     },
     {
@@ -143,7 +143,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 19.13612565445026,
+      "avg_cost": 13.925210084033614,
       "avg_safety_failure_rate": null
     },
     {
@@ -155,7 +155,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 19.13612565445026,
+      "avg_cost": 13.925210084033614,
       "avg_safety_failure_rate": null
     }
   ],

@@ -1,3 +1,3 @@
 method,benchmark,condition,seed,success_rate,success_rate_ci,worst_seed_sr,cvar_failure,bottom_10_sr,avg_cost,avg_latency,llm_call_rate,safety_failure_rate,ece,brier
-r2v,textworld,noisy,0,1.0000,"[1.000, 1.000]",1.0000,0.0000,,754.6492,,0.5915,,0.7529,0.6699
-r2v,textworld,noisy,0,1.0000,"[1.000, 1.000]",,,,754.6492,,0.5915,,,
+r2v,textworld,noisy,0,1.0000,"[1.000, 1.000]",1.0000,0.0000,,492.3546,,0.5359,,0.6915,0.5800
+r2v,textworld,noisy,0,1.0000,"[1.000, 1.000]",,,,492.3546,,0.5359,,,

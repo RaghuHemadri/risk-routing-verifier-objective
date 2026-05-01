@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:12:35.622447",
+  "generated_at": "2026-05-01T16:01:01.483300",
   "num_experiments": 1,
   "main_results": [
     {
@@ -11,7 +11,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 794.7933333333333,
+      "avg_cost": 578.9601769911504,
       "avg_safety_failure_rate": null
     },
     {
@@ -23,7 +23,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 746.6753333333334,
+      "avg_cost": 541.8849557522124,
       "avg_safety_failure_rate": null
     },
     {
@@ -35,7 +35,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 713.7146666666666,
+      "avg_cost": 518.0353982300885,
       "avg_safety_failure_rate": null
     },
     {
@@ -43,11 +43,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9993333333333333,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.9993333333333333,
-      "max_sr": 0.9993333333333333,
-      "avg_cost": 682.1913333333333,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 491.0781710914454,
       "avg_safety_failure_rate": null
     },
     {
@@ -55,11 +55,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9993333333333333,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.9993333333333333,
-      "max_sr": 0.9993333333333333,
-      "avg_cost": 648.0873333333333,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 467.2286135693215,
       "avg_safety_failure_rate": null
     },
     {
@@ -67,11 +67,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9973333333333333,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.9973333333333333,
-      "max_sr": 0.9973333333333333,
-      "avg_cost": 616.858,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 442.8008849557522,
       "avg_safety_failure_rate": null
     },
     {
@@ -79,11 +79,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9973333333333333,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.9973333333333333,
-      "max_sr": 0.9973333333333333,
-      "avg_cost": 586.4453333333333,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 418.80678466076694,
       "avg_safety_failure_rate": null
     },
     {
@@ -91,11 +91,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.9966666666666667,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.9966666666666667,
-      "max_sr": 0.9966666666666667,
-      "avg_cost": 553.648,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 393.8731563421829,
       "avg_safety_failure_rate": null
     },
     {
@@ -103,11 +103,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.996,
+      "mean_sr": 1.0,
       "std_sr": 0.0,
-      "min_sr": 0.996,
-      "max_sr": 0.996,
-      "avg_cost": 510.234,
+      "min_sr": 1.0,
+      "max_sr": 1.0,
+      "avg_cost": 359.6165191740413,
       "avg_safety_failure_rate": null
     },
     {
@@ -115,11 +115,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.652,
+      "mean_sr": 0.6460176991150443,
       "std_sr": 0.0,
-      "min_sr": 0.652,
-      "max_sr": 0.652,
-      "avg_cost": 17.0,
+      "min_sr": 0.6460176991150443,
+      "max_sr": 0.6460176991150443,
+      "avg_cost": 12.424778761061948,
       "avg_safety_failure_rate": null
     },
     {
@@ -131,7 +131,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 850.0,
+      "avg_cost": 621.2389380530974,
       "avg_safety_failure_rate": null
     },
     {
@@ -139,11 +139,11 @@
       "benchmark": "textworld",
       "condition": "noisy",
       "num_seeds": 2,
-      "mean_sr": 0.652,
+      "mean_sr": 0.6460176991150443,
       "std_sr": 0.0,
-      "min_sr": 0.652,
-      "max_sr": 0.652,
-      "avg_cost": 17.0,
+      "min_sr": 0.6460176991150443,
+      "max_sr": 0.6460176991150443,
+      "avg_cost": 12.424778761061948,
       "avg_safety_failure_rate": null
     },
     {
@@ -155,7 +155,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 611.664,
+      "avg_cost": 449.08849557522126,
       "avg_safety_failure_rate": null
     }
   ],
@@ -165,10 +165,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -191,10 +191,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -217,10 +217,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -243,10 +243,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -269,10 +269,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -295,10 +295,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.348,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.324,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -321,10 +321,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34733333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.3233333333333333,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -334,9 +334,9 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0006666666666667043,
+      "difference": 0.0,
       "ci": [
-        -0.002,
+        0.0,
         0.0
       ],
       "p_value": 1.0,
@@ -347,10 +347,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34733333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.3233333333333333,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -360,9 +360,9 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0006666666666667043,
+      "difference": 0.0,
       "ci": [
-        -0.002,
+        0.0,
         0.0
       ],
       "p_value": 1.0,
@@ -373,10 +373,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34733333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.3233333333333333,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -386,9 +386,9 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0006666666666667043,
+      "difference": 0.0,
       "ci": [
-        -0.002,
+        0.0,
         0.0
       ],
       "p_value": 1.0,
@@ -399,10 +399,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34733333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.3233333333333333,
-        0.372
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -412,9 +412,9 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0006666666666667043,
+      "difference": 0.0,
       "ci": [
-        -0.002,
+        0.0,
         0.0
       ],
       "p_value": 1.0,
@@ -425,10 +425,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34533333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32133333333333336,
-        0.37
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -438,12 +438,12 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.002666666666666706,
+      "difference": 0.0,
       "ci": [
-        -0.005333333333333333,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.125,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -451,10 +451,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34533333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32133333333333336,
-        0.37
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -464,12 +464,12 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.002666666666666706,
+      "difference": 0.0,
       "ci": [
-        -0.005333333333333333,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.125,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -477,10 +477,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34533333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32133333333333336,
-        0.37
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -490,12 +490,12 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.002666666666666706,
+      "difference": 0.0,
       "ci": [
-        -0.005333333333333333,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.125,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -503,10 +503,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.34533333333333327,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32133333333333336,
-        0.37
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -516,12 +516,12 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.002666666666666706,
+      "difference": 0.0,
       "ci": [
-        -0.005333333333333333,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.125,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -529,10 +529,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.3446666666666667,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32066666666666666,
-        0.36933333333333335
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -542,12 +542,12 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0033333333333332993,
+      "difference": 0.0,
       "ci": [
-        -0.006666666666666667,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.0625,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -555,10 +555,10 @@
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.3446666666666667,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32066666666666666,
-        0.36933333333333335
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -568,12 +568,12 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0033333333333332993,
+      "difference": 0.0,
       "ci": [
-        -0.006666666666666667,
-        -0.0006666666666666666
+        0.0,
+        0.0
       ],
-      "p_value": 0.0625,
+      "p_value": 1.0,
       "significant": false
     },
     {
@@ -581,10 +581,10 @@
       "method_b": "slm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.344,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32066666666666666,
-        0.368
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -594,23 +594,23 @@
       "method_b": "llm_only",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0040000000000000036,
+      "difference": 0.0,
       "ci": [
-        -0.007349999999999985,
-        -0.0013333333333333333
+        0.0,
+        0.0
       ],
-      "p_value": 0.03125,
-      "significant": true
+      "p_value": 1.0,
+      "significant": false
     },
     {
       "method_a": "r2v@0.9",
       "method_b": "entropy_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": 0.344,
+      "difference": 0.35398230088495575,
       "ci": [
-        0.32066666666666666,
-        0.368
+        0.3185840707964602,
+        0.39085545722713866
       ],
       "p_value": 0.0,
       "significant": true
@@ -620,13 +620,13 @@
       "method_b": "oracle_router",
       "metric": "success_rate",
       "benchmark": "textworld",
-      "difference": -0.0040000000000000036,
+      "difference": 0.0,
       "ci": [
-        -0.007349999999999985,
-        -0.0013333333333333333
+        0.0,
+        0.0
       ],
-      "p_value": 0.03125,
-      "significant": true
+      "p_value": 1.0,
+      "significant": false
     }
   ],
   "ablations": [],
@@ -634,15 +634,15 @@
     "r2v@0.1 achieves 100.0% SR on textworld (noisy)",
     "r2v@0.2 achieves 100.0% SR on textworld (noisy)",
     "r2v@0.3 achieves 100.0% SR on textworld (noisy)",
-    "r2v@0.4 achieves 99.9% SR on textworld (noisy)",
-    "r2v@0.5 achieves 99.9% SR on textworld (noisy)",
-    "r2v@0.6 achieves 99.7% SR on textworld (noisy)",
-    "r2v@0.7 achieves 99.7% SR on textworld (noisy)",
-    "r2v@0.8 achieves 99.7% SR on textworld (noisy)",
-    "r2v@0.9 achieves 99.6% SR on textworld (noisy)",
-    "slm_only achieves 65.2% SR on textworld (noisy)",
+    "r2v@0.4 achieves 100.0% SR on textworld (noisy)",
+    "r2v@0.5 achieves 100.0% SR on textworld (noisy)",
+    "r2v@0.6 achieves 100.0% SR on textworld (noisy)",
+    "r2v@0.7 achieves 100.0% SR on textworld (noisy)",
+    "r2v@0.8 achieves 100.0% SR on textworld (noisy)",
+    "r2v@0.9 achieves 100.0% SR on textworld (noisy)",
+    "slm_only achieves 64.6% SR on textworld (noisy)",
     "llm_only achieves 100.0% SR on textworld (noisy)",
-    "entropy_router achieves 65.2% SR on textworld (noisy)",
+    "entropy_router achieves 64.6% SR on textworld (noisy)",
     "oracle_router achieves 100.0% SR on textworld (noisy)"
   ]
 }

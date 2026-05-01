@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-26T16:16:52.003487",
+  "generated_at": "2026-05-01T16:05:17.450628",
   "num_experiments": 1,
   "main_results": [
     {
@@ -11,7 +11,7 @@
       "std_sr": 0.0,
       "min_sr": 1.0,
       "max_sr": 1.0,
-      "avg_cost": 247.63176265270505,
+      "avg_cost": 168.99579831932772,
       "avg_safety_failure_rate": null
     }
   ],
