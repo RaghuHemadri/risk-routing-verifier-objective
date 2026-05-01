@@ -45,7 +45,7 @@ PARALLEL_JOBS="${PARALLEL_JOBS:-1}"
 # every step in the collected data has slm_success=1 (0 % positive labels) —
 # it contributes 51 % of the combined dataset but carries zero routing signal,
 # poisoning the Lagrangian objective.  Evaluation still runs on all benchmarks.
-ROUTER_TRAIN_BENCHMARKS="${ROUTER_TRAIN_BENCHMARKS:-humaneval textworld}"
+ROUTER_TRAIN_BENCHMARKS="${ROUTER_TRAIN_BENCHMARKS:-humaneval textworld terminalbench}"
 
 # cost_llm for TRAINING only (not evaluation); 5:1 ratio keeps the cost
 # gradient small enough that the Lagrangian term can compete.  The actual

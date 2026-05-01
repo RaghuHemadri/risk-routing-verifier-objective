@@ -138,6 +138,59 @@ def _collect_episode_ids(path: Path) -> set[str]:
     return ids
 
 
+def _build_split_map_from_features(
+    benchmark: str,
+    seed: int,
+) -> dict[str, str]:
+    """Generate synthetic split from feature file episode IDs using humaneval ratios."""
+    import random
+    rng = random.Random(seed)
+    
+    features_root = Path("router_features_data")
+    feature_files = sorted(features_root.rglob("*.jsonl"))
+    all_episode_ids: set[str] = set()
+    
+    for f in feature_files:
+        parsed = _parse_feature_filename(f)
+        if parsed is None or parsed[0] != benchmark:
+            continue
+        with open(f, "r", encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                rec = json.loads(line)
+                all_episode_ids.add(str(rec["episode_id"]))
+    
+    _p(f"[SPLIT][SYNTHETIC] Collected {len(all_episode_ids)} unique episode_ids from features for {benchmark}")
+    
+    sorted_ids = sorted(all_episode_ids)
+    rng.shuffle(sorted_ids)
+    
+    total_ids = len(sorted_ids)
+    train_count = int(total_ids * 0.665)
+    val_count = int(total_ids * 0.167)
+    
+    mapping = {}
+    for i, eid in enumerate(sorted_ids):
+        if i < train_count:
+            mapping[eid] = "train"
+        elif i < train_count + val_count:
+            mapping[eid] = "val"
+        else:
+            mapping[eid] = "test"
+    
+    train_c = sum(1 for v in mapping.values() if v == "train")
+    val_c = sum(1 for v in mapping.values() if v == "val")
+    test_c = sum(1 for v in mapping.values() if v == "test")
+    
+    _p(
+        f"[SPLIT][SYNTHETIC] Generated splits for {benchmark}: "
+        f"train={train_c}, val={val_c}, test={test_c}"
+    )
+    
+    return mapping
+
+
 def _build_split_map(
     benchmark: str,
     seed: int,
@@ -205,6 +258,7 @@ def _build_split_map(
 
     mapping = {}
     used_files: list[str] = []
+    all_files_exist = True
     for split_name, candidates in split_patterns.items():
         _p(f"[SPLIT][FALLBACK] Searching {split_name} files for benchmark={benchmark}")
         for c in candidates:
@@ -212,10 +266,11 @@ def _build_split_map(
         chosen = next((p for p in candidates if p.exists()), None)
         if chosen is None:
             _p(
-                "[SPLIT][ERROR] Missing fallback split file: "
+                "[SPLIT][WARN] Missing fallback split file: "
                 f"benchmark={benchmark}, split={split_name}"
             )
-            return {}, None
+            all_files_exist = False
+            break
         _p(f"[SPLIT][USE] benchmark={benchmark}, split={split_name}, file={chosen}")
         used_files.append(str(chosen))
         for eid in _collect_episode_ids(chosen):
@@ -224,11 +279,21 @@ def _build_split_map(
             "[SPLIT][COUNT] "
             f"benchmark={benchmark}, split={split_name}, cumulative_ids={len(mapping)}"
         )
+    
+    if all_files_exist:
+        _p(
+            "[SPLIT][DONE] Fallback split map built: "
+            f"benchmark={benchmark}, total_episode_ids={len(mapping)}"
+        )
+        return mapping, ",".join(used_files)
+
+    # 3) Final fallback: generate synthetic splits using humaneval ratios (66.5% train, 16.7% val, 16.8% test)
     _p(
-        "[SPLIT][DONE] Fallback split map built: "
-        f"benchmark={benchmark}, total_episode_ids={len(mapping)}"
+        f"[SPLIT][SYNTHETIC] No trajectory files found for benchmark={benchmark}; "
+        "generating synthetic splits using humaneval ratios (66.5% train, 16.7% val, 16.8% test)"
     )
-    return mapping, ",".join(used_files)
+    mapping = _build_split_map_from_features(benchmark, seed)
+    return mapping, f"SYNTHETIC:{benchmark}:66.5%-16.7%-16.8%"
 
 
 def _category_from_variant(variant: str) -> str:
@@ -335,6 +400,47 @@ def main() -> None:
     for b in sorted(benchmark_file_counts.keys()):
         _p(f"[DISCOVERY][SUMMARY] benchmark={b}, parsed_files={benchmark_file_counts[b]}")
     _p(f"[DISCOVERY][SUMMARY] skipped_unparsed_files={skipped_unparsed}")
+
+    # Validate split maps and regenerate if too many unmapped episodes detected
+    _p("[SPLIT][VALIDATE] Checking for episode_id mismatches...")
+    for benchmark in sorted(split_maps.keys()):
+        split_map = split_maps[benchmark]
+        sample_episodes: set[str] = set()
+        
+        for f in feature_files:
+            parsed = _parse_feature_filename(f)
+            if parsed is None or parsed[0] != benchmark:
+                continue
+            # Sample first 100 rows to check coverage
+            with open(f, "r", encoding="utf-8") as fh:
+                for _ in range(100):
+                    line = fh.readline()
+                    if not line.strip():
+                        continue
+                    rec = json.loads(line)
+                    sample_episodes.add(str(rec["episode_id"]))
+            if len(sample_episodes) >= 100:
+                break
+        
+        if sample_episodes:
+            unmapped_sample = sum(1 for e in sample_episodes if e not in split_map)
+            unmapped_pct = 100 * unmapped_sample / len(sample_episodes) if sample_episodes else 0
+            _p(
+                f"[SPLIT][VALIDATE] benchmark={benchmark}, "
+                f"sample_size={len(sample_episodes)}, unmapped={unmapped_sample} ({unmapped_pct:.1f}%)"
+            )
+            
+            if unmapped_pct > 5:
+                _p(
+                    f"[SPLIT][REGEN] High unmapped rate ({unmapped_pct:.1f}%) for {benchmark}; "
+                    "regenerating synthetic splits from feature episodes"
+                )
+                split_maps[benchmark] = _build_split_map_from_features(
+                    benchmark, seed=args.seed
+                )
+                split_sources[benchmark] = f"SYNTHETIC:{benchmark}:66.5%-16.7%-16.8%"
+    
+    _p("[SPLIT][VALIDATE] Done")
 
     writer: pq.ParquetWriter | None = None
     chunk = _empty_chunk()
