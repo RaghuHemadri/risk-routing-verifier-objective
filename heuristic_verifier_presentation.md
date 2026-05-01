@@ -62,6 +62,7 @@ Actions must match `_TW_VALID_VERBS`.
 **B. Goal Alignment (`_tw_goal_alignment`):**
 Extracts non-stopword tokens from the overall task goal and checks intersection with tokens in the action string.
 
+
 **C. Environment State Extraction (`_tw_prev_obs_quality`):**
 Parses the simulator's immediate string response:
 *   **Success**: "you take", "opened", "you go" (-> `0.80` - `0.95`)
