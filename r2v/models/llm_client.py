@@ -61,6 +61,9 @@ class LLMConfig:
 # ── Cost estimation (approximate $/1M tokens) ────────────────────
 
 _COST_PER_1M = {
+    # Azure / OpenAI
+    "gpt-4.1": {"input": 2.00, "output": 8.00},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
     # OpenAI
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
@@ -321,6 +324,88 @@ class GeminiClient(BaseLLMClient):
         return self._extract_response(response)
 
 
+# ── Azure OpenAI ─────────────────────────────────────────────────
+
+
+class AzureOpenAIClient(BaseLLMClient):
+    """Client for Azure OpenAI deployments (gpt-4.1, gpt-4o, gpt-5.2, etc.).
+
+    Credentials are read from environment variables. Model-specific overrides
+    take priority over the default AZURE_OPENAI_* vars:
+      - GPT52_API_KEY / GPT52_ENDPOINT / GPT52_API_VERSION  → gpt-5.2
+    """
+
+    _API_VERSION = "2024-12-01-preview"
+
+    # Map model name prefixes to env var prefixes for credentials
+    _MODEL_ENV_PREFIX = {
+        "gpt-5.2": "GPT52",
+    }
+
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        import openai
+
+        env_prefix = self._MODEL_ENV_PREFIX.get(config.model_name)
+        if env_prefix:
+            api_key = os.environ.get(f"{env_prefix}_API_KEY")
+            endpoint = os.environ.get(f"{env_prefix}_ENDPOINT")
+            api_version = os.environ.get(f"{env_prefix}_API_VERSION", self._API_VERSION)
+        else:
+            api_key = os.environ.get("AZURE_OPENAI_API_KEY")
+            endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
+            api_version = self._API_VERSION
+
+        if not api_key:
+            raise ValueError(f"Azure API key not found for model '{config.model_name}'. Check your .env file.")
+        if not endpoint:
+            raise ValueError(f"Azure endpoint not found for model '{config.model_name}'. Check your .env file.")
+
+        self.client = openai.AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            api_version=config.extra_params.get("api_version", api_version),
+        )
+
+    # Models that use max_completion_tokens instead of max_tokens
+    _MAX_COMPLETION_TOKENS_MODELS = {"gpt-5.2", "o1", "o3", "o4-mini"}
+
+    @retry(wait=wait_random_exponential(min=10, max=120), stop=stop_after_attempt(6))
+    def chat(self, messages: list[dict[str, str]], **kwargs) -> LLMResponse:
+        params = self._merge_kwargs(**kwargs)
+        use_completion_tokens = self.config.model_name in self._MAX_COMPLETION_TOKENS_MODELS
+        token_param = "max_completion_tokens" if use_completion_tokens else "max_tokens"
+        response = self.client.chat.completions.create(
+            model=self.config.model_name,
+            messages=messages,
+            temperature=params["temperature"],
+            top_p=params["top_p"],
+            **{token_param: params["max_tokens"]},
+        )
+        choice = response.choices[0]
+        usage = response.usage
+        return LLMResponse(
+            text=choice.message.content or "",
+            model=self.config.model_name,
+            input_tokens=usage.prompt_tokens if usage else 0,
+            output_tokens=usage.completion_tokens if usage else 0,
+            cost=estimate_cost(
+                self.config.model_name,
+                usage.prompt_tokens if usage else 0,
+                usage.completion_tokens if usage else 0,
+            ),
+            finish_reason=choice.finish_reason or "",
+            raw=response,
+        )
+
+    def generate(self, prompt: str, **kwargs) -> LLMResponse:
+        messages = []
+        if self.config.system_prompt:
+            messages.append({"role": "system", "content": self.config.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return self.chat(messages, **kwargs)
+
+
 # ── DeepSeek ─────────────────────────────────────────────────────
 
 
@@ -381,6 +466,8 @@ _CLIENT_REGISTRY: dict[str, type[BaseLLMClient]] = {
     "google": GeminiClient,
     "gemini": GeminiClient,
     "deepseek": DeepSeekClient,
+    "azure": AzureOpenAIClient,
+    "azure_openai": AzureOpenAIClient,
 }
 
 
@@ -431,5 +518,7 @@ def _infer_provider(model_name: str) -> str:
         return "google"
     if any(x in model_lower for x in ("deepseek",)):
         return "deepseek"
+    if os.environ.get("AZURE_OPENAI_API_KEY") and os.environ.get("AZURE_OPENAI_ENDPOINT"):
+        return "azure"
     # Default to OpenAI-compatible
     return "openai"
